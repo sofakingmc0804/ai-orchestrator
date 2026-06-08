@@ -1,0 +1,7 @@
+routing:
+  allowed_adapters:
+    - hermes-agent
+  preferred_adapters:
+    - hermes-agent
+approval:
+  required_at: high

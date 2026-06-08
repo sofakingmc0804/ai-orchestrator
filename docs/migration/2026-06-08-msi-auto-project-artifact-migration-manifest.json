@@ -1,0 +1,329 @@
+{
+  "generated_at": "2026-06-08T01:22:47.152638+00:00",
+  "source": "C:\\Users\\Couch\\Documents\\Claude\\Projects\\Home of Claude - MSI Auto Project",
+  "target": "C:\\Users\\Couch\\dev\\ai-orchestrator",
+  "exclusions": {
+    "dirs": [
+      ".git",
+      "__pycache__"
+    ],
+    "suffixes": [
+      ".pyc"
+    ],
+    "prefixes": [
+      ".~lock."
+    ]
+  },
+  "source_file_count": 43,
+  "matched_file_count": 43,
+  "missing": [],
+  "mismatched": [],
+  "special_destinations": {
+    "docs_specs_spec_synced": true,
+    "root_spec_sha256": "7237383d5b3df920e0fdb256d673358eed84a9aaf6963d21bef98fee281c65ab",
+    "docs_spec_sha256": "7237383d5b3df920e0fdb256d673358eed84a9aaf6963d21bef98fee281c65ab"
+  },
+  "files": [
+    {
+      "relative_path": "AI_BENCHMARK_MANIFEST_2026-06-07.json",
+      "bytes": 10862,
+      "source_sha256": "176def9f48e705bf2c403998454b3bdb280d30a8a8c55493a512421ea9b07f88",
+      "target_sha256": "176def9f48e705bf2c403998454b3bdb280d30a8a8c55493a512421ea9b07f88",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_BENCHMARK_OPERATION_INVENTORY_2026-06-07.md",
+      "bytes": 29222,
+      "source_sha256": "e884b625497124dee8bc5d8ca605cc409b50b825282770254f74ca55a11dcea3",
+      "target_sha256": "e884b625497124dee8bc5d8ca605cc409b50b825282770254f74ca55a11dcea3",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_COMPLETE_MODEL_LIST_2026-06-07.md",
+      "bytes": 16582,
+      "source_sha256": "19e960a106b247ae763e8ef973e3a2c34df67ea36d52b9b7f7c9dd331b893aa5",
+      "target_sha256": "19e960a106b247ae763e8ef973e3a2c34df67ea36d52b9b7f7c9dd331b893aa5",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_2026-06-07.xlsx",
+      "bytes": 127313,
+      "source_sha256": "d0c68a2822485df9690c4adadf2fffe2b060710434926f58ff237878fc738f01",
+      "target_sha256": "d0c68a2822485df9690c4adadf2fffe2b060710434926f58ff237878fc738f01",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\01_LLMs.csv",
+      "bytes": 121444,
+      "source_sha256": "7c60abc9fa309cb48b04e6405d4e2eea1f9e66a97fcfd9b5d7a5790bf9b5f294",
+      "target_sha256": "7c60abc9fa309cb48b04e6405d4e2eea1f9e66a97fcfd9b5d7a5790bf9b5f294",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\02_Embeddings.csv",
+      "bytes": 2418,
+      "source_sha256": "9475353e7ccc5b461610272e55a70509457f5ec0e4f791e898ea33d5bc40808d",
+      "target_sha256": "9475353e7ccc5b461610272e55a70509457f5ec0e4f791e898ea33d5bc40808d",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\03_Image.csv",
+      "bytes": 5424,
+      "source_sha256": "6ddc583a189f39dbe35581c4bf76a0625f60096c0757fc45d990ca61876206d4",
+      "target_sha256": "6ddc583a189f39dbe35581c4bf76a0625f60096c0757fc45d990ca61876206d4",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\04_Video.csv",
+      "bytes": 2268,
+      "source_sha256": "400914537c6cc760e917f234349713d588b91c1d178a4a6cd5c4b14643126e26",
+      "target_sha256": "400914537c6cc760e917f234349713d588b91c1d178a4a6cd5c4b14643126e26",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\05_Audio.csv",
+      "bytes": 3575,
+      "source_sha256": "c3c7e93afbdda26b879ccd853d2c60ecf52c9a6e3a8e6f6c9c444b7fa41761b5",
+      "target_sha256": "c3c7e93afbdda26b879ccd853d2c60ecf52c9a6e3a8e6f6c9c444b7fa41761b5",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\06_Vision.csv",
+      "bytes": 1572,
+      "source_sha256": "0b10259878587dd279f8a7e4d5a3777a6a10ae10dba64f8a14cc0cbb6e6b2239",
+      "target_sha256": "0b10259878587dd279f8a7e4d5a3777a6a10ae10dba64f8a14cc0cbb6e6b2239",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\07_Moderation.csv",
+      "bytes": 591,
+      "source_sha256": "fc7e58945fbc991a73f902430e4144c59b57b453182f0b05bf73e3430fc70924",
+      "target_sha256": "fc7e58945fbc991a73f902430e4144c59b57b453182f0b05bf73e3430fc70924",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\09_Source_Catalog.csv",
+      "bytes": 4405,
+      "source_sha256": "a58995977692dddd63297e77f0b03bbb4684856ad91ee0b7e6ecdbf9f3d46d3b",
+      "target_sha256": "a58995977692dddd63297e77f0b03bbb4684856ad91ee0b7e6ecdbf9f3d46d3b",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_csv\\10 Local Bench Results.csv",
+      "bytes": 40660,
+      "source_sha256": "95d6deec30bcd6fa2923254cc25c6306bf5a46a463115ccdeb1a7084fc1923e2",
+      "target_sha256": "95d6deec30bcd6fa2923254cc25c6306bf5a46a463115ccdeb1a7084fc1923e2",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_MODEL_QUALITY_ROSTER_generator.py",
+      "bytes": 85696,
+      "source_sha256": "522c0084fc45bc5025bcb94d5be16ebd5d5c3d16ee066262bc3bd432a09b202e",
+      "target_sha256": "522c0084fc45bc5025bcb94d5be16ebd5d5c3d16ee066262bc3bd432a09b202e",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_ORCHESTRATOR_SPEC_v4.0.md",
+      "bytes": 50427,
+      "source_sha256": "7237383d5b3df920e0fdb256d673358eed84a9aaf6963d21bef98fee281c65ab",
+      "target_sha256": "7237383d5b3df920e0fdb256d673358eed84a9aaf6963d21bef98fee281c65ab",
+      "matched": true
+    },
+    {
+      "relative_path": "AI_PROVIDER_MODEL_ROSTER_2026-06-07.md",
+      "bytes": 16653,
+      "source_sha256": "2f8bdc0f51d44d571a043d15ec84733fff27e0c8bb8b03add42185e3642d7244",
+      "target_sha256": "2f8bdc0f51d44d571a043d15ec84733fff27e0c8bb8b03add42185e3642d7244",
+      "matched": true
+    },
+    {
+      "relative_path": "archive\\AI_COMPLETE_MODEL_LIST_2026-06-06_SUPERSEDED_by_2026-06-07.md",
+      "bytes": 36529,
+      "source_sha256": "5e8e7a69088b0db0534ba1f62dc6e385e55eed9bbdf621ddd0c239c0b7e36281",
+      "target_sha256": "5e8e7a69088b0db0534ba1f62dc6e385e55eed9bbdf621ddd0c239c0b7e36281",
+      "matched": true
+    },
+    {
+      "relative_path": "archive\\AI_GOVERNOR_SPEC_2026-06-04_SUPERSEDED_by_v4.0.md",
+      "bytes": 29784,
+      "source_sha256": "1b73f005ee8a606dacf1a4f175ebb460e60f3e11c6a6a500149bab6b01c25eab",
+      "target_sha256": "1b73f005ee8a606dacf1a4f175ebb460e60f3e11c6a6a500149bab6b01c25eab",
+      "matched": true
+    },
+    {
+      "relative_path": "archive\\AI_PROVIDER_MODEL_ROSTER_2026-06-06_SUPERSEDED_by_2026-06-07.md",
+      "bytes": 22520,
+      "source_sha256": "5585b87971d8bb1b444965dad3b3dddd64785f5f633351b6a20ae7c371b0dddb",
+      "target_sha256": "5585b87971d8bb1b444965dad3b3dddd64785f5f633351b6a20ae7c371b0dddb",
+      "matched": true
+    },
+    {
+      "relative_path": "archive\\DELL_AI_MODEL_ROSTER_2026-06-04_SUPERSEDED_by_2026-06-06.md",
+      "bytes": 24988,
+      "source_sha256": "79e50699a5fd51d881917f85b933c8a45a21089ab2a49c7885eff702f17e2620",
+      "target_sha256": "79e50699a5fd51d881917f85b933c8a45a21089ab2a49c7885eff702f17e2620",
+      "matched": true
+    },
+    {
+      "relative_path": "archive\\MSI_AI_ROSTER_2026-06-04_SUPERSEDED_draft.md",
+      "bytes": 24819,
+      "source_sha256": "7ea22fcdde39931b8b14aae6e354db08906b7ad2b1ba7907359ac61af97f5b81",
+      "target_sha256": "7ea22fcdde39931b8b14aae6e354db08906b7ad2b1ba7907359ac61af97f5b81",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\local_all_smoke_20260607_163126.out.log",
+      "bytes": 1023,
+      "source_sha256": "4e57713dbe981e13be2b5b19e40b47770d380c669e358538493a614cb41662be",
+      "target_sha256": "4e57713dbe981e13be2b5b19e40b47770d380c669e358538493a614cb41662be",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\local_all_smoke_20260607_163126.pid",
+      "bytes": 7,
+      "source_sha256": "813c0f065afd56c34eb3ef45e3d5df0e3b8c9336f716b13761f01a42bc0b5049",
+      "target_sha256": "813c0f065afd56c34eb3ef45e3d5df0e3b8c9336f716b13761f01a42bc0b5049",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\local_ollama_benchmark_20260607_145302.jsonl",
+      "bytes": 514,
+      "source_sha256": "1a9f4884372536b63d945df58ccf1690228e7134b532483f0fba67b97dac2c4c",
+      "target_sha256": "1a9f4884372536b63d945df58ccf1690228e7134b532483f0fba67b97dac2c4c",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\local_ollama_benchmark_20260607_163127.jsonl",
+      "bytes": 10710,
+      "source_sha256": "d2a48472f956d38e9b4138ba972c83a237219bf83014dd97f23258195c2dc5e7",
+      "target_sha256": "d2a48472f956d38e9b4138ba972c83a237219bf83014dd97f23258195c2dc5e7",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\local_ollama_benchmark_20260607_163127_summary.json",
+      "bytes": 5983,
+      "source_sha256": "5fc114695ea9491f0d827dd51bdf4cc849d948be2d2bbb951e609b94f5e9978a",
+      "target_sha256": "5fc114695ea9491f0d827dd51bdf4cc849d948be2d2bbb951e609b94f5e9978a",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\operation_benchmark_20260607_151040.jsonl",
+      "bytes": 72668,
+      "source_sha256": "9f550528e88dd9cb9b8cabd944384aa85f4d43f876dfbe99d0c7b910db4cda75",
+      "target_sha256": "9f550528e88dd9cb9b8cabd944384aa85f4d43f876dfbe99d0c7b910db4cda75",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\operation_benchmark_20260607_151040_summary.json",
+      "bytes": 7812,
+      "source_sha256": "d83fcff0e225955dec0f6f2311b25e96966885b4782aa80ef62cf049ce3d30a9",
+      "target_sha256": "d83fcff0e225955dec0f6f2311b25e96966885b4782aa80ef62cf049ce3d30a9",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\operation_benchmark_20260607_162354.jsonl",
+      "bytes": 6334,
+      "source_sha256": "6e7957f88cc757e7cbb30775a5611fcd0035feb66ed9e6623f9ce19498e71d6c",
+      "target_sha256": "6e7957f88cc757e7cbb30775a5611fcd0035feb66ed9e6623f9ce19498e71d6c",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\operation_benchmark_20260607_162354_summary.json",
+      "bytes": 3809,
+      "source_sha256": "2b5482d179e93b8f74f9e41e53947e513f3bb4a8ec3fba8d81f26004f9d30437",
+      "target_sha256": "2b5482d179e93b8f74f9e41e53947e513f3bb4a8ec3fba8d81f26004f9d30437",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\operation_benchmark_20260607_162453.jsonl",
+      "bytes": 12980,
+      "source_sha256": "c91ceb1f3ec040d4ccf8210c4aa49103926c35626f47f56efc104f4440f16f91",
+      "target_sha256": "c91ceb1f3ec040d4ccf8210c4aa49103926c35626f47f56efc104f4440f16f91",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\operation_benchmark_20260607_162453_summary.json",
+      "bytes": 5576,
+      "source_sha256": "a0c0532c558b55f8cdb8359bd2e6e7b54e3da311d5f84783335795f937e66ef4",
+      "target_sha256": "a0c0532c558b55f8cdb8359bd2e6e7b54e3da311d5f84783335795f937e66ef4",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\operation_benchmark_20260607_162800.jsonl",
+      "bytes": 4951,
+      "source_sha256": "001e96b75ef8e6949307d34a0aa6e1aafef91edd4620b311a1f3b2ef6a34a046",
+      "target_sha256": "001e96b75ef8e6949307d34a0aa6e1aafef91edd4620b311a1f3b2ef6a34a046",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmark_results\\operation_benchmark_20260607_162800_summary.json",
+      "bytes": 3010,
+      "source_sha256": "53cea3d3a19ef4720401d631b8b483cb38506d3305b5232d644d3310ce27e985",
+      "target_sha256": "53cea3d3a19ef4720401d631b8b483cb38506d3305b5232d644d3310ce27e985",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmarks\\fixtures\\operations\\first_pack.json",
+      "bytes": 9672,
+      "source_sha256": "4ac0b973439fe23ebafece676d111d155cc2a12b246b863886626c535ea75133",
+      "target_sha256": "4ac0b973439fe23ebafece676d111d155cc2a12b246b863886626c535ea75133",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmarks\\manifest.json",
+      "bytes": 10862,
+      "source_sha256": "176def9f48e705bf2c403998454b3bdb280d30a8a8c55493a512421ea9b07f88",
+      "target_sha256": "176def9f48e705bf2c403998454b3bdb280d30a8a8c55493a512421ea9b07f88",
+      "matched": true
+    },
+    {
+      "relative_path": "benchmarks\\validators\\operation_validators.py",
+      "bytes": 7896,
+      "source_sha256": "ce472201b3971ee9dad83ed56d3ad839e2c542416612474f8f8aaf7d0a209c7a",
+      "target_sha256": "ce472201b3971ee9dad83ed56d3ad839e2c542416612474f8f8aaf7d0a209c7a",
+      "matched": true
+    },
+    {
+      "relative_path": "CURRENCY_VERIFICATION_SOP.md",
+      "bytes": 6612,
+      "source_sha256": "e83cffee88a4a4fa26635e3740fb9c7da872d504bb1868cc2c45ff9d0b04a8d8",
+      "target_sha256": "e83cffee88a4a4fa26635e3740fb9c7da872d504bb1868cc2c45ff9d0b04a8d8",
+      "matched": true
+    },
+    {
+      "relative_path": "orchestrator_contracts\\local_model_operation_scores_2026-06-07.json",
+      "bytes": 53355,
+      "source_sha256": "cdd24cc65835008de55f61c1d4cda97cb8fe9f0a964b9ca04d0bc35ad4583aed",
+      "target_sha256": "cdd24cc65835008de55f61c1d4cda97cb8fe9f0a964b9ca04d0bc35ad4583aed",
+      "matched": true
+    },
+    {
+      "relative_path": "roster_freshness_check.py",
+      "bytes": 3808,
+      "source_sha256": "530eac64e6743f3256bd6f2781f3d1ce6a337a6c484dd6610f0ca6cc290f4e94",
+      "target_sha256": "530eac64e6743f3256bd6f2781f3d1ce6a337a6c484dd6610f0ca6cc290f4e94",
+      "matched": true
+    },
+    {
+      "relative_path": "tools\\build_operation_score_contract.py",
+      "bytes": 8774,
+      "source_sha256": "ac7a5e6f96c45451df9fb8aa461f941c1e897035bda7a0240b66934c2aeced94",
+      "target_sha256": "ac7a5e6f96c45451df9fb8aa461f941c1e897035bda7a0240b66934c2aeced94",
+      "matched": true
+    },
+    {
+      "relative_path": "tools\\run_local_ollama_benchmarks.py",
+      "bytes": 10701,
+      "source_sha256": "941d4f1a3aff3dc0ce2f8029848393c322afb91af68b127d5da20e13652137f6",
+      "target_sha256": "941d4f1a3aff3dc0ce2f8029848393c322afb91af68b127d5da20e13652137f6",
+      "matched": true
+    },
+    {
+      "relative_path": "tools\\run_operation_benchmarks.py",
+      "bytes": 13150,
+      "source_sha256": "2572231758162e507c914d82a13f28c73832bd57c0011e7700ae15e2aa72e32d",
+      "target_sha256": "2572231758162e507c914d82a13f28c73832bd57c0011e7700ae15e2aa72e32d",
+      "matched": true
+    }
+  ]
+}

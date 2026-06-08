@@ -1,0 +1,9 @@
+routing:
+  allowed_adapters:
+    - gemini-cli
+  preferred_adapters:
+    - gemini-cli
+approval:
+  required_at: high
+output:
+  directory: ORCHESTRATOR_OUTPUT

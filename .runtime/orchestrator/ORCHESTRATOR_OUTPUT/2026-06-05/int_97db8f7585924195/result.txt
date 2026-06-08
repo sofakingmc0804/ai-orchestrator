@@ -1,0 +1,1 @@
+Live smoke test with a single query.

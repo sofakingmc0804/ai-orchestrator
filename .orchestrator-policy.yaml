@@ -1,0 +1,24 @@
+version: 1
+approval:
+  required_at: high
+routing:
+  allowed_adapters:
+    - ollama-http
+    - ollama-cli
+    - hermes-agent
+    - openclaw-gateway
+    - codex-cli
+    - codex-desktop
+  forbidden_adapters:
+    - claude-desktop-mcp
+    - claude-code-cli
+    - copilot-gh
+    - copilot-vscode
+    - gemini-cli
+  preferred_adapters:
+    - ollama-http
+    - ollama-cli
+output:
+  directory: ORCHESTRATOR_OUTPUT
+autopilot: disabled
+max_consequence: medium

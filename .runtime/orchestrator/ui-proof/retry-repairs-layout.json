@@ -1,0 +1,116 @@
+[
+  {
+    "viewport": "desktop",
+    "screenshot": "C:\\Users\\Couch\\.orchestrator\\ui-proof\\retry-repairs-desktop.png",
+    "boxes": [
+      {
+        "id": "repair-services",
+        "text": "Repair Services",
+        "x": 1005.625,
+        "y": 28,
+        "w": 128.046875,
+        "h": 33
+      },
+      {
+        "id": "retry-repairs",
+        "text": "Retry Repairs",
+        "x": 1143.671875,
+        "y": 28,
+        "w": 114.6875,
+        "h": 33
+      },
+      {
+        "id": "refresh",
+        "text": "Refresh",
+        "x": 1268.359375,
+        "y": 28,
+        "w": 77.640625,
+        "h": 33
+      },
+      {
+        "id": "proof-adapter",
+        "text": "claude-code-cliclaude-desktop-mcpcodex-clicodex-desktopcopilot-ghcopilot-vscodegemini-clihermes-agentlm-studioollama-cliollama-httpopenclaw-gatewaysynthetic-test-service",
+        "x": 20,
+        "y": 180.5,
+        "w": 295.78125,
+        "h": 45
+      },
+      {
+        "id": "proof-capability",
+        "text": "agentic_workcode_repairdocument_reviewlong_context_reasoningrepo_analysis",
+        "x": 325.78125,
+        "y": 180.5,
+        "w": 295.796875,
+        "h": 45
+      },
+      {
+        "id": "prove-adapter",
+        "text": "Prove Adapter",
+        "x": 1227.359375,
+        "y": 186.5,
+        "w": 118.640625,
+        "h": 33
+      }
+    ],
+    "overlaps": [],
+    "bodyWidth": 1366,
+    "viewportWidth": 1366
+  },
+  {
+    "viewport": "mobile",
+    "screenshot": "C:\\Users\\Couch\\.orchestrator\\ui-proof\\retry-repairs-mobile.png",
+    "boxes": [
+      {
+        "id": "repair-services",
+        "text": "Repair Services",
+        "x": 241.953125,
+        "y": 192,
+        "w": 128.046875,
+        "h": 33
+      },
+      {
+        "id": "retry-repairs",
+        "text": "Retry Repairs",
+        "x": 255.3125,
+        "y": 235,
+        "w": 114.6875,
+        "h": 33
+      },
+      {
+        "id": "refresh",
+        "text": "Refresh",
+        "x": 292.359375,
+        "y": 278,
+        "w": 77.640625,
+        "h": 33
+      },
+      {
+        "id": "proof-adapter",
+        "text": "claude-code-cliclaude-desktop-mcpcodex-clicodex-desktopcopilot-ghcopilot-vscodegemini-clihermes-agentlm-studioollama-cliollama-httpopenclaw-gatewaysynthetic-test-service",
+        "x": 20,
+        "y": 464,
+        "w": 350,
+        "h": 45
+      },
+      {
+        "id": "proof-capability",
+        "text": "agentic_workcode_repairdocument_reviewlong_context_reasoningrepo_analysis",
+        "x": 20,
+        "y": 519,
+        "w": 350,
+        "h": 45
+      },
+      {
+        "id": "prove-adapter",
+        "text": "Prove Adapter",
+        "x": 20,
+        "y": 685,
+        "w": 350,
+        "h": 33
+      }
+    ],
+    "overlaps": [],
+    "bodyWidth": 390,
+    "viewportWidth": 390
+  }
+]

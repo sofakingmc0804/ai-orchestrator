@@ -1,0 +1,13 @@
+To: owner@example.com
+From: ai-orchestrator@local
+Subject: [approval_request] machine: Approval needed
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+Intent int_1a0fe78048b7457a requires approval before external or high-consequ=
+ence action.
+
+notification_id=3Dntf_9820d1f7d89a
+intent_id=3Dint_1a0fe78048b7457a
+delivery_mode=3Dlocal_draft_only

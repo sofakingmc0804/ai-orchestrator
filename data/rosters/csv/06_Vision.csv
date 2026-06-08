@@ -1,0 +1,8 @@
+Model ID,Model Name,Provider,Status,Routing Surface,Surface Type,Auth on Dell,Billing Class,Runs Local,OCR Accuracy,Doc Understanding,Layout/Chart,Extraction,Speed,Cost-Efficiency,OVERALL ★,Subtype,Notes,Confidence,Sources,Last Verified
+ocr-3-25-12,Mistral OCR 3,Mistral,Current,Mistral API,HTTP API,Not-keyed,metered (not configured),No,8.6,8.0,8.2,8.0,8.0,8.0,8.1,document OCR,,M,Mistral OCR latest,2026-06-07
+glm-ocr,GLM-OCR (local),Zhipu AI,Current,Ollama (local),Local,Running (free),local_free,Yes,8.0,7.6,7.8,7.6,7.0,9.6,7.9,document OCR,local,L,Local OCR on Dell,2026-06-07
+deepseek-vl2,DeepSeek VL2,DeepSeek,Current,DeepSeek API,HTTP API,Not-keyed,metered (not configured),No,7.8,7.8,7.6,7.6,7.0,9.0,7.8,vision-language,,L,Doc understanding/OCR,2026-06-07
+qwen2.5vl:3b,Qwen2.5 VL 3B (local),Alibaba,Current,Ollama (local),Local,Running (free),local_free,Yes,7.4,7.0,7.0,7.2,7.5,9.6,7.6,vision-language,local,L,Local VL on Dell,2026-06-07
+qwen3-vl:2b,Qwen3 VL 2B (local),Alibaba,Current,Ollama (local),Local,Running (free),local_free,Yes,7.2,6.8,6.8,7.0,7.8,9.7,7.5,vision-language,local,L,Local VL on Dell,2026-06-07
+nuextract,NuExtract (local),NuMind,Current,Ollama (local),Local,Running (free),local_free,Yes,6.5,6.0,5.5,8.4,8.0,9.6,7.3,structured extraction,local,L,Local structured extraction,2026-06-07
+twelvelabs.pegasus-1-v1:0,TwelveLabs Pegasus 1,TwelveLabs,Current,Amazon Bedrock (Kiro),Aggregator,Installed; login unverified,metered (not configured),No,0.0,8.2,7.5,7.8,7.0,6.5,6.2,video understanding,,L,Bedrock video understanding,2026-06-07

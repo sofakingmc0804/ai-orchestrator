@@ -1,0 +1,23 @@
+{
+  "intent": {
+    "id": "int_f923bf98e3a44ce0",
+    "source": "chat",
+    "raw_text": "classify this local repair-resolution check",
+    "parsed_payload": {
+      "verb": "classify",
+      "required_capability": "classify_text",
+      "constraints": [],
+      "deadline": null,
+      "ambiguous": false
+    },
+    "project_id": null,
+    "selections": [],
+    "consequence_tier": "medium",
+    "state": "pending",
+    "created_at": "2026-06-05T21:34:43.299442Z"
+  },
+  "dispatch_id": "dsp_457ca23b9192414b",
+  "expected_output_shape": "text",
+  "consequence_tier": "medium",
+  "project_policy": {}
+}

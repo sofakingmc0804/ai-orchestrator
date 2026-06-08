@@ -1,0 +1,3 @@
+Model ID,Model Name,Provider,Status,Routing Surface,Surface Type,Auth on Dell,Billing Class,Runs Local,Accuracy,Coverage (text/img),Latency,Cost-Efficiency,OVERALL ★,Coverage,Notes,Confidence,Sources,Last Verified
+omni-moderation-latest,Omni Moderation,OpenAI,Current,OpenAI API,HTTP API,No standalone key,metered (not configured),No,8.4,9.0,9.0,9.5,9.0,text+image,,M,OpenAI omni moderation (free),2026-06-07
+mistral-moderation-26-03,Mistral Moderation,Mistral,Current,Mistral API,HTTP API,Not-keyed,metered (not configured),No,8.0,7.0,8.8,9.0,8.2,text,,L,Mistral moderation,2026-06-07

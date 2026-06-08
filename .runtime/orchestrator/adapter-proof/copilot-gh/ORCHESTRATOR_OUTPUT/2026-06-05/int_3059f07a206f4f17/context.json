@@ -1,0 +1,34 @@
+{
+  "intent": {
+    "id": "int_3059f07a206f4f17",
+    "source": "chat",
+    "raw_text": "code proof: reply exactly copilot cli adapter proof",
+    "parsed_payload": {
+      "verb": "code",
+      "required_capability": "code_repair",
+      "constraints": [],
+      "deadline": null,
+      "ambiguous": false
+    },
+    "project_id": "proj_copilot_gh_2aec73419f",
+    "selections": [],
+    "consequence_tier": "low",
+    "state": "pending",
+    "created_at": "2026-06-05T22:24:48.139348Z"
+  },
+  "dispatch_id": "dsp_bd1a62b7bf244ef9",
+  "expected_output_shape": "text",
+  "consequence_tier": "low",
+  "project_policy": {
+    "policy_file_path": "C:\\Users\\Couch\\.orchestrator\\adapter-proof\\copilot-gh\\.orchestrator-policy.yaml",
+    "allowed_adapters": [
+      "copilot-gh"
+    ],
+    "forbidden_adapters": [],
+    "preferred_adapters": [
+      "copilot-gh"
+    ],
+    "approval_required_at": "high",
+    "output_dir": "ORCHESTRATOR_OUTPUT"
+  }
+}

@@ -1,0 +1,32 @@
+[project]
+name = "ai-orchestrator"
+version = "0.1.0"
+description = "Standalone AI operating layer and orchestrator for local and subscription-backed AI services."
+requires-python = ">=3.13"
+dependencies = [
+  "aiosqlite",
+  "fastapi",
+  "httpx",
+  "psutil",
+  "pydantic",
+  "PyYAML",
+  "uvicorn",
+  "watchdog",
+]
+
+[project.scripts]
+orchestrator = "orchestrator.cli.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.13"
+strict = false
+warn_unused_ignores = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = ["psutil", "yaml"]
+ignore_missing_imports = true

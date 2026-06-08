@@ -1,0 +1,9 @@
+adapter: lm-studio
+service_group: local_models
+billing_class: local_resource
+provider: lm_studio
+latency_band: medium
+consequence_max: medium
+capabilities:
+  - id: local_chat
+  - id: embeddings

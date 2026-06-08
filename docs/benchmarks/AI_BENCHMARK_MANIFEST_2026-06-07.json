@@ -1,0 +1,331 @@
+{
+  "generated_date": "2026-06-07",
+  "consumer": "AI Orchestrator model router and local benchmark harness",
+  "machine": {
+    "name": "Dell Inspiron 7706 2n1",
+    "cpu": "Intel i7-1165G7",
+    "cores": 4,
+    "logical_processors": 8,
+    "ram_bytes": 68432994304,
+    "gpu": "NVIDIA GeForce MX350",
+    "gpu_adapter_ram_bytes": 2147483648
+  },
+  "projects": [
+    {
+      "project_id": "ai_orchestrator",
+      "path": "C:\\Users\\Couch\\Documents\\Claude\\Projects\\Home of Claude - MSI Auto Project",
+      "ai_must_do": [
+        "maintain model roster",
+        "build adapter and routing specs",
+        "benchmark model capability contracts",
+        "produce workbook/csv/markdown artifacts"
+      ],
+      "proof": [
+        "freshness check",
+        "stale-name guard",
+        "workbook/csv shape checks",
+        "local model smoke tests"
+      ]
+    },
+    {
+      "project_id": "example_rebuild",
+      "path": "C:\\Users\\Couch\\example-rebuild",
+      "ai_must_do": [
+        "route-first business automation execution",
+        "QuickBooks proof handling",
+        "scheduler governance",
+        "repo repair",
+        "automation deletion or rebuild"
+      ],
+      "proof": [
+        "script exit code",
+        "receipt file",
+        "scheduler diff",
+        "dist\\quickbooks\\latest proof",
+        "tests"
+      ]
+    },
+    {
+      "project_id": "personal_gig_resume",
+      "path": "C:\\Users\\Couch\\Documents\\Resumes",
+      "ai_must_do": [
+        "build public buyer-facing packets",
+        "preflight pdf and docx assets",
+        "classify opportunities",
+        "draft controlled profile and application language",
+        "enforce public content law"
+      ],
+      "proof": [
+        "preflight pass",
+        "banned-language scan",
+        "hidden-text scan",
+        "route validation",
+        "exact outbound artifact path"
+      ]
+    },
+    {
+      "project_id": "example_website",
+      "path": "D:\\SharedRoot\\Workspace\\Website Domain and Hosting",
+      "ai_must_do": [
+        "website copy",
+        "seo and query evidence",
+        "wordpress or api governed edits",
+        "source-backed client and business content",
+        "no-touch external authority routing"
+      ],
+      "proof": [
+        "build/test output",
+        "source citations",
+        "connector or api proof",
+        "operator packet when no no-touch route exists"
+      ]
+    },
+    {
+      "project_id": "retropie_bench",
+      "path": "C:\\Users\\Couch\\RetroPieBench",
+      "ai_must_do": [
+        "diagnose appliance behavior",
+        "build change packs",
+        "preserve runtime evidence",
+        "reason over hdmi audio controller and runcommand state"
+      ],
+      "proof": [
+        "change pack",
+        "live pi proof when available",
+        "report log",
+        "durable versus transient state separation"
+      ]
+    },
+    {
+      "project_id": "raspberry_pi_industrial",
+      "path": "D:\\SharedRoot\\Raspberry Pi Projects",
+      "ai_must_do": [
+        "maintain component knowledge",
+        "produce build packets",
+        "verify ifm wiring and source evidence",
+        "support pi 5 bringup",
+        "support industrial-control platform and business-value review board"
+      ],
+      "proof": [
+        "official source link",
+        "local lab evidence",
+        "build packet",
+        "sop receipt",
+        "validation script",
+        "topology-level acceptance test"
+      ]
+    }
+  ],
+  "benchmark_domains": [
+    "full_business_operations",
+    "role_based_task_execution",
+    "language_reasoning",
+    "regex_pattern_creation",
+    "local_runtime_adapter",
+    "code_repair",
+    "repo_comprehension",
+    "structured_extraction",
+    "public_content_law",
+    "financial_operations",
+    "market_forecasting_backtest",
+    "data_analytics_kpi_diagnostics",
+    "conceptualization_strategy",
+    "spreadsheet_workbook",
+    "browser_no_touch_routing",
+    "web_research_source_authority",
+    "email_communication",
+    "image_generation_judging",
+    "video_generation_judging",
+    "computer_control_app_use",
+    "model_to_model_orchestration",
+    "multi_agent_decomposition",
+    "memory_context_management",
+    "compliance_policy",
+    "hardware_diagnosis",
+    "operations_scheduler_governance",
+    "retrieval_embedding",
+    "vision_ocr_document",
+    "long_context_synthesis"
+  ],
+  "operation_domains": [
+    {
+      "domain_id": "full_business_operations",
+      "description": "Execute business operating tasks across receipts, schedules, accounting proof, inbox/source packets, and open-loop project state.",
+      "deterministic_validators": [
+        "authority surface selected",
+        "consumer named",
+        "receipt path specified",
+        "terminal state valid",
+        "no status-only close"
+      ]
+    },
+    {
+      "domain_id": "role_based_task_execution",
+      "description": "Perform bounded finance, admin, compliance, sales, website, hardware, and code roles without role theater or authority overreach.",
+      "deterministic_validators": [
+        "role boundary respected",
+        "forbidden substitutes absent",
+        "action maps to role authority",
+        "completion test named"
+      ]
+    },
+    {
+      "domain_id": "language_reasoning",
+      "description": "Classify intent, preserve constraints, resolve ambiguity, compress context, and write in the required voice.",
+      "deterministic_validators": [
+        "required constraints present",
+        "contradictions flagged",
+        "banned phrases absent",
+        "claim-to-evidence fields present"
+      ]
+    },
+    {
+      "domain_id": "regex_pattern_creation",
+      "description": "Create safe regex and language-pattern detectors for logs, filenames, receipts, model IDs, hidden text, and public-content law.",
+      "deterministic_validators": [
+        "match fixtures pass",
+        "non-match fixtures pass",
+        "timeout guard pass",
+        "target runtime compatibility"
+      ]
+    },
+    {
+      "domain_id": "financial_operations",
+      "description": "Reconcile finance packets, QuickBooks proof, receipts, totals, and missing-authority cases.",
+      "deterministic_validators": [
+        "numeric totals reconcile",
+        "missing proof flagged",
+        "no fabricated account facts",
+        "audit receipt present"
+      ]
+    },
+    {
+      "domain_id": "market_forecasting_backtest",
+      "description": "Evaluate historical market prediction discipline using cutoff-safe holdouts, calibration, uncertainty, and risk handling.",
+      "deterministic_validators": [
+        "no future-data leakage",
+        "calibration score recorded",
+        "risk/drawdown noted",
+        "uncertainty stated",
+        "no deterministic future claim"
+      ]
+    },
+    {
+      "domain_id": "conceptualization_strategy",
+      "description": "Generate constrained concepts, offers, product directions, build packets, and decision matrices with a usable road through.",
+      "deterministic_validators": [
+        "all constraints addressed",
+        "infeasible options rejected",
+        "decision matrix complete",
+        "next action executable"
+      ]
+    },
+    {
+      "domain_id": "image_generation_judging",
+      "description": "Generate or judge images for website, proof assets, profiles, diagrams, and product concepts.",
+      "deterministic_validators": [
+        "prompt requirements present",
+        "OCR/text check where applicable",
+        "object/scene check where applicable",
+        "artifact path recorded",
+        "human-review queue for subjective fit"
+      ]
+    },
+    {
+      "domain_id": "video_generation_judging",
+      "description": "Generate or judge short videos, demos, walkthroughs, proof reels, and product concept clips.",
+      "deterministic_validators": [
+        "duration/aspect valid",
+        "key-frame checks pass",
+        "temporal requirements checked",
+        "artifact path recorded",
+        "human-review queue for subjective fit"
+      ]
+    },
+    {
+      "domain_id": "computer_control_app_use",
+      "description": "Choose allowed app surfaces: connectors, APIs, CLIs, exports, headless/isolated browser, leased browser scope, or operator packet.",
+      "deterministic_validators": [
+        "visible desktop route absent",
+        "allowed surface selected",
+        "stop condition named",
+        "operator packet produced when no safe surface exists"
+      ]
+    },
+    {
+      "domain_id": "model_to_model_orchestration",
+      "description": "Route tasks between worker, judge, verifier, media, OCR, embedding, and fallback models.",
+      "deterministic_validators": [
+        "model assignment fits capability",
+        "fallback path valid",
+        "judge/worker result merged",
+        "final artifact passes validator"
+      ]
+    },
+    {
+      "domain_id": "multi_agent_decomposition",
+      "description": "Split independent work into a safe task graph, manage dependencies, merge results, and detect conflicts.",
+      "deterministic_validators": [
+        "DAG matches answer key",
+        "no duplicate mutation",
+        "dependency trap flagged",
+        "merge conflict handled"
+      ]
+    },
+    {
+      "domain_id": "memory_context_management",
+      "description": "Use prior context only when relevant, refresh drift-prone facts, and separate memory from live authority.",
+      "deterministic_validators": [
+        "relevant memory selected",
+        "stale memory rejected or refreshed",
+        "authority hierarchy correct",
+        "citation/verification fields present"
+      ]
+    },
+    {
+      "domain_id": "compliance_policy",
+      "description": "Enforce no-desktop law, public-content law, connected-app authorization, financial/legal caution, and terminal-state rules.",
+      "deterministic_validators": [
+        "forbidden route absent",
+        "approval boundary stated",
+        "repair/alternate path present",
+        "valid terminal state"
+      ]
+    }
+  ],
+  "first_benchmark_pack": [
+    "BENCH-LOCAL-001",
+    "BENCH-LOCAL-002",
+    "BENCH-ROSTER-001",
+    "BENCH-VOICE-001",
+    "BENCH-ROUTE-001",
+    "BENCH-PI-001",
+    "BENCH-RETRO-001",
+    "BENCH-RESUME-001",
+    "BENCH-EMBED-001",
+    "BENCH-DOC-001",
+    "BENCH-BIZOPS-001",
+    "BENCH-ROLE-001",
+    "BENCH-REGEX-001",
+    "BENCH-FINOPS-001",
+    "BENCH-MARKET-001",
+    "BENCH-KPI-001",
+    "BENCH-CONCEPT-001",
+    "BENCH-IMAGE-001",
+    "BENCH-VIDEO-001",
+    "BENCH-CONTROL-001",
+    "BENCH-ORCH-001",
+    "BENCH-MULTIAGENT-001",
+    "BENCH-MEMORY-001",
+    "BENCH-POLICY-001"
+  ],
+  "determinism_controls": {
+    "temperature": 0,
+    "stream": false,
+    "local_trials": 3,
+    "subscription_trials_default": 1,
+    "separate_cold_and_warm_runs": true,
+    "mutating_tests_use_disposable_copy": true,
+    "visible_desktop_control_allowed": false
+  }
+}

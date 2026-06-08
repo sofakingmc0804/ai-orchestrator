@@ -1,0 +1,10 @@
+adapter: codex-desktop
+service_group: cloud_clients
+billing_class: subscription_quota
+provider: codex
+latency_band: medium
+consequence_max: high
+capabilities:
+  - id: code_repair
+  - id: repo_analysis
+  - id: agentic_work

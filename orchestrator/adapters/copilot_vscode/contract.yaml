@@ -1,0 +1,11 @@
+adapter: copilot-vscode
+service_group: cloud_clients
+billing_class: subscription_quota
+provider: github_copilot
+latency_band: medium
+consequence_max: medium
+capabilities:
+  - id: code_completion
+  - id: code_review
+  - id: coding_chat
+  - id: code_repair

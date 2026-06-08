@@ -1,0 +1,10 @@
+adapter: openclaw-gateway
+service_group: agent_hosts
+billing_class: local_resource
+provider: openclaw
+latency_band: slow
+consequence_max: medium
+capabilities:
+  - id: agentic_work
+  - id: model_gateway
+  - id: local_chat

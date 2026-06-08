@@ -1,0 +1,460 @@
+{
+  "models": [
+    {
+      "capabilities": [
+        "ocr",
+        "vision",
+        "document_intake",
+        "tools"
+      ],
+      "context_tokens": 131072,
+      "failure_risk": "low",
+      "latency": "fast",
+      "model_id": "glm-ocr:latest",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "ocr",
+        "document_intake"
+      ]
+    },
+    {
+      "capabilities": [
+        "embedding",
+        "search"
+      ],
+      "context_tokens": 8192,
+      "failure_risk": "low",
+      "latency": "fast",
+      "model_id": "nomic-embed-text:latest",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "embedding",
+        "search"
+      ]
+    },
+    {
+      "capabilities": [
+        "embedding",
+        "search",
+        "thinking"
+      ],
+      "context_tokens": 32768,
+      "failure_risk": "low",
+      "latency": "fast",
+      "model_id": "qwen3-embedding:0.6b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "embedding",
+        "search"
+      ]
+    },
+    {
+      "capabilities": [
+        "embedding",
+        "search",
+        "tools"
+      ],
+      "context_tokens": 40960,
+      "failure_risk": "low",
+      "latency": "medium",
+      "model_id": "qwen3-embedding:4b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "embedding",
+        "search"
+      ]
+    },
+    {
+      "capabilities": [
+        "classification",
+        "routing",
+        "tools"
+      ],
+      "context_tokens": 32768,
+      "failure_risk": "medium",
+      "latency": "very_fast",
+      "model_id": "qwen2.5:0.5b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "classification",
+        "routing"
+      ]
+    },
+    {
+      "capabilities": [
+        "classification",
+        "routing",
+        "vision",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 262144,
+      "failure_risk": "medium",
+      "latency": "very_fast",
+      "model_id": "qwen3.5:0.8b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "classification",
+        "routing"
+      ]
+    },
+    {
+      "capabilities": [
+        "classification",
+        "routing",
+        "general",
+        "vision",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 262144,
+      "failure_risk": "low",
+      "latency": "fast",
+      "model_id": "qwen3.5:4b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "classification",
+        "routing",
+        "general"
+      ]
+    },
+    {
+      "capabilities": [
+        "classification",
+        "routing",
+        "general",
+        "drafting",
+        "vision",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 262144,
+      "failure_risk": "low",
+      "latency": "medium",
+      "model_id": "qwen3.5:9b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "general",
+        "drafting",
+        "classification"
+      ]
+    },
+    {
+      "capabilities": [
+        "general",
+        "reasoning",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 40960,
+      "failure_risk": "low",
+      "latency": "medium",
+      "model_id": "qwen3:8b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "general",
+        "validation"
+      ]
+    },
+    {
+      "capabilities": [
+        "general",
+        "vision",
+        "tools",
+        "document_intake"
+      ],
+      "context_tokens": 262144,
+      "failure_risk": "low",
+      "latency": "medium",
+      "model_id": "ministral-3:8b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "general",
+        "document_intake"
+      ]
+    },
+    {
+      "capabilities": [
+        "vision",
+        "document_intake",
+        "ocr"
+      ],
+      "context_tokens": 128000,
+      "failure_risk": "low",
+      "latency": "fast",
+      "model_id": "qwen2.5vl:3b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "ocr",
+        "document_intake"
+      ]
+    },
+    {
+      "capabilities": [
+        "vision",
+        "audio",
+        "document_intake",
+        "ocr",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 131072,
+      "failure_risk": "medium",
+      "latency": "fast",
+      "model_id": "gemma4:e2b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "ocr",
+        "document_intake",
+        "general"
+      ]
+    },
+    {
+      "capabilities": [
+        "vision",
+        "audio",
+        "document_intake",
+        "ocr",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 131072,
+      "failure_risk": "medium",
+      "latency": "medium",
+      "model_id": "gemma4:e4b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "ocr",
+        "document_intake",
+        "general"
+      ]
+    },
+    {
+      "capabilities": [
+        "coding",
+        "insert",
+        "tools"
+      ],
+      "context_tokens": 32768,
+      "failure_risk": "low",
+      "latency": "medium",
+      "model_id": "qwen2.5-coder:7b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "coding",
+        "code_edit"
+      ]
+    },
+    {
+      "capabilities": [
+        "coding",
+        "code_review",
+        "insert"
+      ],
+      "context_tokens": 163840,
+      "failure_risk": "low",
+      "latency": "slow",
+      "model_id": "deepseek-coder-v2:latest",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "coding",
+        "code_review"
+      ]
+    },
+    {
+      "capabilities": [
+        "reasoning",
+        "math",
+        "validation",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 131072,
+      "failure_risk": "low",
+      "latency": "medium",
+      "model_id": "deepseek-r1:8b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_only",
+      "runtime": "ollama",
+      "task_fit": [
+        "reasoning",
+        "validation"
+      ]
+    },
+    {
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "general",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 131072,
+      "failure_risk": "medium",
+      "latency": "slow",
+      "model_id": "gpt-oss:20b",
+      "privacy_level": "local",
+      "provider_id": "ollama-local",
+      "quota_burn": "hardware_heavy",
+      "runtime": "ollama",
+      "task_fit": [
+        "reasoning",
+        "coding",
+        "general"
+      ]
+    },
+    {
+      "capabilities": [
+        "coding",
+        "code_review",
+        "reasoning",
+        "agentic"
+      ],
+      "context_tokens": 128000,
+      "failure_risk": "quota_sensitive",
+      "latency": "fast",
+      "model_id": "github-copilot",
+      "privacy_level": "account_cloud",
+      "provider_id": "github-copilot",
+      "quota_burn": "premium_interaction",
+      "runtime": "copilot",
+      "task_fit": [
+        "coding",
+        "code_review",
+        "architecture"
+      ]
+    },
+    {
+      "capabilities": [
+        "coding",
+        "agentic",
+        "reasoning",
+        "tools"
+      ],
+      "context_tokens": 272000,
+      "failure_risk": "quota_sensitive",
+      "latency": "medium",
+      "model_id": "codex-account",
+      "privacy_level": "account_cloud",
+      "provider_id": "codex-chatgpt",
+      "quota_burn": "plan_limited",
+      "runtime": "codex",
+      "task_fit": [
+        "coding",
+        "architecture",
+        "repair"
+      ]
+    },
+    {
+      "capabilities": [
+        "architecture",
+        "reasoning",
+        "coding",
+        "critique",
+        "vision"
+      ],
+      "context_tokens": 200000,
+      "failure_risk": "quota_sensitive",
+      "latency": "medium",
+      "model_id": "claude-max-sonnet-opus",
+      "privacy_level": "account_cloud",
+      "provider_id": "claude-max",
+      "quota_burn": "plan_limited",
+      "runtime": "claude",
+      "task_fit": [
+        "architecture",
+        "critique",
+        "code_review"
+      ]
+    },
+    {
+      "capabilities": [
+        "reasoning",
+        "coding",
+        "agentic",
+        "tools",
+        "thinking"
+      ],
+      "context_tokens": 202752,
+      "failure_risk": "quota_sensitive",
+      "latency": "slow",
+      "model_id": "glm-5.1:cloud",
+      "privacy_level": "account_cloud",
+      "provider_id": "ollama-cloud",
+      "quota_burn": "cloud_quota",
+      "runtime": "ollama",
+      "task_fit": [
+        "architecture",
+        "reasoning",
+        "coding"
+      ]
+    },
+    {
+      "capabilities": [
+        "coding",
+        "agentic",
+        "tools"
+      ],
+      "context_tokens": 262144,
+      "failure_risk": "quota_sensitive",
+      "latency": "medium",
+      "model_id": "qwen3-coder-next:cloud",
+      "privacy_level": "account_cloud",
+      "provider_id": "ollama-cloud",
+      "quota_burn": "cloud_quota",
+      "runtime": "ollama",
+      "task_fit": [
+        "coding",
+        "code_review"
+      ]
+    }
+  ],
+  "source": "C:\\Users\\Couch\\AI_PLATFORM_ROSTER_2026-06-05.md",
+  "updated_at": "2026-06-05T04:06:35.688777Z"
+}

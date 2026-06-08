@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-06-08T00:11:17.811974+00:00",
+  "repo": "C:\\Users\\Couch\\dev\\ai-orchestrator",
+  "sources": {
+    "orchestrator_runtime": "C:\\Users\\Couch\\.orchestrator",
+    "resource_governor": "C:\\Users\\Couch\\.ai-resource-governor",
+    "spec_v4": "C:\\Users\\Couch\\Downloads\\AI_ORCHESTRATOR_SPEC_v4.0.md",
+    "agents": "C:\\Users\\Couch\\AGENTS.md"
+  },
+  "destinations": {
+    "orchestrator_runtime": "C:\\Users\\Couch\\dev\\ai-orchestrator\\.runtime\\orchestrator",
+    "resource_governor": "C:\\Users\\Couch\\dev\\ai-orchestrator\\.runtime\\ai-resource-governor",
+    "spec_v4": "C:\\Users\\Couch\\dev\\ai-orchestrator\\docs\\specs\\AI_ORCHESTRATOR_SPEC_v4.0.md",
+    "agents": "C:\\Users\\Couch\\dev\\ai-orchestrator\\AGENTS.md"
+  },
+  "destination_counts": {
+    "orchestrator_runtime": {
+      "files": 149,
+      "bytes": 99741823
+    },
+    "resource_governor": {
+      "files": 598,
+      "bytes": 1288858
+    },
+    "spec_v4": {
+      "files": 1,
+      "bytes": 49969
+    },
+    "agents": {
+      "files": 1,
+      "bytes": 3672
+    }
+  },
+  "sqlite_backup_method": "Python sqlite3 Connection.backup for state.sqlite and inventory.sqlite",
+  "legacy_sources_preserved": true,
+  "runtime_defaults": {
+    "ORCHESTRATOR_HOME": "C:\\Users\\Couch\\dev\\ai-orchestrator\\.runtime\\orchestrator",
+    "AI_RESOURCE_GOVERNOR_HOME": "C:\\Users\\Couch\\dev\\ai-orchestrator\\.runtime\\ai-resource-governor"
+  }
+}

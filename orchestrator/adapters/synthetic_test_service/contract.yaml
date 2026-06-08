@@ -1,0 +1,8 @@
+adapter: synthetic-test-service
+service_group: test
+billing_class: local_resource
+provider: synthetic
+latency_band: fast
+consequence_max: low
+capabilities:
+  - id: synthetic_echo

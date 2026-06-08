@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Orchestrator</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>AI Orchestrator</h1>
+      <div class="header-actions">
+        <button id="benchmark-latency">Benchmark</button>
+        <button id="notify-once">Notify Once</button>
+        <button id="run-scheduler">Run Scheduler</button>
+        <button id="migrate-legacy-scheduler">Migrate Legacy</button>
+        <button id="repair-services">Repair Services</button>
+        <button id="retry-repairs">Retry Repairs</button>
+        <button id="refresh">Refresh</button>
+      </div>
+    </header>
+    <section class="command">
+      <textarea id="intent" placeholder="Type work for the Orchestrator"></textarea>
+      <button id="dispatch">Dispatch</button>
+    </section>
+    <section class="adapter-proof">
+      <select id="proof-adapter"></select>
+      <select id="proof-capability"></select>
+      <input id="proof-prompt" value="Adapter proof: answer OK only.">
+      <label class="check"><input id="proof-allow-subscription" type="checkbox"> allow subscription</label>
+      <button id="prove-adapter">Prove Adapter</button>
+    </section>
+    <section class="intake">
+      <div id="dropzone" class="dropzone">
+        <strong>Selection Queue</strong>
+        <span>Drop files here, or add a path below.</span>
+      </div>
+      <div class="path-add">
+        <input id="selection-path" placeholder="C:\path\to\file-or-folder">
+        <select id="selection-kind">
+          <option value="file">file</option>
+          <option value="folder">folder</option>
+          <option value="url">url</option>
+          <option value="text">text</option>
+        </select>
+        <button id="add-selection">Add</button>
+        <button id="autopilot-scan">Scan</button>
+      </div>
+    </section>
+    <section class="grid">
+      <article>
+        <h2>Selections</h2>
+        <div id="selections"></div>
+      </article>
+      <article>
+        <h2>Approvals</h2>
+        <div id="approvals"></div>
+      </article>
+      <article>
+        <h2>Services</h2>
+        <div id="services"></div>
+      </article>
+      <article>
+        <h2>Capabilities</h2>
+        <div id="capabilities"></div>
+      </article>
+      <article>
+        <h2>Spec Status</h2>
+        <div id="spec-status"></div>
+      </article>
+      <article>
+        <h2>Projects</h2>
+        <div id="projects"></div>
+      </article>
+      <article>
+        <h2>Auth / Quota</h2>
+        <pre id="auth"></pre>
+      </article>
+      <article>
+        <h2>Quota Ledger</h2>
+        <div id="quota-ledger"></div>
+      </article>
+      <article>
+        <h2>Quota State</h2>
+        <div id="quota-state"></div>
+      </article>
+      <article>
+        <h2>Repair Queue</h2>
+        <div id="repair-queue"></div>
+      </article>
+      <article>
+        <h2>Last Dispatch</h2>
+        <pre id="result"></pre>
+      </article>
+      <article>
+        <h2>Activity</h2>
+        <div id="activity"></div>
+      </article>
+      <article>
+        <h2>Dispatches</h2>
+        <div id="dispatches"></div>
+      </article>
+      <article>
+        <h2>Attempts</h2>
+        <div id="dispatch-attempts"></div>
+      </article>
+      <article>
+        <h2>Standing Orders</h2>
+        <div id="standing-orders"></div>
+      </article>
+      <article>
+        <h2>Scheduler Tasks</h2>
+        <div class="task-add">
+          <input id="scheduler-task-id" placeholder="task id">
+          <input id="scheduler-name" placeholder="name">
+          <input id="scheduler-folder" placeholder="C:\path\to\watched-folder">
+          <input id="scheduler-interval" type="number" min="0" step="60" placeholder="interval seconds">
+          <label class="check"><input id="scheduler-enabled" type="checkbox"> enabled</label>
+          <button id="save-scheduler-task">Save</button>
+        </div>
+        <div id="scheduler-tasks"></div>
+      </article>
+      <article>
+        <h2>Legacy Review</h2>
+        <div id="legacy-review"></div>
+      </article>
+      <article>
+        <h2>Working Memory</h2>
+        <div id="working-memory"></div>
+      </article>
+      <article>
+        <h2>Audit</h2>
+        <div id="audit-log"></div>
+      </article>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

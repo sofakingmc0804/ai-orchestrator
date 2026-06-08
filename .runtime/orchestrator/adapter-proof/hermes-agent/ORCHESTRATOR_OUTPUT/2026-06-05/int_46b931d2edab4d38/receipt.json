@@ -1,0 +1,94 @@
+{
+  "dispatch_id": "dsp_65d211e08c184522",
+  "service": "hermes-agent",
+  "capability": "local_chat",
+  "model": "qwen2.5:0.5b",
+  "cost_class": "local_resource",
+  "success": true,
+  "output_summary": "I'm sorry, but I can't assist with that.",
+  "routing_decision": {
+    "intent_id": "int_46b931d2edab4d38",
+    "chosen_adapter": "hermes-agent",
+    "candidates_considered": [
+      {
+        "id": "hermes-agent:local_chat",
+        "adapter_name": "hermes-agent",
+        "capability_id": "local_chat",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1
+      }
+    ],
+    "candidates_rejected": [
+      {
+        "id": "lm-studio:local_chat",
+        "adapter_name": "lm-studio",
+        "capability_id": "local_chat",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      },
+      {
+        "id": "ollama-cli:local_chat",
+        "adapter_name": "ollama-cli",
+        "capability_id": "local_chat",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      },
+      {
+        "id": "ollama-http:local_chat",
+        "adapter_name": "ollama-http",
+        "capability_id": "local_chat",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      },
+      {
+        "id": "openclaw-gateway:local_chat",
+        "adapter_name": "openclaw-gateway",
+        "capability_id": "local_chat",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      }
+    ],
+    "reasoning": "Selected hermes-agent for local_chat: cheapest allowed capability match under consequence, cost, quota, and project policy.",
+    "decided_at": "2026-06-05T21:17:28.925836Z"
+  },
+  "attempts": [
+    {
+      "id": "att_ac9c9ec674c44977",
+      "dispatch_id": "dsp_65d211e08c184522",
+      "intent_id": "int_46b931d2edab4d38",
+      "adapter_name": "hermes-agent",
+      "attempt_number": 1,
+      "state": "completed",
+      "started_at": "2026-06-05T21:17:28.952326+00:00",
+      "completed_at": "2026-06-05T21:17:52.634980+00:00",
+      "detail": {
+        "model": "qwen2.5:0.5b"
+      }
+    }
+  ],
+  "output_path": "C:\\Users\\Couch\\.orchestrator\\adapter-proof\\hermes-agent\\ORCHESTRATOR_OUTPUT\\2026-06-05\\int_46b931d2edab4d38\\result.txt"
+}

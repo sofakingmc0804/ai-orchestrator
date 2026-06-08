@@ -1,0 +1,9 @@
+routing:
+  allowed_adapters:
+    - claude-desktop-mcp
+  preferred_adapters:
+    - claude-desktop-mcp
+approval:
+  required_at: high
+output:
+  directory: ORCHESTRATOR_OUTPUT

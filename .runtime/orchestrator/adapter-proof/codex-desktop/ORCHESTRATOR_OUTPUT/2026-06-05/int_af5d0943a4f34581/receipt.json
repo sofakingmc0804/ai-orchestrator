@@ -1,0 +1,12 @@
+{
+  "dispatch_id": "dsp_8fe4fb0882f5441d",
+  "service": "codex-desktop",
+  "capability": "code_repair",
+  "model": "codex-desktop account route",
+  "cost_class": "subscription_quota",
+  "success": true,
+  "output_summary": "codex desktop active thread proof",
+  "proof_type": "external_proof_import",
+  "proof_source": "active Codex Desktop session performing this orchestrator implementation on 2026-06-05",
+  "output_path": "C:\\Users\\Couch\\.orchestrator\\adapter-proof\\codex-desktop\\ORCHESTRATOR_OUTPUT\\2026-06-05\\int_af5d0943a4f34581\\result.txt"
+}

@@ -1,0 +1,1 @@
+"""Optional shell integration helpers."""

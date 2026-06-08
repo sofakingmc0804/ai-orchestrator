@@ -1,0 +1,399 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from pathlib import Path
+from typing import Any
+
+from orchestrator.adapters.builtins import build_adapters
+from orchestrator.config import Settings
+from orchestrator.intent.interpreter import parse_intent
+from orchestrator.models import BillingClass, ConsequenceTier, DispatchResult, Intent, Notification, RoutingDecision, Selection
+from orchestrator.notifications.spine import NotificationSpine
+from orchestrator.routing.engine import route_intent
+from orchestrator.routing.project_policy import approval_required_for_tier, load_project_policy, output_base_for_project
+from orchestrator.state.store import StateStore, iso
+
+
+class Dispatcher:
+    def __init__(self, settings: Settings, store: StateStore, notifications: NotificationSpine):
+        self.settings = settings
+        self.store = store
+        self.notifications = notifications
+        self.adapters = build_adapters()
+        self.max_attempts_per_adapter = 3
+        self.retry_backoff_seconds = [0.2, 0.5]
+
+    async def dispatch_text(self, raw_text: str, project_root: Path | None = None) -> DispatchResult:
+        intent = parse_intent(raw_text)
+        project_policy: dict[str, Any] = {}
+        if project_root:
+            intent.project_id = await self.store.find_project_id_for_path(project_root)
+            project_policy = await self._project_policy(intent.project_id)
+        await self.store.create_intent(intent)
+        if self._requires_approval(intent, project_policy):
+            await self._request_approval(intent)
+            return DispatchResult(dispatch_id="", intent_id=intent.id, adapter_name="", state="awaiting_approval")
+        return await self._execute_intent(intent, project_root, project_policy)
+
+    async def approve_intent(self, intent_id: str, approved: bool) -> DispatchResult:
+        row = await self.store.get_intent(intent_id)
+        if not row:
+            return DispatchResult(dispatch_id="", intent_id=intent_id, adapter_name="", state="failed", error="intent not found")
+        await self.store.acknowledge_approval(intent_id)
+        if not approved:
+            await self.store.update_intent_state(intent_id, "rejected", completed=True)
+            await self.notifications.publish(
+                Notification(
+                    id=f"ntf_{uuid.uuid4().hex[:12]}",
+                    severity="info",
+                    intent_id=intent_id,
+                    title="Intent rejected",
+                    body=f"Intent {intent_id} was rejected before dispatch.",
+                    channels_requested=["in_app"],
+                )
+            )
+            return DispatchResult(dispatch_id="", intent_id=intent_id, adapter_name="", state="rejected")
+        intent = Intent(
+            id=str(row["id"]),
+            source=str(row["source"]),
+            raw_text=str(row["raw_text"]),
+            parsed_payload=dict(row["parsed_payload"]),
+            project_id=row.get("project_id"),
+            selections=[Selection.model_validate(s) for s in row["selections"]],
+            consequence_tier=ConsequenceTier(str(row["consequence_tier"])),
+            state="approved",
+        )
+        project_policy = await self._project_policy(intent.project_id)
+        await self.store.update_intent_state(intent_id, "approved")
+        project_root = await self._project_root(intent.project_id)
+        return await self._execute_intent(intent, project_root, project_policy)
+
+    async def _project_policy(self, project_id: str | None) -> dict[str, Any]:
+        if not project_id:
+            return {}
+        for project in await self.store.list_projects():
+            if project.get("id") == project_id:
+                return load_project_policy(project.get("policy_file_path"))
+        return {}
+
+    async def _project_root(self, project_id: str | None) -> Path | None:
+        if not project_id:
+            return None
+        for project in await self.store.list_projects():
+            if project.get("id") == project_id and project.get("root_path"):
+                return Path(str(project["root_path"]))
+        return None
+
+    def _requires_approval(self, intent: Intent, project_policy: dict[str, Any] | None = None) -> bool:
+        return approval_required_for_tier(intent.consequence_tier.value, project_policy)
+
+    async def _request_approval(self, intent: Intent) -> None:
+        await self.notifications.publish(
+            Notification(
+                id=f"ntf_{uuid.uuid4().hex[:12]}",
+                severity="approval_request",
+                intent_id=intent.id,
+                title="Approval needed",
+                body=f"Intent {intent.id} requires approval before external or high-consequence action.",
+                actions=[{"label": "Approve", "action_id": f"approve:{intent.id}"}, {"label": "Reject", "action_id": f"reject:{intent.id}"}],
+                channels_requested=["in_app", "tray", "email"],
+            )
+        )
+
+    async def _execute_intent(self, intent: Intent, project_root: Path | None = None, project_policy: dict[str, Any] | None = None) -> DispatchResult:
+        caps = await self.store.list_capabilities()
+        quota_state = await self.store.latest_quota_state()
+        project_policy = project_policy or await self._project_policy(intent.project_id)
+        decision = route_intent(intent, caps, quota_state, project_policy)
+        await self.store.record_routing(decision)
+        if not decision.chosen_adapter:
+            await self.store.update_intent_state(intent.id, "failed", completed=True)
+            await self.store.add_repair_item("router", decision.reasoning, "Review capability, cost, and quota policy; add quota or choose a local-capable route.")
+            await self.notifications.publish(
+                Notification(
+                    id=f"ntf_{uuid.uuid4().hex[:12]}",
+                    severity="error",
+                    intent_id=intent.id,
+                    title="No safe adapter found",
+                    body=decision.reasoning,
+                    channels_requested=["in_app", "tray"],
+                )
+            )
+            return DispatchResult(dispatch_id="", intent_id=intent.id, adapter_name="", state="failed", error=decision.reasoning)
+        dispatch_id = f"dsp_{uuid.uuid4().hex[:16]}"
+        output_base = output_base_for_project(project_root, self.settings.home, self.settings.output_dirname, project_policy)
+        out_root = output_base / iso()[:10] / intent.id
+        out_root.mkdir(parents=True, exist_ok=True)
+        envelope: dict[str, Any] = {
+            "intent": intent.model_dump(mode="json"),
+            "dispatch_id": dispatch_id,
+            "expected_output_shape": "text",
+            "consequence_tier": intent.consequence_tier.value,
+            "project_policy": project_policy,
+        }
+        await self.store.record_dispatch(
+            {
+                "id": dispatch_id,
+                "intent_id": intent.id,
+                "adapter_name": decision.chosen_adapter,
+                "envelope": envelope,
+                "state": "running",
+                "started_at": iso(),
+            }
+        )
+        attempts: list[dict[str, Any]] = []
+        last_error = "adapter failed"
+        for candidate in decision.candidates_considered:
+            adapter_name = str(candidate.get("adapter_name") or "")
+            adapter = self.adapters.get(adapter_name)
+            if not adapter:
+                last_error = f"{adapter_name} adapter is not registered"
+                continue
+            for attempt_number in range(1, self.max_attempts_per_adapter + 1):
+                attempt_id = f"att_{uuid.uuid4().hex[:16]}"
+                attempt_started = iso()
+                try:
+                    result = await adapter.dispatch(envelope)
+                    if result.get("ok"):
+                        attempt = {
+                            "id": attempt_id,
+                            "dispatch_id": dispatch_id,
+                            "intent_id": intent.id,
+                            "adapter_name": adapter_name,
+                            "attempt_number": attempt_number,
+                            "state": "completed",
+                            "started_at": attempt_started,
+                            "completed_at": iso(),
+                            "detail": {"model": result.get("model")},
+                        }
+                        attempts.append(attempt)
+                        await self.store.record_dispatch_attempt(attempt)
+                        return await self._complete_dispatch(dispatch_id, intent, adapter_name, envelope, out_root, result, decision, attempts)
+                    last_error = str(result.get("error") or "adapter returned ok=false")
+                    repair_action = str(result.get("repair_action") or "Inspect adapter logs and provider configuration.")
+                except Exception as exc:
+                    last_error = str(exc)
+                    repair_action = "Inspect adapter logs and provider configuration."
+                    if "timed out" in last_error.lower():
+                        repair_action = "Verify the provider command returns inside the adapter timeout and disable slow fallbacks."
+                attempt = {
+                    "id": attempt_id,
+                    "dispatch_id": dispatch_id,
+                    "intent_id": intent.id,
+                    "adapter_name": adapter_name,
+                    "attempt_number": attempt_number,
+                    "state": "failed",
+                    "started_at": attempt_started,
+                    "completed_at": iso(),
+                    "error": last_error,
+                    "detail": {"repair_action": repair_action},
+                }
+                attempts.append(attempt)
+                await self.store.record_dispatch_attempt(attempt)
+                if attempt_number < self.max_attempts_per_adapter:
+                    await asyncio.sleep(self.retry_backoff_seconds[min(attempt_number - 1, len(self.retry_backoff_seconds) - 1)])
+            await self.store.add_repair_item(adapter_name, last_error, repair_action)
+        await self.store.record_dispatch(
+            {
+                "id": dispatch_id,
+                "intent_id": intent.id,
+                "adapter_name": decision.chosen_adapter,
+                "envelope": envelope,
+                "state": "failed",
+                "completed_at": iso(),
+                "error": last_error,
+            }
+        )
+        await self.store.update_intent_state(intent.id, "failed", completed=True)
+        await self.notifications.publish(
+            Notification(
+                id=f"ntf_{uuid.uuid4().hex[:12]}",
+                severity="error",
+                intent_id=intent.id,
+                title="Dispatch failed",
+                body=f"{decision.chosen_adapter}: {last_error}",
+                channels_requested=["in_app", "tray"],
+            )
+        )
+        return DispatchResult(dispatch_id=dispatch_id, intent_id=intent.id, adapter_name=str(decision.chosen_adapter), state="failed", error=last_error)
+
+    async def prove_adapter(self, adapter_name: str, prompt: str, capability_id: str | None = None, allow_subscription: bool = False) -> DispatchResult:
+        capabilities = await self.store.list_capabilities()
+        matching_caps = [
+            dict(cap)
+            for cap in capabilities
+            if str(cap.get("adapter_name") or "") == adapter_name
+            and (capability_id is None or str(cap.get("capability_id") or "") == capability_id)
+            and int(cap.get("enabled") or 0) == 1
+        ]
+        if not matching_caps:
+            return DispatchResult(dispatch_id="", intent_id="", adapter_name=adapter_name, state="failed", error=f"No enabled capability found for adapter {adapter_name}.")
+        candidate = matching_caps[0]
+        billing_class = str(candidate.get("billing_class") or BillingClass.UNKNOWN_COST.value)
+        if billing_class in {BillingClass.METERED_EXTRA_COST.value, BillingClass.UNKNOWN_COST.value}:
+            return DispatchResult(dispatch_id="", intent_id="", adapter_name=adapter_name, state="failed", error=f"Proof denied for {adapter_name}: forbidden billing class {billing_class}.")
+        if billing_class == BillingClass.SUBSCRIPTION_QUOTA.value and not allow_subscription:
+            return DispatchResult(dispatch_id="", intent_id="", adapter_name=adapter_name, state="failed", error=f"Proof denied for {adapter_name}: subscription quota requires --allow-subscription.")
+        adapter = self.adapters.get(adapter_name)
+        if not adapter:
+            await self.store.add_or_get_open_repair_item(adapter_name, "Adapter proof requested but adapter is not registered.", "Register the adapter before proof dispatch.")
+            return DispatchResult(dispatch_id="", intent_id="", adapter_name=adapter_name, state="failed", error=f"{adapter_name} adapter is not registered.")
+
+        intent = Intent(
+            id=f"int_{uuid.uuid4().hex[:16]}",
+            source="adapter_proof",
+            raw_text=prompt,
+            parsed_payload={"verb": "prove", "object": adapter_name, "required_capability": str(candidate.get("capability_id") or "local_chat")},
+            consequence_tier=ConsequenceTier.LOW,
+        )
+        await self.store.create_intent(intent)
+        decision = RoutingDecision(
+            intent_id=intent.id,
+            chosen_adapter=adapter_name,
+            candidates_considered=[candidate],
+            candidates_rejected=[],
+            reasoning=f"Explicit adapter proof selected {adapter_name}; billing class {billing_class}; no fallback permitted.",
+        )
+        await self.store.record_routing(decision)
+        dispatch_id = f"dsp_{uuid.uuid4().hex[:16]}"
+        out_root = self.settings.home / "adapter-proof" / adapter_name / self.settings.output_dirname / iso()[:10] / intent.id
+        out_root.mkdir(parents=True, exist_ok=True)
+        envelope: dict[str, Any] = {
+            "intent": intent.model_dump(mode="json"),
+            "dispatch_id": dispatch_id,
+            "expected_output_shape": "text",
+            "consequence_tier": intent.consequence_tier.value,
+            "project_policy": {"proof_mode": True, "forced_adapter": adapter_name},
+        }
+        await self.store.record_dispatch(
+            {
+                "id": dispatch_id,
+                "intent_id": intent.id,
+                "adapter_name": adapter_name,
+                "envelope": envelope,
+                "state": "running",
+                "started_at": iso(),
+            }
+        )
+        attempt_id = f"att_{uuid.uuid4().hex[:16]}"
+        attempt_started = iso()
+        try:
+            result = await adapter.dispatch(envelope)
+        except Exception as exc:
+            result = {"ok": False, "error": str(exc), "repair_action": "Inspect adapter proof logs and provider configuration."}
+        if result.get("ok"):
+            attempt = {
+                "id": attempt_id,
+                "dispatch_id": dispatch_id,
+                "intent_id": intent.id,
+                "adapter_name": adapter_name,
+                "attempt_number": 1,
+                "state": "completed",
+                "started_at": attempt_started,
+                "completed_at": iso(),
+                "detail": {"model": result.get("model"), "proof_mode": True},
+            }
+            await self.store.record_dispatch_attempt(attempt)
+            return await self._complete_dispatch(dispatch_id, intent, adapter_name, envelope, out_root, result, decision, [attempt])
+
+        error = str(result.get("error") or "adapter proof returned ok=false")
+        repair_action = str(result.get("repair_action") or "Inspect adapter logs and provider configuration.")
+        attempt = {
+            "id": attempt_id,
+            "dispatch_id": dispatch_id,
+            "intent_id": intent.id,
+            "adapter_name": adapter_name,
+            "attempt_number": 1,
+            "state": "failed",
+            "started_at": attempt_started,
+            "completed_at": iso(),
+            "error": error,
+            "detail": {"repair_action": repair_action, "proof_mode": True},
+        }
+        await self.store.record_dispatch_attempt(attempt)
+        await self.store.add_or_get_open_repair_item(adapter_name, error, repair_action)
+        await self.store.record_dispatch(
+            {
+                "id": dispatch_id,
+                "intent_id": intent.id,
+                "adapter_name": adapter_name,
+                "envelope": envelope,
+                "state": "failed",
+                "completed_at": iso(),
+                "error": error,
+            }
+        )
+        await self.store.update_intent_state(intent.id, "failed", completed=True)
+        await self.notifications.publish(
+            Notification(
+                id=f"ntf_{uuid.uuid4().hex[:12]}",
+                severity="error",
+                intent_id=intent.id,
+                title="Adapter proof failed",
+                body=f"{adapter_name}: {error}",
+                channels_requested=["in_app", "tray"],
+            )
+        )
+        return DispatchResult(dispatch_id=dispatch_id, intent_id=intent.id, adapter_name=adapter_name, state="failed", error=error)
+
+    async def _complete_dispatch(
+        self,
+        dispatch_id: str,
+        intent: Intent,
+        adapter_name: str,
+        envelope: dict[str, Any],
+        out_root: Path,
+        result: dict[str, Any],
+        decision: Any,
+        attempts: list[dict[str, Any]],
+    ) -> DispatchResult:
+        result_path = out_root / "result.txt"
+        receipt_path = out_root / "receipt.json"
+        context_path = out_root / "context.json"
+        text = str(result.get("text") or "")
+        result_path.write_text(text, encoding="utf-8")
+        chosen_candidate: dict[str, Any] = next(
+            (candidate for candidate in decision.candidates_considered if str(candidate.get("adapter_name") or "") == adapter_name),
+            {},
+        )
+        receipt = {
+            "dispatch_id": dispatch_id,
+            "service": adapter_name,
+            "capability": intent.parsed_payload.get("required_capability"),
+            "model": result.get("model"),
+            "cost_class": str(chosen_candidate.get("billing_class") or "unknown_cost"),
+            "success": True,
+            "output_summary": text[:500],
+            "routing_decision": decision.model_dump(mode="json"),
+            "attempts": attempts,
+            "output_path": str(result_path),
+        }
+        receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        context_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+        await self.store.resolve_repair_items(adapter_name, {"dispatch_id": dispatch_id, "intent_id": intent.id})
+        await self.store.record_dispatch(
+            {
+                "id": dispatch_id,
+                "intent_id": intent.id,
+                "adapter_name": adapter_name,
+                "envelope": envelope,
+                "state": "completed",
+                "completed_at": iso(),
+                "output_path": str(result_path),
+            },
+            receipt=receipt,
+        )
+        await self.store.update_intent_state(intent.id, "completed", completed=True)
+        await self.notifications.publish(
+            Notification(
+                id=f"ntf_{uuid.uuid4().hex[:12]}",
+                severity="info",
+                intent_id=intent.id,
+                title="Dispatch completed",
+                body=str(result_path),
+                channels_requested=["in_app", "tray"],
+            )
+        )
+        return DispatchResult(dispatch_id=dispatch_id, intent_id=intent.id, adapter_name=adapter_name, state="completed", output_path=result_path, result_text=text, receipt=receipt)

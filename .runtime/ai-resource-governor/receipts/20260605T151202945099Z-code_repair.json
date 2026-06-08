@@ -1,0 +1,18 @@
+{
+  "bulk": false,
+  "consequence": "high",
+  "context_tokens": 200000,
+  "created_at": "2026-06-05T15:12:02.945318Z",
+  "decision": "deny",
+  "privacy": "normal",
+  "provider_allowlist": [
+    "openai-api"
+  ],
+  "reason": "disabled billing class present: metered_extra_cost; no safe competent provider satisfied cost, quota, capability, and context gates",
+  "receipt_id": "20260605T151202945099Z-code_repair",
+  "required_capabilities": [
+    "coding"
+  ],
+  "task_type": "code_repair",
+  "value_reason": "hard code repair"
+}

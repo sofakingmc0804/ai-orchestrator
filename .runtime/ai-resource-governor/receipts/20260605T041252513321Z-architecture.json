@@ -1,0 +1,18 @@
+{
+  "bulk": false,
+  "consequence": "high",
+  "context_tokens": 10000,
+  "created_at": "2026-06-05T04:12:52.513409Z",
+  "decision": "deny",
+  "privacy": "normal",
+  "provider_allowlist": [
+    "openrouter"
+  ],
+  "reason": "disabled billing class present: metered_extra_cost; no safe competent provider satisfied cost, quota, capability, and context gates",
+  "receipt_id": "20260605T041252513321Z-architecture",
+  "required_capabilities": [
+    "reasoning"
+  ],
+  "task_type": "architecture",
+  "value_reason": "hard architecture review"
+}

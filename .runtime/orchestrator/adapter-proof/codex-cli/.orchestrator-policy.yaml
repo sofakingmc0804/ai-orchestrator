@@ -1,0 +1,9 @@
+routing:
+  allowed_adapters:
+    - codex-cli
+  preferred_adapters:
+    - codex-cli
+approval:
+  required_at: high
+output:
+  directory: ORCHESTRATOR_OUTPUT

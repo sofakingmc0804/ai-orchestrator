@@ -1,0 +1,22 @@
+{
+  "intent": {
+    "id": "int_1b70b620d54646d8",
+    "source": "chat",
+    "raw_text": "Classify this as bounded local adapter smoke. Reply one short line.",
+    "parsed_payload": {
+      "verb": "classify",
+      "required_capability": "classify_text",
+      "constraints": [],
+      "deadline": null,
+      "ambiguous": false
+    },
+    "project_id": null,
+    "selections": [],
+    "consequence_tier": "low",
+    "state": "pending",
+    "created_at": "2026-06-05T18:38:24.588305Z"
+  },
+  "dispatch_id": "dsp_b961ead7e9274fab",
+  "expected_output_shape": "text",
+  "consequence_tier": "low"
+}

@@ -1,0 +1,3 @@
+autopilot: enabled
+default_intent: Classify this sandbox file and propose next action.
+

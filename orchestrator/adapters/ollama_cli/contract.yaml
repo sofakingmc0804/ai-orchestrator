@@ -1,0 +1,9 @@
+adapter: ollama-cli
+service_group: local_models
+billing_class: local_resource
+provider: ollama
+latency_band: medium
+consequence_max: medium
+capabilities:
+  - id: local_chat
+  - id: model_inventory

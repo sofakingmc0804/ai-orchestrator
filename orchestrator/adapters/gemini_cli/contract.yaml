@@ -1,0 +1,11 @@
+adapter: gemini-cli
+service_group: cloud_clients
+billing_class: subscription_quota
+provider: gemini
+latency_band: medium
+consequence_max: medium
+capabilities:
+  - id: large_context
+  - id: general_reasoning
+  - id: coding_chat
+  - id: code_repair

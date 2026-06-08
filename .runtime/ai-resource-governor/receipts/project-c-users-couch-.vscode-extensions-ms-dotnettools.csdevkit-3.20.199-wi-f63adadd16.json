@@ -1,0 +1,27 @@
+{
+  "allowed_providers": [
+    "ollama-local",
+    "github-copilot",
+    "codex-chatgpt",
+    "claude-max",
+    "ollama-cloud",
+    "gemini-oauth"
+  ],
+  "consequence": "normal",
+  "default_local_model": "qwen3.5:4b",
+  "domain": "general",
+  "forbidden_billing_classes": [
+    "metered_extra_cost",
+    "unknown_cost"
+  ],
+  "premium_escalation_rule": "premium requires high consequence plus value_reason and quota above reserve",
+  "project_id": "c-users-couch-.vscode-extensions-ms-dotnettools.csdevkit-3.20.199-wi-f63adadd16",
+  "quota_budget": {
+    "policy": "balanced_roi",
+    "reserve_percent": 20.0
+  },
+  "receipt_path": "C:\\Users\\Couch\\.ai-resource-governor\\receipts\\project-c-users-couch-.vscode-extensions-ms-dotnettools.csdevkit-3.20.199-wi-f63adadd16.json",
+  "repair_path": "C:\\Users\\Couch\\.ai-resource-governor\\repair-queue.jsonl",
+  "root": "C:\\Users\\Couch\\.vscode\\extensions\\ms-dotnettools.csdevkit-3.20.199-win32-x64",
+  "updated_at": "2026-06-05T15:09:19.656415Z"
+}

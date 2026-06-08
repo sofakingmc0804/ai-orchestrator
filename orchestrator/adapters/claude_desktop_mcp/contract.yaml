@@ -1,0 +1,11 @@
+adapter: claude-desktop-mcp
+service_group: cloud_clients
+billing_class: subscription_quota
+provider: claude
+latency_band: medium
+consequence_max: high
+capabilities:
+  - id: long_context_reasoning
+  - id: document_review
+  - id: agentic_work
+  - id: code_repair

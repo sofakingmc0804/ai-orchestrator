@@ -1,0 +1,9 @@
+routing:
+  allowed_adapters:
+    - codex-desktop
+  preferred_adapters:
+    - codex-desktop
+approval:
+  required_at: high
+output:
+  directory: ORCHESTRATOR_OUTPUT

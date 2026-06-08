@@ -1,0 +1,22 @@
+{
+  "intent": {
+    "id": "int_384b826980814e39",
+    "source": "chat",
+    "raw_text": "Classify this text as orchestrator smoke test and answer with one short line.",
+    "parsed_payload": {
+      "verb": "classify",
+      "required_capability": "classify_text",
+      "constraints": [],
+      "deadline": null,
+      "ambiguous": false
+    },
+    "project_id": null,
+    "selections": [],
+    "consequence_tier": "low",
+    "state": "pending",
+    "created_at": "2026-06-05T17:43:27.725032Z"
+  },
+  "dispatch_id": "dsp_3a78ca42fce74e9c",
+  "expected_output_shape": "text",
+  "consequence_tier": "low"
+}

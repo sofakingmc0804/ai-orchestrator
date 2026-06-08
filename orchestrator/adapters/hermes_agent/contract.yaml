@@ -1,0 +1,10 @@
+adapter: hermes-agent
+service_group: agent_hosts
+billing_class: local_resource
+provider: hermes
+latency_band: medium
+consequence_max: medium
+capabilities:
+  - id: agentic_work
+  - id: tool_dispatch
+  - id: local_chat

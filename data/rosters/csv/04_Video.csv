@@ -1,0 +1,11 @@
+Model ID,Model Name,Provider,Status,Routing Surface,Surface Type,Auth on Dell,Billing Class,Runs Local,Motion Coherence,Prompt Adherence,Audio Sync,Realism,Duration,Cost-Efficiency,OVERALL ★,Max Duration,Audio,Confidence,Sources,Last Verified
+sora-2-pro,Sora 2 Pro,OpenAI,Current,OpenAI API,HTTP API,No standalone key,metered (not configured),No,9.0,8.8,9.0,8.8,7.5,4.5,7.9,~60s,synced audio,M,Most advanced synced-audio video,2026-06-07
+sora-2,Sora 2,OpenAI,Current,OpenAI API,HTTP API,No standalone key,metered (not configured),No,8.6,8.4,8.6,8.4,7.0,5.5,7.8,~30s,synced audio,M,Flagship video+audio,2026-06-07
+veo-3.0,Google Veo 3.0,Google,Legacy (prior),Together AI,Aggregator,Not-keyed,metered (not configured),No,8.8,8.6,8.8,8.8,7.0,6.0,8.0,~30s,synced audio,M,Veo 3 (Vertex/Together),2026-06-07
+veo-3.0,Google Veo 3.0,Google,Legacy (prior),Google Gemini API,HTTP API,Working (re-authed),subscription_included,No,8.8,8.6,8.8,8.8,7.0,6.0,8.0,~30s,synced audio,M,Veo 3 (Vertex/Together),2026-06-07
+kling-2.1,Kling 2.1,Kuaishou,Current,Together AI,Aggregator,Not-keyed,metered (not configured),No,8.4,8.0,7.0,8.4,7.0,7.0,7.6,~10s,,L,Strong motion realism,2026-06-07
+minimax/video-01,MiniMax Hailuo,MiniMax,Current,Together AI,Aggregator,Not-keyed,metered (not configured),No,8.0,7.8,6.5,8.0,6.0,7.5,7.3,~6s,,L,Hailuo video,2026-06-07
+luma.ray-v2:0,Luma Ray 2,Luma AI,Current,Amazon Bedrock (Kiro),Aggregator,Installed; login unverified,metered (not configured),No,8.0,7.8,6.0,8.0,6.0,7.0,7.1,~9s,,L,Bedrock video gen,2026-06-07
+grok-imagine-video,Grok Imagine Video,xAI,Current,xAI API,HTTP API,Not-keyed,metered (not configured),No,7.8,7.4,7.5,7.6,5.0,6.0,6.9,~6s,synced audio,L,xAI video gen,2026-06-07
+veo-3.1,Google Veo 3.1 (Lite Preview),Google,Current (2026),Together AI,Aggregator,Not-keyed,metered (not configured),No,8.6,8.6,8.6,8.6,7.0,7.5,8.2,~30s,synced audio; cost-efficient,M,veo-3.1-lite-generate-preview (most cost-efficient video); provider-doc,2026-06-07
+veo-3.1,Google Veo 3.1 (Lite Preview),Google,Current (2026),Google Gemini API,HTTP API,Working (re-authed),subscription_included,No,8.6,8.6,8.6,8.6,7.0,7.5,8.2,~30s,synced audio; cost-efficient,M,veo-3.1-lite-generate-preview (most cost-efficient video); provider-doc,2026-06-07

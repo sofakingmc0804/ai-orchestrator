@@ -1,0 +1,13 @@
+To: owner@example.com
+From: ai-orchestrator@local
+Subject: [info] machine: CT-11 notification proof
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+Orchestrator notification spine proof for in-app, email draft, and tray subsc=
+riber.
+
+notification_id=3Dntf_ct11_live_f45fa9fc
+intent_id=3DNone
+delivery_mode=3Dlocal_draft_only

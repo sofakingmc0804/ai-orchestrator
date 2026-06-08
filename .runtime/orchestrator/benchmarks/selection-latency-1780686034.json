@@ -1,0 +1,14 @@
+{
+  "benchmark": "selection_to_output_latency",
+  "selection_id": "sel_4233d9c5b7aa",
+  "intent_id": "int_1f538838714242ef",
+  "dispatch_id": "dsp_595781c0d907464c",
+  "adapter_name": "ollama-http",
+  "state": "completed",
+  "elapsed_seconds": 1.217,
+  "threshold_seconds": 60,
+  "passed": true,
+  "output_path": "C:\\Users\\Couch\\.orchestrator\\ORCHESTRATOR_OUTPUT\\2026-06-05\\int_1f538838714242ef\\result.txt",
+  "recorded_at": "2026-06-05T19:00:34.935420+00:00",
+  "receipt_path": "C:\\Users\\Couch\\.orchestrator\\benchmarks\\selection-latency-1780686034.json"
+}

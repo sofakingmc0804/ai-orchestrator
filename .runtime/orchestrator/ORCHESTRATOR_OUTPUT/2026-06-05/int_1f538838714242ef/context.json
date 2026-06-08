@@ -1,0 +1,22 @@
+{
+  "intent": {
+    "id": "int_1f538838714242ef",
+    "source": "chat",
+    "raw_text": "Classify this local benchmark text and reply with one short label.",
+    "parsed_payload": {
+      "verb": "classify",
+      "required_capability": "classify_text",
+      "constraints": [],
+      "deadline": null,
+      "ambiguous": false
+    },
+    "project_id": null,
+    "selections": [],
+    "consequence_tier": "low",
+    "state": "pending",
+    "created_at": "2026-06-05T19:00:33.718243Z"
+  },
+  "dispatch_id": "dsp_595781c0d907464c",
+  "expected_output_shape": "text",
+  "consequence_tier": "low"
+}

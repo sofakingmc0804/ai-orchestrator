@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+.benchmarks/
+
+# Local runtime is migrated into the repo for ownership, but mutable databases
+# and log streams should not be pushed accidentally.
+.runtime/**/*.sqlite
+.runtime/**/*.sqlite-wal
+.runtime/**/*.sqlite-shm
+.runtime/**/*.log
+
+# Transient benchmark run outputs (kept locally, not committed).
+benchmark_results/
+
+# Local/editor noise.
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/

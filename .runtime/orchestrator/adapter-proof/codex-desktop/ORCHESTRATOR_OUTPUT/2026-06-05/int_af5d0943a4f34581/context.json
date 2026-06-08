@@ -1,0 +1,16 @@
+{
+  "proof": {
+    "adapter": "codex-desktop",
+    "text": "codex desktop active thread proof",
+    "source": "active Codex Desktop session performing this orchestrator implementation on 2026-06-05",
+    "model": "codex-desktop account route"
+  },
+  "project": {
+    "id": "proj_codex_desktop_e46280e515",
+    "name": "adapter-proof-codex-desktop",
+    "root_path": "C:\\Users\\Couch\\.orchestrator\\adapter-proof\\codex-desktop",
+    "domain": "adapter-proof",
+    "consequence_tier": "low",
+    "policy_file_path": "C:\\Users\\Couch\\.orchestrator\\adapter-proof\\codex-desktop\\.orchestrator-policy.yaml"
+  }
+}

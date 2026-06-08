@@ -1,0 +1,1968 @@
+{
+  "schema_version": "operation-score-contract/v1",
+  "generated_at": "2026-06-07T16:28:57",
+  "source_result_files": [
+    "C:\\Users\\Couch\\Documents\\Claude\\Projects\\Home of Claude - MSI Auto Project\\benchmark_results\\operation_benchmark_20260607_151040.jsonl",
+    "C:\\Users\\Couch\\Documents\\Claude\\Projects\\Home of Claude - MSI Auto Project\\benchmark_results\\operation_benchmark_20260607_162354.jsonl",
+    "C:\\Users\\Couch\\Documents\\Claude\\Projects\\Home of Claude - MSI Auto Project\\benchmark_results\\operation_benchmark_20260607_162453.jsonl",
+    "C:\\Users\\Couch\\Documents\\Claude\\Projects\\Home of Claude - MSI Auto Project\\benchmark_results\\operation_benchmark_20260607_162800.jsonl"
+  ],
+  "task_pack": {
+    "pack_id": "operations_first_pack_2026-06-07",
+    "path": "C:\\Users\\Couch\\Documents\\Claude\\Projects\\Home of Claude - MSI Auto Project\\benchmarks\\fixtures\\operations\\first_pack.json",
+    "task_count": 13,
+    "domain_count": 13
+  },
+  "completion_state": {
+    "deduped_runs": 91,
+    "observed_models": [
+      "deepseek-coder-v2:latest",
+      "deepseek-r1:8b",
+      "gemma4:12b",
+      "gemma4:e4b",
+      "qwen2.5-coder:7b",
+      "qwen3.5:9b",
+      "qwen3:8b"
+    ],
+    "observed_model_count": 7,
+    "expected_one_trial_full_matrix_runs": 91,
+    "has_one_trial_full_matrix": true
+  },
+  "model_scores": {
+    "deepseek-coder-v2:latest": {
+      "runs": 13,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "avg_wall_duration_ms": null,
+      "failure_modes": {
+        "unavailable_or_timeout": 13
+      },
+      "domains": {
+        "compliance_policy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "computer_control_app_use": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "conceptualization_strategy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "data_analytics_kpi_diagnostics": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "financial_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "full_business_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "market_forecasting_backtest": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "memory_context_management": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "model_to_model_orchestration": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "multi_agent_decomposition": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "public_content_law": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "regex_pattern_creation": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "role_based_task_execution": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        }
+      }
+    },
+    "deepseek-r1:8b": {
+      "runs": 13,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "avg_wall_duration_ms": 119957.3,
+      "failure_modes": {
+        "empty_content": 3,
+        "unavailable_or_timeout": 10
+      },
+      "domains": {
+        "compliance_policy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "computer_control_app_use": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "conceptualization_strategy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "data_analytics_kpi_diagnostics": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "financial_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "full_business_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 121613.2,
+          "failure_modes": {
+            "empty_content": 1
+          }
+        },
+        "market_forecasting_backtest": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "memory_context_management": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "model_to_model_orchestration": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "multi_agent_decomposition": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "public_content_law": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "regex_pattern_creation": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 116792.5,
+          "failure_modes": {
+            "empty_content": 1
+          }
+        },
+        "role_based_task_execution": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 121466.2,
+          "failure_modes": {
+            "empty_content": 1
+          }
+        }
+      }
+    },
+    "gemma4:12b": {
+      "runs": 13,
+      "passed": 3,
+      "pass_rate": 0.2308,
+      "avg_wall_duration_ms": 83137.9,
+      "failure_modes": {
+        "json_parse_error": 1,
+        "validator_failure": 9
+      },
+      "domains": {
+        "compliance_policy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 94635.9,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "computer_control_app_use": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 87631.7,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "conceptualization_strategy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 90620.9,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "data_analytics_kpi_diagnostics": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 55838.5,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "financial_operations": {
+          "runs": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "avg_wall_duration_ms": 76761.7,
+          "failure_modes": {}
+        },
+        "full_business_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 67425.4,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "market_forecasting_backtest": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 139395.1,
+          "failure_modes": {
+            "json_parse_error": 1
+          }
+        },
+        "memory_context_management": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 69198.9,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "model_to_model_orchestration": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 68308.1,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "multi_agent_decomposition": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 94969.1,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "public_content_law": {
+          "runs": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "avg_wall_duration_ms": 41439.9,
+          "failure_modes": {}
+        },
+        "regex_pattern_creation": {
+          "runs": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "avg_wall_duration_ms": 81424.2,
+          "failure_modes": {}
+        },
+        "role_based_task_execution": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 113143.9,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        }
+      }
+    },
+    "gemma4:e4b": {
+      "runs": 13,
+      "passed": 1,
+      "pass_rate": 0.0769,
+      "avg_wall_duration_ms": 35096.8,
+      "failure_modes": {
+        "json_parse_error": 1,
+        "validator_failure": 11
+      },
+      "domains": {
+        "compliance_policy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 32592.6,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "computer_control_app_use": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 24799.5,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "conceptualization_strategy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 41898.3,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "data_analytics_kpi_diagnostics": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 22230.7,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "financial_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 34810.3,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "full_business_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 88008.1,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "market_forecasting_backtest": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 42970.4,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "memory_context_management": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 20084.0,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "model_to_model_orchestration": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 26034.6,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "multi_agent_decomposition": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 25162.6,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "public_content_law": {
+          "runs": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "avg_wall_duration_ms": 17451.8,
+          "failure_modes": {}
+        },
+        "regex_pattern_creation": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 39125.1,
+          "failure_modes": {
+            "json_parse_error": 1
+          }
+        },
+        "role_based_task_execution": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 41089.8,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        }
+      }
+    },
+    "qwen2.5-coder:7b": {
+      "runs": 13,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "avg_wall_duration_ms": null,
+      "failure_modes": {
+        "unavailable_or_timeout": 13
+      },
+      "domains": {
+        "compliance_policy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "computer_control_app_use": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "conceptualization_strategy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "data_analytics_kpi_diagnostics": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "financial_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "full_business_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "market_forecasting_backtest": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "memory_context_management": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "model_to_model_orchestration": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "multi_agent_decomposition": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "public_content_law": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "regex_pattern_creation": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "role_based_task_execution": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        }
+      }
+    },
+    "qwen3.5:9b": {
+      "runs": 13,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "avg_wall_duration_ms": 55169.6,
+      "failure_modes": {
+        "json_parse_error": 1,
+        "validator_failure": 12
+      },
+      "domains": {
+        "compliance_policy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 46823.5,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "computer_control_app_use": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 57507.1,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "conceptualization_strategy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 63655.8,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "data_analytics_kpi_diagnostics": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 34912.8,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "financial_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 49190.7,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "full_business_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 78756.7,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "market_forecasting_backtest": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 70968.0,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "memory_context_management": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 36991.9,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "model_to_model_orchestration": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 33384.5,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "multi_agent_decomposition": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 62181.3,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "public_content_law": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 27466.8,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "regex_pattern_creation": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 81803.8,
+          "failure_modes": {
+            "validator_failure": 1
+          }
+        },
+        "role_based_task_execution": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": 73561.3,
+          "failure_modes": {
+            "json_parse_error": 1
+          }
+        }
+      }
+    },
+    "qwen3:8b": {
+      "runs": 13,
+      "passed": 0,
+      "pass_rate": 0.0,
+      "avg_wall_duration_ms": null,
+      "failure_modes": {
+        "unavailable_or_timeout": 13
+      },
+      "domains": {
+        "compliance_policy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "computer_control_app_use": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "conceptualization_strategy": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "data_analytics_kpi_diagnostics": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "financial_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "full_business_operations": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "market_forecasting_backtest": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "memory_context_management": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "model_to_model_orchestration": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "multi_agent_decomposition": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "public_content_law": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "regex_pattern_creation": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        },
+        "role_based_task_execution": {
+          "runs": 1,
+          "passed": 0,
+          "pass_rate": 0.0,
+          "avg_wall_duration_ms": null,
+          "failure_modes": {
+            "unavailable_or_timeout": 1
+          }
+        }
+      }
+    }
+  },
+  "domain_leaders": {
+    "compliance_policy": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 32592.6,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 46823.5,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 94635.9,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "computer_control_app_use": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 24799.5,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 57507.1,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 87631.7,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "conceptualization_strategy": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 41898.3,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 63655.8,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 90620.9,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "data_analytics_kpi_diagnostics": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 22230.7,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 34912.8,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 55838.5,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "financial_operations": [
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 1.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 76761.7,
+        "failure_modes": {}
+      },
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 34810.3,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 49190.7,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "full_business_operations": [
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 67425.4,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 78756.7,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 88008.1,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 121613.2,
+        "failure_modes": {
+          "empty_content": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "market_forecasting_backtest": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 42970.4,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 70968.0,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 139395.1,
+        "failure_modes": {
+          "json_parse_error": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "memory_context_management": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 20084.0,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 36991.9,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 69198.9,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "model_to_model_orchestration": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 26034.6,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 33384.5,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 68308.1,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "multi_agent_decomposition": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 25162.6,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 62181.3,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 94969.1,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "public_content_law": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 1.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 17451.8,
+        "failure_modes": {}
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 1.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 41439.9,
+        "failure_modes": {}
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 27466.8,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "regex_pattern_creation": [
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 1.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 81424.2,
+        "failure_modes": {}
+      },
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 39125.1,
+        "failure_modes": {
+          "json_parse_error": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 81803.8,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 116792.5,
+        "failure_modes": {
+          "empty_content": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ],
+    "role_based_task_execution": [
+      {
+        "model": "gemma4:e4b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 41089.8,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "qwen3.5:9b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 73561.3,
+        "failure_modes": {
+          "json_parse_error": 1
+        }
+      },
+      {
+        "model": "gemma4:12b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 113143.9,
+        "failure_modes": {
+          "validator_failure": 1
+        }
+      },
+      {
+        "model": "deepseek-r1:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": 121466.2,
+        "failure_modes": {
+          "empty_content": 1
+        }
+      },
+      {
+        "model": "deepseek-coder-v2:latest",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      },
+      {
+        "model": "qwen3:8b",
+        "pass_rate": 0.0,
+        "runs": 1,
+        "avg_wall_duration_ms": null,
+        "failure_modes": {
+          "unavailable_or_timeout": 1
+        }
+      }
+    ]
+  },
+  "routing_rules": [
+    {
+      "domain_id": "compliance_policy",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "computer_control_app_use",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "conceptualization_strategy",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "data_analytics_kpi_diagnostics",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "financial_operations",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [
+        "gemma4:12b"
+      ],
+      "fallback_local_models": [
+        "gemma4:12b",
+        "gemma4:e4b",
+        "qwen3.5:9b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "full_business_operations",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:12b",
+        "qwen3.5:9b",
+        "gemma4:e4b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "market_forecasting_backtest",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "memory_context_management",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "model_to_model_orchestration",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "multi_agent_decomposition",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "public_content_law",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [
+        "gemma4:e4b",
+        "gemma4:12b"
+      ],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "gemma4:12b",
+        "qwen3.5:9b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "regex_pattern_creation",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [
+        "gemma4:12b"
+      ],
+      "fallback_local_models": [
+        "gemma4:12b",
+        "gemma4:e4b",
+        "qwen3.5:9b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    },
+    {
+      "domain_id": "role_based_task_execution",
+      "minimum_local_pass_rate": 0.8,
+      "preferred_local_models": [],
+      "fallback_local_models": [
+        "gemma4:e4b",
+        "qwen3.5:9b",
+        "gemma4:12b"
+      ],
+      "route_to_remote_or_human_when": [
+        "no preferred_local_models are present",
+        "the task has external authority, legal, financial, security, or public publishing consequence",
+        "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice"
+      ]
+    }
+  ]
+}

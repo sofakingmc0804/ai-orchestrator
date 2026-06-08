@@ -1,0 +1,46 @@
+{
+  "dispatch_id": "dsp_0aa8ae2d6820468b",
+  "service": "lm-studio",
+  "capability": "embeddings",
+  "model": "text-embedding-nomic-embed-text-v1.5",
+  "cost_class": "local_resource",
+  "success": true,
+  "output_summary": "embedding_dimensions=768",
+  "routing_decision": {
+    "intent_id": "int_596b4bb4e1054283",
+    "chosen_adapter": "lm-studio",
+    "candidates_considered": [
+      {
+        "id": "lm-studio:embeddings",
+        "adapter_name": "lm-studio",
+        "capability_id": "embeddings",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1
+      }
+    ],
+    "candidates_rejected": [],
+    "reasoning": "Explicit adapter proof selected lm-studio; billing class local_resource; no fallback permitted.",
+    "decided_at": "2026-06-06T05:51:54.288879Z"
+  },
+  "attempts": [
+    {
+      "id": "att_d3eee119d1b44b88",
+      "dispatch_id": "dsp_0aa8ae2d6820468b",
+      "intent_id": "int_596b4bb4e1054283",
+      "adapter_name": "lm-studio",
+      "attempt_number": 1,
+      "state": "completed",
+      "started_at": "2026-06-06T05:51:54.306941+00:00",
+      "completed_at": "2026-06-06T05:51:54.737546+00:00",
+      "detail": {
+        "model": "text-embedding-nomic-embed-text-v1.5",
+        "proof_mode": true
+      }
+    }
+  ],
+  "output_path": "C:\\Users\\Couch\\.orchestrator\\adapter-proof\\lm-studio\\ORCHESTRATOR_OUTPUT\\2026-06-06\\int_596b4bb4e1054283\\result.txt"
+}

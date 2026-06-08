@@ -1,0 +1,21 @@
+{
+  "billing_class": "local_resource",
+  "bulk": false,
+  "capabilities": [
+    "vision",
+    "document_intake",
+    "ocr"
+  ],
+  "consequence": "normal",
+  "context_tokens": 2000,
+  "created_at": "2026-06-05T04:12:50.433762Z",
+  "decision": "allow",
+  "model_id": "qwen2.5vl:3b",
+  "privacy": "normal",
+  "provider_allowlist": null,
+  "provider_id": "ollama-local",
+  "reason": "cheapest competent model selected after cost, quota, capability, and context gates",
+  "receipt_id": "20260605T041250433617Z-ocr",
+  "task_type": "ocr",
+  "value_reason": null
+}
