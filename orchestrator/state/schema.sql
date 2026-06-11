@@ -222,8 +222,12 @@ CREATE TABLE IF NOT EXISTS worker_cards (
     stats_json TEXT,
     best_jobs_json TEXT,
     avoid_jobs_json TEXT,
+    badges_json TEXT,
     approval_required BOOLEAN,
+    marginal_cost_json TEXT,
     source_evidence_json TEXT,
+    dynamic_state_json TEXT,
+    updated_at TEXT,
     last_verified TEXT
 );
 
@@ -247,4 +251,29 @@ CREATE TABLE IF NOT EXISTS budget_probes (
     probed_at TEXT,
     ok BOOLEAN,
     error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS token_usage (
+    id TEXT PRIMARY KEY,
+    dispatch_id TEXT REFERENCES dispatches(id),
+    attempt_id TEXT REFERENCES dispatch_attempts(id),
+    intent_id TEXT REFERENCES intents(id),
+    adapter_name TEXT,
+    provider TEXT,
+    model TEXT,
+    tokens_in INTEGER,
+    tokens_out INTEGER,
+    tokens_total INTEGER,
+    success INTEGER,
+    token_source TEXT,
+    confidence TEXT,
+    quota_provider TEXT,
+    quota_remaining_before INTEGER,
+    quota_remaining_after_estimate INTEGER,
+    quota_limit INTEGER,
+    quota_ratio_after_estimate REAL,
+    quota_probe_type TEXT,
+    quota_probe_ok INTEGER,
+    raw_usage_json TEXT,
+    created_at TEXT
 );

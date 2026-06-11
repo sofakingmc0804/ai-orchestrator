@@ -46,6 +46,20 @@ def _fmt_quota(provider: str, billing_class: str, quota_state: dict[str, dict[st
     return "unknown cost; disabled until classified"
 
 
+def _fmt_int(value: Any) -> str:
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _fmt_pct(value: Any) -> str:
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "unknown"
+
+
 async def _latest_receipts(settings: Settings) -> dict[str, dict[str, Any]]:
     query = """
         SELECT r.service, r.capability, r.model, r.cost_class, d.output_path, d.completed_at, r.full_receipt
@@ -75,6 +89,8 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
     quota_state = await store.latest_quota_state()
     repair_queue = await store.list_repair_queue()
     receipts = await _latest_receipts(settings)
+    token_rows = await store.list_token_usage(limit=500)
+    token_summary = await store.token_usage_summary(limit=500)
 
     caps_by_adapter: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for capability in capabilities:
@@ -105,6 +121,12 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
         )
 
     spec_counts = status.get("counts", {})
+    token_totals = {
+        "attempts": len(token_rows),
+        "tokens_in": sum(int(row.get("tokens_in") or 0) for row in token_rows),
+        "tokens_out": sum(int(row.get("tokens_out") or 0) for row in token_rows),
+        "tokens_total": sum(int(row.get("tokens_total") or 0) for row in token_rows),
+    }
     receipt_dir = settings.home / "owner-receipts"
     receipt_dir.mkdir(parents=True, exist_ok=True)
     receipt_path = receipt_dir / f"AI_ORCHESTRATOR_OWNER_RECEIPT_{_iso_slug()}.md"
@@ -120,6 +142,7 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
         f"- Spec status: `{spec_counts.get('passed', 0)} passed`, `{spec_counts.get('partial', 0)} partial`, `{spec_counts.get('missing', 0)} missing`.",
         f"- Services: `{len(services)}`. Capabilities: `{len(capabilities)}`. Open repairs: `{len(repair_queue)}`.",
         f"- Cost-class mix: `{dict(sorted(cost_counter.items()))}`.",
+        f"- Token flowmeters: `{token_totals['attempts']}` attempts, `{token_totals['tokens_total']:,}` total tokens counted or estimated.",
         "- Guardrail: metered and unknown-cost providers are not default routes; local/resource-cheap work remains first.",
         "",
         "## Providers",
@@ -131,6 +154,29 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
         lines.append(
             f"| {row['provider']} | `{row['adapter']}` | `{row['cost']}` | `{row['health']}` | {row['quota']} | `{row['proof']}` |"
         )
+    lines.extend(
+        [
+            "",
+            "## Token Flowmeters",
+            "",
+            "| Provider | Model | Attempts | Success rate | Tokens in | Tokens out | Total tokens | Avg per attempt |",
+            "|---|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for key, row in sorted(
+        token_summary.items(),
+        key=lambda item: int(item[1].get("tokens_total") or 0),
+        reverse=True,
+    ):
+        provider = str(row.get("provider") or key.split("|", 1)[0] or "unknown")
+        model = str(row.get("model") or (key.split("|", 1)[1] if "|" in key else "") or "unknown")
+        lines.append(
+            f"| {provider} | `{model}` | {_fmt_int(row.get('attempts'))} | {_fmt_pct(row.get('success_rate'))} | "
+            f"{_fmt_int(row.get('tokens_in'))} | {_fmt_int(row.get('tokens_out'))} | "
+            f"{_fmt_int(row.get('tokens_total'))} | {_fmt_int(row.get('avg_tokens_total'))} |"
+        )
+    if not token_summary:
+        lines.append("| none | `none` | 0 | unknown | 0 | 0 | 0 | 0 |")
     lines.extend(
         [
             "",
@@ -152,6 +198,7 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
             "capabilities": len(capabilities),
             "open_repairs": len(repair_queue),
             "cost_classes": dict(cost_counter),
+            "token_flowmeters": token_totals,
         },
     )
     return {
@@ -161,4 +208,5 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
         "capabilities": len(capabilities),
         "open_repairs": len(repair_queue),
         "cost_classes": dict(cost_counter),
+        "token_flowmeters": token_totals,
     }

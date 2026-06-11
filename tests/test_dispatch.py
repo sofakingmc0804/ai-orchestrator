@@ -71,6 +71,11 @@ async def test_prove_adapter_records_completed_local_receipt(tmp_path: Path) -> 
     assert result.receipt["cost_class"] == BillingClass.LOCAL_RESOURCE.value
     assert result.output_path is not None
     assert result.output_path.exists()
+    token_rows = await store.list_token_usage(dispatch_id=result.dispatch_id)
+    assert len(token_rows) == 1
+    assert token_rows[0]["success"] == 1
+    assert token_rows[0]["confidence"] == "estimated"
+    assert result.receipt["tokens_in"] == token_rows[0]["tokens_in"]
 
 
 @pytest.mark.asyncio
@@ -140,6 +145,16 @@ async def test_cli_dispatch_returns_compact_summary(monkeypatch: pytest.MonkeyPa
     assert len(str(compact["result_preview"])) == 500
 
 
+def test_budget_probe_provider_aliases_match_runtime_surfaces(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    store = StateStore(settings)
+    dispatcher = Dispatcher(settings, store, NotificationSpine(settings.notifications_path, store))
+
+    assert dispatcher._budget_probe_for_provider("ollama-local", [{"provider_id": "ollama"}]) == {"provider_id": "ollama"}
+    assert dispatcher._budget_probe_for_provider("github-copilot", [{"provider_id": "github_copilot"}]) == {"provider_id": "github_copilot"}
+    assert dispatcher._budget_probe_for_provider("claude-max", [{"provider_id": "claude"}]) == {"provider_id": "claude"}
+
+
 @pytest.mark.asyncio
 async def test_worker_dispatch_fallback_uses_candidate_specific_model(tmp_path: Path) -> None:
     class FakeAdapter:
@@ -194,3 +209,8 @@ async def test_worker_dispatch_fallback_uses_candidate_specific_model(tmp_path: 
     assert result.state == "completed"
     assert fake.models == ["slow-model", "fast-model"]
     assert result.receipt["model"] == "fast-model"
+    token_rows = await store.list_token_usage(dispatch_id=result.dispatch_id)
+    assert len(token_rows) == 2
+    assert sorted(row["success"] for row in token_rows) == [0, 1]
+    assert result.receipt["tokens_in"] == sum(int(row["tokens_in"] or 0) for row in token_rows)
+    assert result.receipt["tokens_out"] == sum(int(row["tokens_out"] or 0) for row in token_rows)

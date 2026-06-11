@@ -63,6 +63,8 @@ class StateStore:
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(schema)
             await self._ensure_scheduler_task_columns(db)
+            await self._ensure_worker_card_columns(db)
+            await self._ensure_receipt_columns(db)
             await db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (1, iso()),
@@ -77,6 +79,38 @@ class StateStore:
             "reviewed_at": "ALTER TABLE scheduler_tasks ADD COLUMN reviewed_at TEXT",
             "reviewed_by": "ALTER TABLE scheduler_tasks ADD COLUMN reviewed_by TEXT",
             "review_note": "ALTER TABLE scheduler_tasks ADD COLUMN review_note TEXT",
+        }
+        for column, statement in additions.items():
+            if column not in columns:
+                await db.execute(statement)
+
+        token_rows = await (await db.execute("PRAGMA table_info(token_usage)")).fetchall()
+        token_columns = {str(row[1]) for row in token_rows}
+        if "success" not in token_columns:
+            await db.execute("ALTER TABLE token_usage ADD COLUMN success INTEGER")
+
+    async def _ensure_worker_card_columns(self, db: aiosqlite.Connection) -> None:
+        rows = await (await db.execute("PRAGMA table_info(worker_cards)")).fetchall()
+        columns = {str(row[1]) for row in rows}
+        additions = {
+            "badges_json": "ALTER TABLE worker_cards ADD COLUMN badges_json TEXT DEFAULT '[]'",
+            "marginal_cost_json": "ALTER TABLE worker_cards ADD COLUMN marginal_cost_json TEXT DEFAULT '{}'",
+            "dynamic_state_json": "ALTER TABLE worker_cards ADD COLUMN dynamic_state_json TEXT DEFAULT '{}'",
+            "updated_at": "ALTER TABLE worker_cards ADD COLUMN updated_at TEXT",
+        }
+        for column, statement in additions.items():
+            if column not in columns:
+                await db.execute(statement)
+
+    async def _ensure_receipt_columns(self, db: aiosqlite.Connection) -> None:
+        rows = await (await db.execute("PRAGMA table_info(receipts)")).fetchall()
+        columns = {str(row[1]) for row in rows}
+        additions = {
+            "worker_id": "ALTER TABLE receipts ADD COLUMN worker_id TEXT",
+            "job_class": "ALTER TABLE receipts ADD COLUMN job_class TEXT",
+            "routing_reasoning": "ALTER TABLE receipts ADD COLUMN routing_reasoning TEXT",
+            "budget_state_json": "ALTER TABLE receipts ADD COLUMN budget_state_json TEXT",
+            "created_at": "ALTER TABLE receipts ADD COLUMN created_at TEXT",
         }
         for column, statement in additions.items():
             if column not in columns:
@@ -455,8 +489,8 @@ class StateStore:
             if receipt:
                 await db.execute(
                     """
-                    INSERT INTO receipts(dispatch_id, service, capability, model, tokens_in, tokens_out, cost_class, success, output_summary, full_receipt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO receipts(dispatch_id, service, capability, model, tokens_in, tokens_out, cost_class, success, output_summary, full_receipt, worker_id, job_class, routing_reasoning, budget_state_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(dispatch_id) DO UPDATE SET
                       service=excluded.service,
                       capability=excluded.capability,
@@ -466,7 +500,12 @@ class StateStore:
                       cost_class=excluded.cost_class,
                       success=excluded.success,
                       output_summary=excluded.output_summary,
-                      full_receipt=excluded.full_receipt
+                      full_receipt=excluded.full_receipt,
+                      worker_id=excluded.worker_id,
+                      job_class=excluded.job_class,
+                      routing_reasoning=excluded.routing_reasoning,
+                      budget_state_json=excluded.budget_state_json,
+                      created_at=excluded.created_at
                     """,
                     (
                         dispatch["id"],
@@ -479,11 +518,105 @@ class StateStore:
                         int(bool(receipt.get("success"))),
                         receipt.get("output_summary", ""),
                         json.dumps(receipt),
+                        receipt.get("worker_id"),
+                        receipt.get("job_class"),
+                        receipt.get("routing_reasoning"),
+                        receipt.get("budget_state_json"),
+                        receipt.get("created_at") or iso(),
                     ),
                 )
             await self._audit_in_db(db, str(dispatch.get("adapter_name") or "dispatcher"), "dispatch_state", str(dispatch["id"]), dispatch)
             await self._refresh_intent_project_memory_in_db(db, str(dispatch["intent_id"]))
             await db.commit()
+
+    async def record_token_usage(self, usage: dict[str, Any]) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO token_usage(
+                    id, dispatch_id, attempt_id, intent_id, adapter_name, provider, model,
+                    tokens_in, tokens_out, tokens_total, success, token_source, confidence,
+                    quota_provider, quota_remaining_before, quota_remaining_after_estimate,
+                    quota_limit, quota_ratio_after_estimate, quota_probe_type, quota_probe_ok,
+                    raw_usage_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    tokens_in=excluded.tokens_in,
+                    tokens_out=excluded.tokens_out,
+                    tokens_total=excluded.tokens_total,
+                    token_source=excluded.token_source,
+                    confidence=excluded.confidence,
+                    quota_remaining_after_estimate=excluded.quota_remaining_after_estimate,
+                    raw_usage_json=excluded.raw_usage_json
+                """,
+                (
+                    usage["id"],
+                    usage.get("dispatch_id"),
+                    usage.get("attempt_id"),
+                    usage.get("intent_id"),
+                    usage.get("adapter_name"),
+                    usage.get("provider"),
+                    usage.get("model"),
+                    int(usage.get("tokens_in") or 0),
+                    int(usage.get("tokens_out") or 0),
+                    int(usage.get("tokens_total") or 0),
+                    int(bool(usage.get("success"))),
+                    usage.get("token_source"),
+                    usage.get("confidence"),
+                    usage.get("quota_provider"),
+                    usage.get("quota_remaining_before"),
+                    usage.get("quota_remaining_after_estimate"),
+                    usage.get("quota_limit"),
+                    usage.get("quota_ratio_after_estimate"),
+                    usage.get("quota_probe_type"),
+                    int(bool(usage.get("quota_probe_ok"))) if usage.get("quota_probe_ok") is not None else None,
+                    usage.get("raw_usage_json"),
+                    usage.get("created_at") or iso(),
+                ),
+            )
+            await db.commit()
+
+    async def list_token_usage(self, dispatch_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        query = "SELECT * FROM token_usage"
+        params: tuple[Any, ...]
+        if dispatch_id:
+            query += " WHERE dispatch_id = ?"
+            params = (dispatch_id, limit)
+        else:
+            params = (limit,)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(query, params)).fetchall()
+            return [dict(r) for r in rows]
+
+    async def token_usage_summary(self, limit: int = 1000) -> dict[str, dict[str, Any]]:
+        rows = await self.list_token_usage(limit=limit)
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = f"{row.get('provider') or ''}|{row.get('model') or ''}"
+            item = grouped.setdefault(
+                key,
+                {
+                    "provider": row.get("provider"),
+                    "model": row.get("model"),
+                    "attempts": 0,
+                    "tokens_total": 0,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                },
+            )
+            item["attempts"] += 1
+            item["tokens_total"] += int(row.get("tokens_total") or 0)
+            item["tokens_in"] += int(row.get("tokens_in") or 0)
+            item["tokens_out"] += int(row.get("tokens_out") or 0)
+            item["successes"] = int(item.get("successes") or 0) + int(bool(row.get("success")))
+        for item in grouped.values():
+            attempts = max(int(item["attempts"]), 1)
+            item["avg_tokens_total"] = item["tokens_total"] / attempts
+            item["success_rate"] = int(item.get("successes") or 0) / attempts
+        return grouped
 
     async def record_dispatch_attempt(self, attempt: dict[str, Any]) -> None:
         async with aiosqlite.connect(self.path) as db:

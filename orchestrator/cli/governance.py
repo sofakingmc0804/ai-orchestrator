@@ -208,8 +208,18 @@ async def cmd_route(args: argparse.Namespace) -> None:
 
     workers = await store.db.fetch("SELECT * FROM worker_cards")
     quota_state = await store.latest_quota_state()
+    budget_probes = await store.db.fetch("SELECT * FROM budget_probes")
+    token_usage_summary = await store.token_usage_summary()
     intent = parse_intent(args.text)
-    decision = route_with_workers(intent, workers, args.job_class, quota_state=quota_state, job_class_spec=job)
+    decision = route_with_workers(
+        intent,
+        workers,
+        args.job_class,
+        quota_state=quota_state,
+        budget_probes=budget_probes,
+        job_class_spec=job,
+        token_usage_summary=token_usage_summary,
+    )
 
     if not decision.chosen_adapter:
         print(f"\nNo suitable workers found for job class: {args.job_class}")

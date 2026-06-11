@@ -245,6 +245,28 @@ async def _owner_receipt(settings: Settings) -> dict[str, object]:
     return await export_owner_receipt(settings)
 
 
+async def _token_flow(settings: Settings, limit: int = 50) -> dict[str, object]:
+    store = StateStore(settings)
+    await store.initialize()
+    rows = await store.list_token_usage(limit=limit)
+    summary = await store.token_usage_summary(limit=max(limit, 1000))
+    totals = {
+        "attempts": len(rows),
+        "tokens_in": sum(int(row.get("tokens_in") or 0) for row in rows),
+        "tokens_out": sum(int(row.get("tokens_out") or 0) for row in rows),
+        "tokens_total": sum(int(row.get("tokens_total") or 0) for row in rows),
+        "successes": sum(int(bool(row.get("success"))) for row in rows),
+    }
+    return {
+        "state": "produced",
+        "state_path": str(settings.state_path),
+        "limit": limit,
+        "totals": totals,
+        "by_provider_model": summary,
+        "attempts": rows,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="orchestrator")
     parser.add_argument("--home", default=None)
@@ -253,6 +275,8 @@ def main() -> None:
     sub.add_parser("status")
     sub.add_parser("spec-status")
     sub.add_parser("owner-receipt")
+    token_flow = sub.add_parser("token-flow")
+    token_flow.add_argument("--limit", type=int, default=50)
     dispatch = sub.add_parser("dispatch")
     dispatch.add_argument("text")
     dispatch.add_argument("--full", action="store_true", help="Print the full dispatch payload instead of a compact receipt summary")
@@ -331,6 +355,8 @@ def main() -> None:
         result = asyncio.run(_spec_status(settings))
     elif args.cmd == "owner-receipt":
         result = asyncio.run(_owner_receipt(settings))
+    elif args.cmd == "token-flow":
+        result = asyncio.run(_token_flow(settings, args.limit))
     elif args.cmd == "dispatch":
         result = asyncio.run(_dispatch(settings, args.text, args.full))
     elif args.cmd == "prove-adapter":

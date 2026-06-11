@@ -17,6 +17,7 @@ from orchestrator.routing.engine import route_intent
 from orchestrator.routing.project_policy import approval_required_for_tier, load_project_policy, output_base_for_project
 from orchestrator.routing.worker_routing import route_intent_worker_aware
 from orchestrator.state.store import StateStore, iso
+from orchestrator.usage.tokens import extract_token_usage, flowmeter_snapshot
 
 
 class Dispatcher:
@@ -119,11 +120,22 @@ class Dispatcher:
         # Phase 2: Load workers from DB
         workers = await self.store.db.fetch("SELECT * FROM worker_cards")
         job_class_spec = await self.store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", job_class)
+        budget_probes = await self.store.db.fetch("SELECT * FROM budget_probes")
+        token_usage_summary = await self.store.token_usage_summary()
 
         quota_state = await self.store.latest_quota_state()
         project_policy = project_policy or await self._project_policy(intent.project_id)
         if workers:
-            decision = route_intent_worker_aware(intent, workers, job_class, quota_state, project_policy, job_class_spec=job_class_spec)
+            decision = route_intent_worker_aware(
+                intent,
+                workers,
+                job_class,
+                quota_state,
+                project_policy,
+                job_class_spec=job_class_spec,
+                budget_probes=budget_probes,
+                token_usage_summary=token_usage_summary,
+            )
         else:
             capabilities = await self.store.list_capabilities()
             decision = route_intent(intent, capabilities, quota_state, project_policy)
@@ -204,6 +216,15 @@ class Dispatcher:
                 stop_candidate_retries = False
                 try:
                     result = await adapter.dispatch(attempt_envelope)
+                    token_usage = self._token_usage_for_attempt(
+                        result,
+                        attempt_envelope,
+                        adapter_name,
+                        attempt_id,
+                        dispatch_id,
+                        intent.id,
+                        budget_probes,
+                    )
                     if result.get("ok"):
                         attempt = {
                             "id": attempt_id,
@@ -214,11 +235,12 @@ class Dispatcher:
                             "state": "completed",
                             "started_at": attempt_started,
                             "completed_at": iso(),
-                            "detail": {"model": result.get("model")},
+                            "detail": {"model": result.get("model"), "token_usage": token_usage},
                         }
                         attempts.append(attempt)
+                        await self.store.record_token_usage(token_usage)
                         await self.store.record_dispatch_attempt(attempt)
-                        return await self._complete_dispatch(dispatch_id, intent, adapter_name, attempt_envelope, out_root, result, decision, attempts)
+                        return await self._complete_dispatch(dispatch_id, intent, adapter_name, attempt_envelope, out_root, result, decision, attempts, job_class, budget_probes)
                     last_error = str(result.get("error") or "adapter returned ok=false").strip() or "adapter returned ok=false"
                     repair_action = str(result.get("repair_action") or "Inspect adapter logs and provider configuration.")
                 except Exception as exc:
@@ -227,6 +249,15 @@ class Dispatcher:
                     if "timeout" in exc.__class__.__name__.lower() or "timed out" in last_error.lower():
                         repair_action = "Verify the provider command returns inside the adapter timeout and disable slow fallbacks."
                         stop_candidate_retries = True
+                    token_usage = self._token_usage_for_attempt(
+                        {"ok": False, "text": "", "error": last_error},
+                        attempt_envelope,
+                        adapter_name,
+                        attempt_id,
+                        dispatch_id,
+                        intent.id,
+                        budget_probes,
+                    )
                 attempt = {
                     "id": attempt_id,
                     "dispatch_id": dispatch_id,
@@ -237,9 +268,10 @@ class Dispatcher:
                     "started_at": attempt_started,
                     "completed_at": iso(),
                     "error": last_error,
-                    "detail": {"repair_action": repair_action},
+                    "detail": {"repair_action": repair_action, "token_usage": token_usage},
                 }
                 attempts.append(attempt)
+                await self.store.record_token_usage(token_usage)
                 await self.store.record_dispatch_attempt(attempt)
                 if stop_candidate_retries:
                     break
@@ -335,6 +367,7 @@ class Dispatcher:
         except Exception as exc:
             result = {"ok": False, "error": str(exc), "repair_action": "Inspect adapter proof logs and provider configuration."}
         if result.get("ok"):
+            token_usage = self._token_usage_for_attempt(result, envelope, adapter_name, attempt_id, dispatch_id, intent.id, [])
             attempt = {
                 "id": attempt_id,
                 "dispatch_id": dispatch_id,
@@ -344,13 +377,15 @@ class Dispatcher:
                 "state": "completed",
                 "started_at": attempt_started,
                 "completed_at": iso(),
-                "detail": {"model": result.get("model"), "proof_mode": True},
+                "detail": {"model": result.get("model"), "proof_mode": True, "token_usage": token_usage},
             }
+            await self.store.record_token_usage(token_usage)
             await self.store.record_dispatch_attempt(attempt)
-            return await self._complete_dispatch(dispatch_id, intent, adapter_name, envelope, out_root, result, decision, [attempt])
+            return await self._complete_dispatch(dispatch_id, intent, adapter_name, envelope, out_root, result, decision, [attempt], "adapter_proof", [])
 
         error = str(result.get("error") or "adapter proof returned ok=false")
         repair_action = str(result.get("repair_action") or "Inspect adapter logs and provider configuration.")
+        token_usage = self._token_usage_for_attempt(result, envelope, adapter_name, attempt_id, dispatch_id, intent.id, [])
         attempt = {
             "id": attempt_id,
             "dispatch_id": dispatch_id,
@@ -361,8 +396,9 @@ class Dispatcher:
             "started_at": attempt_started,
             "completed_at": iso(),
             "error": error,
-            "detail": {"repair_action": repair_action, "proof_mode": True},
+            "detail": {"repair_action": repair_action, "proof_mode": True, "token_usage": token_usage},
         }
+        await self.store.record_token_usage(token_usage)
         await self.store.record_dispatch_attempt(attempt)
         await self.store.add_or_get_open_repair_item(adapter_name, error, repair_action)
         await self.store.record_dispatch(
@@ -389,6 +425,59 @@ class Dispatcher:
         )
         return DispatchResult(dispatch_id=dispatch_id, intent_id=intent.id, adapter_name=adapter_name, state="failed", error=error)
 
+    def _token_usage_for_attempt(
+        self,
+        result: dict[str, Any],
+        envelope: dict[str, Any],
+        adapter_name: str,
+        attempt_id: str,
+        dispatch_id: str,
+        intent_id: str,
+        budget_probes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        usage = extract_token_usage(result, envelope, adapter_name)
+        provider = usage.get("provider") or envelope.get("provider") or adapter_name
+        probe = self._budget_probe_for_provider(str(provider), budget_probes)
+        metered = flowmeter_snapshot(usage, probe)
+        return {
+            "id": f"tok_{uuid.uuid4().hex[:16]}",
+            "dispatch_id": dispatch_id,
+            "attempt_id": attempt_id,
+            "intent_id": intent_id,
+            "success": bool(result.get("ok")),
+            **metered,
+            "created_at": iso(),
+        }
+
+    @staticmethod
+    def _budget_probe_for_provider(provider: str, budget_probes: list[dict[str, Any]]) -> dict[str, Any] | None:
+        normalized = provider.strip()
+        keys = {normalized, normalized.replace("-", "_"), normalized.replace("_", "-")}
+        aliases = {
+            "ollama-local": "ollama",
+            "ollama-http": "ollama",
+            "ollama-cli": "ollama",
+            "ollama-cloud": "ollama",
+            "github-copilot": "github_copilot",
+            "copilot-gh": "github_copilot",
+            "claude-max": "claude",
+            "claude-code-cli": "claude",
+            "gemini-cli": "gemini",
+            "gemini-oauth": "gemini",
+            "codex-chatgpt": "codex",
+            "codex-cli": "codex",
+            "hermes-nous": "nous",
+            "hermes-agent": "nous",
+        }
+        alias = aliases.get(normalized) or aliases.get(normalized.replace("_", "-"))
+        if alias:
+            keys.update({alias, alias.replace("-", "_"), alias.replace("_", "-")})
+        for probe in budget_probes:
+            probe_provider = str(probe.get("provider_id") or "")
+            if probe_provider in keys or probe_provider.replace("-", "_") in keys or probe_provider.replace("_", "-") in keys:
+                return probe
+        return None
+
     async def _complete_dispatch(
         self,
         dispatch_id: str,
@@ -399,6 +488,8 @@ class Dispatcher:
         result: dict[str, Any],
         decision: Any,
         attempts: list[dict[str, Any]],
+        job_class: str,
+        budget_probes: list[dict[str, Any]],
     ) -> DispatchResult:
         result_path = out_root / "result.txt"
         receipt_path = out_root / "receipt.json"
@@ -414,6 +505,8 @@ class Dispatcher:
             "service": adapter_name,
             "capability": intent.parsed_payload.get("required_capability"),
             "model": result.get("model"),
+            "tokens_in": sum(int(((attempt.get("detail") or {}).get("token_usage") or {}).get("tokens_in") or 0) for attempt in attempts),
+            "tokens_out": sum(int(((attempt.get("detail") or {}).get("token_usage") or {}).get("tokens_out") or 0) for attempt in attempts),
             "cost_class": str(chosen_candidate.get("billing_class") or "unknown_cost"),
             "success": True,
             "output_summary": text[:500],
@@ -421,6 +514,10 @@ class Dispatcher:
             "attempts": attempts,
             "output_path": str(result_path),
             "receipt_path": str(receipt_path),
+            "worker_id": chosen_candidate.get("worker_id"),
+            "job_class": job_class,
+            "routing_reasoning": decision.reasoning,
+            "budget_state_json": json.dumps({str(row.get("provider_id")): row for row in budget_probes}, default=str),
         }
         receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
         context_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")

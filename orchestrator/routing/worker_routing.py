@@ -34,6 +34,7 @@ from orchestrator.routing.engine import (
 
 
 CONTRACT_BLOCKLIST = {"metered_extra_cost", "third_party_metered", "unknown_cost"}
+CODING_MODEL_HINTS = ("coder", "code", "codex", "deepseek", "qwen")
 
 
 def _json_list(row: dict[str, Any], key: str) -> list[Any]:
@@ -75,6 +76,21 @@ def _job_required_capabilities(job_class_spec: dict[str, Any] | None) -> set[str
     except json.JSONDecodeError:
         return set()
     return {str(item) for item in parsed} if isinstance(parsed, list) else set()
+
+
+def _job_preferred_stats(job_class_spec: dict[str, Any] | None) -> dict[str, int]:
+    if not job_class_spec:
+        return {}
+    value = job_class_spec.get("preferred_stats") or job_class_spec.get("preferred_stats_json")
+    if isinstance(value, dict):
+        return {str(key): int(val) for key, val in value.items()}
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        return {}
+    return {str(key): int(val) for key, val in parsed.items()} if isinstance(parsed, dict) else {}
 
 
 def _worker_capability_pool(worker: dict[str, Any]) -> set[str]:
@@ -122,6 +138,114 @@ def _worker_capability_match(worker: dict[str, Any], required_caps: set[str]) ->
     return len(required_caps & worker_caps) / len(required_caps)
 
 
+def _provider_keys(provider: str) -> set[str]:
+    normalized = provider.strip()
+    keys = {normalized, normalized.replace("-", "_"), normalized.replace("_", "-")}
+    alias_roots = {
+        "ollama-local": "ollama",
+        "ollama-http": "ollama",
+        "ollama-cli": "ollama",
+        "ollama-cloud": "ollama",
+        "github-copilot": "github_copilot",
+        "copilot-gh": "github_copilot",
+        "claude-max": "claude",
+        "claude-code-cli": "claude",
+        "gemini-cli": "gemini",
+        "gemini-oauth": "gemini",
+        "codex-chatgpt": "codex",
+        "codex-cli": "codex",
+        "hermes-nous": "nous",
+        "hermes-agent": "nous",
+    }
+    alias = alias_roots.get(normalized) or alias_roots.get(normalized.replace("_", "-"))
+    if alias:
+        keys.update({alias, alias.replace("-", "_"), alias.replace("_", "-")})
+    return keys
+
+
+def _budget_score(worker: dict[str, Any], budget_lookup: dict[str, dict[str, Any]]) -> float:
+    contract = str(worker.get("contract_type") or "")
+    if contract == BillingClass.LOCAL_RESOURCE.value:
+        return 1.0
+    if contract == BillingClass.SUBSCRIPTION_UNLIMITED.value:
+        return 0.9
+    provider = str(worker.get("provider_id") or worker.get("surface") or "")
+    probe = next((row for key, row in budget_lookup.items() if key in _provider_keys(provider)), None)
+    if not probe:
+        return 0.45 if contract in {BillingClass.SUBSCRIPTION_QUOTA.value, BillingClass.SUBSCRIPTION_USAGE.value} else 0.0
+    if not probe.get("ok"):
+        return 0.15
+    limit = float(probe.get("limit") or 0)
+    remaining = float(probe.get("remaining") or 0)
+    if limit <= 0:
+        return 0.75
+    return max(0.0, min(1.0, remaining / limit))
+
+
+def _contract_pressure_score(worker: dict[str, Any]) -> float:
+    contract = str(worker.get("contract_type") or "")
+    stats = _json_dict(worker, "stats_json")
+    cost_pressure = float(stats.get("cost_pressure") or 0) / 10
+    base_by_contract = {
+        BillingClass.LOCAL_RESOURCE.value: 1.0,
+        BillingClass.SUBSCRIPTION_UNLIMITED.value: 0.72,
+        BillingClass.SUBSCRIPTION_USAGE.value: 0.64,
+        BillingClass.SUBSCRIPTION_QUOTA.value: 0.55,
+    }
+    base = base_by_contract.get(contract, 0.0)
+    if cost_pressure:
+        base = (base * 0.75) + (cost_pressure * 0.25)
+    return max(0.0, min(1.0, base))
+
+
+def _preferred_stat_score(worker: dict[str, Any], preferred_stats: dict[str, int]) -> float:
+    stats = _json_dict(worker, "stats_json")
+    if not preferred_stats:
+        defaults = ["speed", "stability", "coding"]
+        values = [float(stats.get(key) or 0) / 10 for key in defaults if key in stats]
+        return sum(values) / len(values) if values else 0.5
+    total_weight = sum(max(weight, 0) for weight in preferred_stats.values()) or 1
+    weighted = 0.0
+    for stat, weight in preferred_stats.items():
+        weighted += (float(stats.get(stat) or 0) / 10) * max(weight, 0)
+    return max(0.0, min(1.0, weighted / total_weight))
+
+
+def _speed_score(worker: dict[str, Any]) -> float:
+    stats = _json_dict(worker, "stats_json")
+    base = float(stats.get("speed") or 5) / 10
+    model = str(worker.get("model_id") or "").lower()
+    if any(size in model for size in ("0.5b", "1b", "3b", "7b", "8b")):
+        base += 0.08
+    if any(size in model for size in ("20b", "30b", "70b", "120b")):
+        base -= 0.18
+    return max(0.0, min(1.0, base))
+
+
+def _model_fit_score(worker: dict[str, Any], job_class: str) -> float:
+    model = str(worker.get("model_id") or "").lower()
+    if job_class in {"repo_coding", "simple_coding", "agentic_repair", "deep_debugging"}:
+        return 1.0 if any(hint in model for hint in CODING_MODEL_HINTS) else 0.55
+    if job_class in {"routing_triage", "bulk_extraction", "schema_validation"}:
+        return 0.9 if any(hint in model for hint in ("mini", "flash", "0.5b", "3b")) else 0.65
+    return 0.75
+
+
+def _token_efficiency_score(worker: dict[str, Any], token_usage_summary: dict[str, dict[str, Any]]) -> float:
+    provider = str(worker.get("provider_id") or worker.get("surface") or "")
+    model = str(worker.get("model_id") or "")
+    summary = token_usage_summary.get(f"{provider}|{model}") or token_usage_summary.get(f"{provider.replace('-', '_')}|{model}")
+    if not summary:
+        return 0.65
+    avg = float(summary.get("avg_tokens_total") or 0)
+    success_rate = float(summary.get("success_rate") or 0)
+    if avg <= 0:
+        efficiency = 0.65
+    else:
+        efficiency = max(0.0, min(1.0, 1.0 - (avg / 8192)))
+    return max(0.0, min(1.0, (efficiency * 0.45) + (success_rate * 0.55)))
+
+
 def route_with_workers(
     intent: Intent,
     workers: list[dict[str, Any]],
@@ -131,6 +255,7 @@ def route_with_workers(
     score_contract: dict[str, Any] | None = None,
     budget_probes: list[dict[str, Any]] | None = None,
     job_class_spec: dict[str, Any] | None = None,
+    token_usage_summary: dict[str, dict[str, Any]] | None = None,
 ) -> RoutingDecision:
     """Route intent to best worker using worker cards.
 
@@ -150,6 +275,7 @@ def route_with_workers(
     """
     quota_state = quota_state or {}
     project_policy = project_policy or {}
+    token_usage_summary = token_usage_summary or {}
 
     # Build budget probe lookup
     budget_lookup: dict[str, dict[str, Any]] = {}
@@ -163,6 +289,7 @@ def route_with_workers(
             }
 
     required_caps = _job_required_capabilities(job_class_spec)
+    preferred_stats = _job_preferred_stats(job_class_spec)
 
     considered: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -235,14 +362,35 @@ def route_with_workers(
                     rejected.append(row)
                     continue
 
-        # Calculate composite score
-        # Higher is better: job_score + cap_score + benchmark bonus
         benchmark_score = float(worker.get("benchmark_score") or 0.0)
-        composite = (job_score * 0.4) + (cap_score * 0.4) + (benchmark_score * 0.2)
+        stat_score = _preferred_stat_score(worker, preferred_stats)
+        speed_score = _speed_score(worker)
+        budget_fit = _budget_score(worker, budget_lookup)
+        contract_score = _contract_pressure_score(worker)
+        model_fit = _model_fit_score(worker, job_class)
+        token_score = _token_efficiency_score(worker, token_usage_summary)
+        composite = (
+            (job_score * 0.14)
+            + (cap_score * 0.14)
+            + (stat_score * 0.14)
+            + (speed_score * 0.08)
+            + (budget_fit * 0.10)
+            + (contract_score * 0.22)
+            + (model_fit * 0.08)
+            + (token_score * 0.06)
+            + (benchmark_score * 0.04)
+        )
+        composite = max(0.0, min(1.0, composite))
 
         row["composite_score"] = composite
         row["job_class_fit"] = job_score
         row["capability_match"] = cap_score
+        row["preferred_stat_score"] = stat_score
+        row["speed_score"] = speed_score
+        row["budget_score"] = budget_fit
+        row["contract_pressure_score"] = contract_score
+        row["model_fit_score"] = model_fit
+        row["token_efficiency_score"] = token_score
         considered.append(row)
 
     # Sort by composite score, then contract type (cheapest first)
@@ -264,6 +412,12 @@ def route_with_workers(
             f"best composite score ({chosen_worker.get('composite_score', 0):.2f}) "
             f"from job fit ({chosen_worker.get('job_class_fit', 0):.2f}), "
             f"capability match ({chosen_worker.get('capability_match', 0):.2f}), "
+            f"preferred stats ({chosen_worker.get('preferred_stat_score', 0):.2f}), "
+            f"speed ({chosen_worker.get('speed_score', 0):.2f}), "
+            f"budget ({chosen_worker.get('budget_score', 0):.2f}), "
+            f"contract pressure ({chosen_worker.get('contract_pressure_score', 0):.2f}), "
+            f"model fit ({chosen_worker.get('model_fit_score', 0):.2f}), "
+            f"token efficiency ({chosen_worker.get('token_efficiency_score', 0):.2f}), "
             f"and benchmark score ({chosen_worker.get('benchmark_score', 0):.2f})."
         )
     else:
@@ -285,6 +439,8 @@ def route_intent_worker_aware(
     quota_state: dict[str, dict[str, Any]] | None = None,
     project_policy: dict[str, Any] | None = None,
     job_class_spec: dict[str, Any] | None = None,
+    budget_probes: list[dict[str, Any]] | None = None,
+    token_usage_summary: dict[str, dict[str, Any]] | None = None,
 ) -> RoutingDecision:
     """Route intent using worker-aware routing.
 
@@ -306,4 +462,13 @@ def route_intent_worker_aware(
         from orchestrator.routing.engine import route_intent
         return route_intent(intent, [], quota_state, project_policy)
 
-    return route_with_workers(intent, workers, job_class, quota_state, project_policy, job_class_spec=job_class_spec)
+    return route_with_workers(
+        intent,
+        workers,
+        job_class,
+        quota_state,
+        project_policy,
+        budget_probes=budget_probes,
+        job_class_spec=job_class_spec,
+        token_usage_summary=token_usage_summary,
+    )
