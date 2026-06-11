@@ -8,6 +8,7 @@ from typing import Any
 
 from orchestrator.config import Settings
 from orchestrator.discovery.budget_probes import run_all_probes, probe_to_dict
+from orchestrator.discovery.subscription_usage import build_api_budget_payload, build_subscription_usage_payload
 from orchestrator.state.store import StateStore
 
 
@@ -33,7 +34,7 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
 
 
 async def cmd_refresh_budget(args: argparse.Namespace) -> None:
-    """Run budget probes manually and store results."""
+    """Run legacy API budget probes manually and store results."""
     settings = settings_from_args(args)
     store = StateStore(settings)
     await store.initialize()
@@ -104,41 +105,99 @@ async def cmd_refresh_budget(args: argparse.Namespace) -> None:
 
 
 async def cmd_budget_status(args: argparse.Namespace) -> None:
-    """Show current budget state from DB (no probe)."""
+    """Show split subscription/API budget state from DB (no probe)."""
     settings = settings_from_args(args)
     store = StateStore(settings)
     await store.initialize()
 
-    rows = await store.db.fetch("SELECT * FROM budget_probes ORDER BY provider_id, probe_type")
+    subscriptions = await build_subscription_usage_payload(store, refresh=False)
+    api_budgets = await build_api_budget_payload(store)
 
+    print(f"\n{'='*96}")
+    print("Subscription Usage - account/profile scoped")
+    print(f"{'='*96}")
+    print(f"{'Service':<24} {'Account':<24} {'App tokens':>12} {'Windows':>8} {'Current/left':>20} {'Proof':<24}")
+    print(f"{'='*96}")
+    rows = subscriptions.get("subscriptions") or []
     if not rows:
-        print("\nNo budget probes in DB. Run 'orchestrator cli refresh-budget' first.\n")
-        await store.close()
-        return
-
-    print(f"\n{'='*80}")
-    print(f"Budget State (from DB) - Last probed: {rows[0]['probed_at']}")
-    print(f"{'='*80}")
-    print(f"{'Provider':<20} {'Type':<20} {'Remaining':>12} {'Limit':>10} {'% Left':>8} {'Status':<10}")
-    print(f"{'='*80}")
-
+        print("No subscription snapshots in DB. Run 'orchestrator cli refresh-subscriptions' first.")
     for row in rows:
-        remaining = row['remaining'] or 0
-        limit = row['limit'] or 0
-        pct = (remaining / limit * 100) if limit > 0 else 0
-
-        if pct > 50:
-            status = "OK"
-        elif pct > 20:
-            status = "LOW"
-        else:
-            status = "CRIT"
-
-        print(f"{row['provider_id']:<20} {row['probe_type']:<20} {remaining:>12,} {limit:>10,} {pct:>7.1f}% {status:<10}")
-
-    print(f"{'='*80}\n")
+        print(
+            f"{str(row.get('service_id') or ''):<24} "
+            f"{str(row.get('account_id') or '')[:24]:<24} "
+            f"{int(row.get('tokens_used_by_app') or 0):>12,} "
+            f"{len(_windows(row)):>8} "
+            f"{_fmt_window_summary(row):>20} "
+            f"{str(row.get('confidence') or 'unproved'):<24}"
+        )
+    print(f"{'='*96}")
+    print("API budgets are policy caps. No cap means uncapped API access for orchestrator policy purposes.")
+    print(f"Policy rows: {len(api_budgets.get('policies') or [])} | Legacy probes retained: {len(api_budgets.get('legacy_probes') or [])}")
+    print(f"{'='*96}\n")
 
     await store.close()
+
+
+async def cmd_refresh_subscriptions(args: argparse.Namespace) -> None:
+    """Refresh subscription usage through local CLI account surfaces."""
+    settings = settings_from_args(args)
+    store = StateStore(settings)
+    await store.initialize()
+    payload = await build_subscription_usage_payload(store, refresh=True)
+    print(f"\n{'='*96}")
+    print(f"Subscription Refresh - {utc_now()}")
+    print(f"{'='*96}")
+    print(f"{'Service':<24} {'Account':<24} {'App tokens':>12} {'Windows':>8} {'Current/left':>20} {'Proof':<24}")
+    print(f"{'='*96}")
+    for row in payload.get("subscriptions") or []:
+        print(
+            f"{str(row.get('service_id') or ''):<24} "
+            f"{str(row.get('account_id') or '')[:24]:<24} "
+            f"{int(row.get('tokens_used_by_app') or 0):>12,} "
+            f"{len(_windows(row)):>8} "
+            f"{_fmt_window_summary(row):>20} "
+            f"{str(row.get('confidence') or 'unproved'):<24}"
+        )
+        if row.get("error"):
+            print(f"  {row.get('error')}")
+    refresh = payload.get("refresh") or {}
+    print(f"{'='*96}")
+    print(f"Stored: {refresh.get('stored', 0)} | Unproved: {refresh.get('failed', 0)} | Total: {refresh.get('total', 0)}")
+    print(f"{'='*96}\n")
+    await store.close()
+
+
+def _fmt_int(value: Any) -> str:
+    if value is None:
+        return "unproved"
+
+
+def _windows(row: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = row.get("usage_windows_json") or "[]"
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    try:
+        parsed = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def _fmt_window_summary(row: dict[str, Any]) -> str:
+    windows = _windows(row)
+    if windows:
+        first = windows[0]
+        if first.get("current") is not None:
+            return f"{first.get('current')} {str(first.get('unit') or 'units')[:8]}"
+        if first.get("remaining_percent") is not None:
+            return f"{float(first['remaining_percent']):.1f}% left"
+    if row.get("tokens_remaining") is not None:
+        return f"{_fmt_int(row.get('tokens_remaining'))} tokens"
+    return str(row.get("status") or "unproved")[:20]
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "unproved"
 
 
 def register_budget_cli(subparsers: argparse._SubParsersAction) -> None:
@@ -151,3 +210,6 @@ def register_budget_cli(subparsers: argparse._SubParsersAction) -> None:
     # budget-status command (alias for 'budget' from governance.py)
     p_status = subparsers.add_parser("budget-status", help="Show current budget state from DB")
     p_status.set_defaults(func=cmd_budget_status)
+
+    p_refresh_subscriptions = subparsers.add_parser("refresh-subscriptions", help="Refresh subscription usage from logged-in CLIs")
+    p_refresh_subscriptions.set_defaults(func=cmd_refresh_subscriptions)

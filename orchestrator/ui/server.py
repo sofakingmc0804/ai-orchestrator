@@ -23,6 +23,7 @@ from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
 from orchestrator.scheduler.cron import start_due_scheduler_thread
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
 from orchestrator.state.store import StateStore
+from orchestrator.discovery.subscription_usage import build_api_budget_payload, build_subscription_usage_payload
 from orchestrator.usage.flow import build_token_flow_payload
 
 
@@ -95,13 +96,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/budget")
     async def budget() -> dict[str, object]:
-        return {"probes": await store.list_budget_probes()}
+        return {
+            "state": "produced",
+            "budget_model": "split",
+            "subscriptions": await build_subscription_usage_payload(store, refresh=False),
+            "api_budgets": await build_api_budget_payload(store),
+            "legacy_probes": await store.list_budget_probes(),
+        }
+
+    @app.get("/api/subscriptions")
+    async def subscriptions() -> dict[str, object]:
+        return await build_subscription_usage_payload(store, refresh=False)
+
+    @app.get("/api/api-budgets")
+    async def api_budgets() -> dict[str, object]:
+        return await build_api_budget_payload(store)
 
     @app.post("/api/budget/refresh")
     async def budget_refresh() -> dict[str, object]:
         probes = [probe_to_dict(probe) for probe in run_all_probes()]
         result = await store.upsert_budget_probes(probes)
         return {**result, "probes": probes}
+
+    @app.post("/api/subscriptions/refresh")
+    async def subscriptions_refresh() -> dict[str, object]:
+        return await build_subscription_usage_payload(store, refresh=True)
 
     @app.get("/api/services")
     async def services() -> list[dict[str, object]]:

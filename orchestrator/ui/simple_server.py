@@ -24,6 +24,7 @@ from orchestrator.scheduler.cron import start_due_scheduler_thread
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
+from orchestrator.discovery.subscription_usage import build_api_budget_payload, build_subscription_usage_payload
 from orchestrator.usage.flow import build_token_flow_payload
 
 
@@ -144,7 +145,24 @@ def make_handler(runtime: OrchestratorRuntime):
                 self._send(200, _json_bytes({"receipts": asyncio.run(runtime.store.list_receipts(limit=limit))}))
                 return
             if path == "/api/budget":
-                self._send(200, _json_bytes({"probes": asyncio.run(runtime.store.list_budget_probes())}))
+                self._send(
+                    200,
+                    _json_bytes(
+                        {
+                            "state": "produced",
+                            "budget_model": "split",
+                            "subscriptions": asyncio.run(build_subscription_usage_payload(runtime.store, refresh=False)),
+                            "api_budgets": asyncio.run(build_api_budget_payload(runtime.store)),
+                            "legacy_probes": asyncio.run(runtime.store.list_budget_probes()),
+                        }
+                    ),
+                )
+                return
+            if path == "/api/subscriptions":
+                self._send(200, _json_bytes(asyncio.run(build_subscription_usage_payload(runtime.store, refresh=False))))
+                return
+            if path == "/api/api-budgets":
+                self._send(200, _json_bytes(asyncio.run(build_api_budget_payload(runtime.store))))
                 return
             if path == "/api/capabilities":
                 self._send(200, _json_bytes(asyncio.run(runtime.store.list_capabilities())))
@@ -216,6 +234,9 @@ def make_handler(runtime: OrchestratorRuntime):
                 probes = [probe_to_dict(probe) for probe in run_all_probes()]
                 result = asyncio.run(runtime.store.upsert_budget_probes(probes))
                 self._send(200, _json_bytes({**result, "probes": probes}))
+                return
+            if path == "/api/subscriptions/refresh":
+                self._send(200, _json_bytes(asyncio.run(build_subscription_usage_payload(runtime.store, refresh=True))))
                 return
             if path == "/api/repair-services":
                 self._send(200, _json_bytes(asyncio.run(repair_core_services(runtime.store))))

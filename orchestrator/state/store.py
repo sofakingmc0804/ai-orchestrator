@@ -66,6 +66,7 @@ class StateStore:
             await self._ensure_scheduler_task_columns(db)
             await self._ensure_worker_card_columns(db)
             await self._ensure_receipt_columns(db)
+            await self._ensure_budget_lane_tables(db)
             await db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (1, iso()),
@@ -84,6 +85,61 @@ class StateStore:
         for column, statement in additions.items():
             if column not in columns:
                 await db.execute(statement)
+
+    async def _ensure_budget_lane_tables(self, db: aiosqlite.Connection) -> None:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS subscription_usage_snapshots (
+                id TEXT PRIMARY KEY,
+                service_id TEXT,
+                account_id TEXT,
+                profile_id TEXT,
+                subscription_name TEXT,
+                plan_name TEXT,
+                source_type TEXT,
+                source_command TEXT,
+                tokens_limit INTEGER,
+                tokens_used_total INTEGER,
+                tokens_remaining INTEGER,
+                tokens_used_by_app INTEGER,
+                tokens_used_elsewhere INTEGER,
+                reset_at TEXT,
+                checked_at TEXT,
+                ok BOOLEAN,
+                confidence TEXT,
+                status TEXT,
+                error TEXT,
+                usage_windows_json TEXT,
+                raw_json TEXT
+            )
+            """
+        )
+        subscription_rows = await (await db.execute("PRAGMA table_info(subscription_usage_snapshots)")).fetchall()
+        subscription_columns = {str(row[1]) for row in subscription_rows}
+        subscription_additions = {
+            "status": "ALTER TABLE subscription_usage_snapshots ADD COLUMN status TEXT",
+            "usage_windows_json": "ALTER TABLE subscription_usage_snapshots ADD COLUMN usage_windows_json TEXT",
+        }
+        for column, statement in subscription_additions.items():
+            if column not in subscription_columns:
+                await db.execute(statement)
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS api_budget_policies (
+                id TEXT PRIMARY KEY,
+                provider_id TEXT,
+                account_id TEXT,
+                policy_name TEXT,
+                budget_limit_usd REAL,
+                budget_window TEXT,
+                current_spend_usd REAL,
+                reset_at TEXT,
+                enabled BOOLEAN DEFAULT 0,
+                updated_at TEXT,
+                note TEXT
+            )
+            """
+        )
 
         token_rows = await (await db.execute("PRAGMA table_info(token_usage)")).fetchall()
         token_columns = {str(row[1]) for row in token_rows}
@@ -678,6 +734,131 @@ class StateStore:
                     failed += 1
             await db.commit()
         return {"stored": stored, "failed": failed, "total": len(probes)}
+
+    async def upsert_subscription_usage_snapshots(self, snapshots: list[dict[str, Any]]) -> dict[str, int]:
+        stored = 0
+        failed = 0
+        async with aiosqlite.connect(self.path) as db:
+            service_ids = sorted({str(item.get("service_id") or "") for item in snapshots if item.get("service_id")})
+            if service_ids:
+                marks = ",".join("?" for _ in service_ids)
+                await db.execute(f"DELETE FROM subscription_usage_snapshots WHERE service_id IN ({marks})", service_ids)
+            for item in snapshots:
+                await db.execute(
+                    """
+                    INSERT INTO subscription_usage_snapshots(
+                        id, service_id, account_id, profile_id, subscription_name, plan_name,
+                        source_type, source_command, tokens_limit, tokens_used_total,
+                        tokens_remaining, tokens_used_by_app, tokens_used_elsewhere,
+                        reset_at, checked_at, ok, confidence, status, error,
+                        usage_windows_json, raw_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        subscription_name=excluded.subscription_name,
+                        plan_name=excluded.plan_name,
+                        source_type=excluded.source_type,
+                        source_command=excluded.source_command,
+                        tokens_limit=excluded.tokens_limit,
+                        tokens_used_total=excluded.tokens_used_total,
+                        tokens_remaining=excluded.tokens_remaining,
+                        tokens_used_by_app=excluded.tokens_used_by_app,
+                        tokens_used_elsewhere=excluded.tokens_used_elsewhere,
+                        reset_at=excluded.reset_at,
+                        checked_at=excluded.checked_at,
+                        ok=excluded.ok,
+                        confidence=excluded.confidence,
+                        status=excluded.status,
+                        error=excluded.error,
+                        usage_windows_json=excluded.usage_windows_json,
+                        raw_json=excluded.raw_json
+                    """,
+                    (
+                        item["id"],
+                        item.get("service_id"),
+                        item.get("account_id"),
+                        item.get("profile_id"),
+                        item.get("subscription_name"),
+                        item.get("plan_name"),
+                        item.get("source_type"),
+                        item.get("source_command"),
+                        item.get("tokens_limit"),
+                        item.get("tokens_used_total"),
+                        item.get("tokens_remaining"),
+                        item.get("tokens_used_by_app"),
+                        item.get("tokens_used_elsewhere"),
+                        item.get("reset_at"),
+                        item.get("checked_at"),
+                        int(bool(item.get("ok"))),
+                        item.get("confidence"),
+                        item.get("status"),
+                        item.get("error"),
+                        item.get("usage_windows_json"),
+                        item.get("raw_json"),
+                    ),
+                )
+                if item.get("ok"):
+                    stored += 1
+                else:
+                    failed += 1
+            await db.commit()
+        return {"stored": stored, "failed": failed, "total": len(snapshots)}
+
+    async def list_subscription_usage_snapshots(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM subscription_usage_snapshots
+                    ORDER BY subscription_name, account_id, profile_id
+                    """
+                )
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def list_api_budget_policies(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT *
+                    FROM api_budget_policies
+                    ORDER BY provider_id, account_id, policy_name
+                    """
+                )
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def token_usage_by_subscription_source(self) -> dict[str, int]:
+        alias_groups = {
+            "openai_chatgpt": ("openai", "codex", "chatgpt", "openai-api"),
+            "anthropic_claude": ("claude", "claude-max", "anthropic", "anthropic-api"),
+            "github_copilot": ("github_copilot", "github-copilot", "copilot", "copilot-gh"),
+            "google_gemini": ("gemini", "google", "google-gemini"),
+            "nous_hermes": ("nous", "hermes", "nous-portal"),
+        }
+        totals = {key: 0 for key in alias_groups}
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT provider, adapter_name, model, quota_provider, SUM(tokens_total) AS tokens_total
+                    FROM token_usage
+                    GROUP BY provider, adapter_name, model, quota_provider
+                    """
+                )
+            ).fetchall()
+        for row in rows:
+            haystack = " ".join(str(row[key] or "").lower() for key in ("provider", "adapter_name", "model", "quota_provider"))
+            tokens = int(row["tokens_total"] or 0)
+            for source_id, aliases in alias_groups.items():
+                if any(alias in haystack for alias in aliases):
+                    totals[source_id] += tokens
+        return totals
 
     async def backfill_token_usage_from_receipts(self, limit: int = 10000) -> dict[str, Any]:
         async with aiosqlite.connect(self.path) as db:

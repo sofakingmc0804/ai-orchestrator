@@ -157,6 +157,27 @@ def test_simple_server_dashboard_routes_and_api_contract(monkeypatch: pytest.Mon
         async def upsert_budget_probes(self, probes: list[dict[str, Any]]) -> dict[str, int]:
             return {"stored": len(probes), "failed": 0, "total": len(probes)}
 
+        async def list_subscription_usage_snapshots(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "service_id": "openai_chatgpt",
+                    "account_id": "matt@example.com",
+                    "profile_id": "default",
+                    "subscription_name": "OpenAI ChatGPT / Codex",
+                    "tokens_used_by_app": 25,
+                    "tokens_used_total": 100,
+                    "tokens_remaining": 900,
+                    "confidence": "cli_exact",
+                    "checked_at": "2026-06-11T00:00:00Z",
+                }
+            ]
+
+        async def upsert_subscription_usage_snapshots(self, snapshots: list[dict[str, Any]]) -> dict[str, int]:
+            return {"stored": len(snapshots), "failed": 0, "total": len(snapshots)}
+
+        async def list_api_budget_policies(self) -> list[dict[str, Any]]:
+            return []
+
     class FakeRuntime:
         settings = type(
             "Settings",
@@ -179,6 +200,8 @@ def test_simple_server_dashboard_routes_and_api_contract(monkeypatch: pytest.Mon
         workers = httpx.get(f"{base}/api/workers", timeout=10).json()
         receipts = httpx.get(f"{base}/api/receipts?limit=1", timeout=10).json()
         budget = httpx.get(f"{base}/api/budget", timeout=10).json()
+        subscriptions = httpx.get(f"{base}/api/subscriptions", timeout=10).json()
+        api_budgets = httpx.get(f"{base}/api/api-budgets", timeout=10).json()
         budget_refresh = httpx.post(f"{base}/api/budget/refresh", timeout=10).json()
     finally:
         server.shutdown()
@@ -190,7 +213,9 @@ def test_simple_server_dashboard_routes_and_api_contract(monkeypatch: pytest.Mon
     assert status["dispatches"][0]["id"] == "dsp_ui"
     assert workers["workers"][0]["worker_id"] == "qwen@ollama-local"
     assert receipts["receipts"][0]["dispatch_id"] == "dsp_ui"
-    assert budget["probes"][0]["provider_id"] == "ollama"
+    assert budget["budget_model"] == "split"
+    assert subscriptions["subscriptions"][0]["service_id"] == "openai_chatgpt"
+    assert api_budgets["legacy_probes"][0]["provider_id"] == "ollama"
     assert budget_refresh["total"] == 0
 
 

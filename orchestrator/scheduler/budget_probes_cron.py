@@ -1,7 +1,7 @@
-"""Budget probe scheduler — runs probes every 15 minutes.
+"""Budget probe scheduler — runs usage probes every 15 minutes.
 
 Integrates with the orchestrator scheduler to refresh budget state.
-Results stored in `budget_probes` table for routing decisions.
+Subscription snapshots and legacy API probes are stored separately.
 
 Author: Hermes Agent
 Date: 2026-06-10
@@ -14,13 +14,14 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from orchestrator.discovery.budget_probes import run_all_probes, probe_to_dict
+from orchestrator.discovery.subscription_usage import probe_subscription_usage, snapshot_to_dict
 
 if TYPE_CHECKING:
     from orchestrator.state.store import StateStore
 
 
 async def run_budget_probes(store: "StateStore") -> dict:
-    """Run all budget probes and store results.
+    """Run subscription usage probes and legacy API probes.
 
     Args:
         store: State store for persisting probe results
@@ -28,6 +29,9 @@ async def run_budget_probes(store: "StateStore") -> dict:
     Returns:
         Dict with probe summary
     """
+    subscription_results = await probe_subscription_usage(store.settings, store)
+    subscription_summary = await store.upsert_subscription_usage_snapshots([snapshot_to_dict(result) for result in subscription_results])
+
     results = run_all_probes()
 
     # Store each probe result
@@ -71,9 +75,12 @@ async def run_budget_probes(store: "StateStore") -> dict:
 
     return {
         "probed_at": results[0].probed_at if results else None,
-        "stored": stored,
-        "failed": failed,
-        "total": len(results),
+        "subscription_stored": subscription_summary["stored"],
+        "subscription_failed": subscription_summary["failed"],
+        "subscription_total": subscription_summary["total"],
+        "api_probe_stored": stored,
+        "api_probe_failed": failed,
+        "api_probe_total": len(results),
         "providers": [r.provider_id for r in results],
     }
 
@@ -101,9 +108,8 @@ def register_budget_probe_scheduler(scheduler_tasks: list) -> list:
     """
     from orchestrator.scheduler.tasks import SchedulerTask
 
-    # Add 15-minute budget probe task
     budget_probe_task = {
-        "name": "budget-probe-refresh",
+        "name": "subscription-and-api-budget-refresh",
         "task_type": "budget_probe",
         "schedule_kind": "interval",
         "interval_seconds": 900,  # 15 minutes

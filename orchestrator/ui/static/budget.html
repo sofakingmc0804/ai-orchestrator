@@ -3,392 +3,370 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Budget Dashboard — AI Orchestrator</title>
+    <title>Usage Budgets - AI Orchestrator</title>
     <style>
         :root {
-            --bg: #0f172a;
-            --card-bg: #1e293b;
-            --text: #f1f5f9;
-            --text-muted: #94a3b8;
-            --border: #334155;
-            --success: #22c55e;
-            --warning: #f59e0b;
-            --danger: #ef4444;
-            --primary: #3b82f6;
+            --bg: #0b1020;
+            --panel: #151c2f;
+            --card: #1b2438;
+            --line: #313b52;
+            --text: #eef3fb;
+            --muted: #9aa8bd;
+            --good: #32c273;
+            --warn: #e8ad36;
+            --bad: #f05b5b;
+            --blue: #62a8ff;
+            --cyan: #4dcbd1;
         }
-        
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
+
+        * { box-sizing: border-box; }
+        html {
+            min-height: 100%;
+            overflow-y: auto;
         }
-        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            min-height: 100%;
+            margin: 0;
             background: var(--bg);
             color: var(--text);
-            line-height: 1.6;
-            padding: 2rem;
+            font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+            overflow-y: auto;
         }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        
+        .wrap { max-width: 1320px; margin: 0 auto; min-height: 100vh; padding: 18px 18px 48px; }
+        nav { display: flex; gap: 18px; margin-bottom: 18px; }
+        nav a { color: var(--muted); text-decoration: none; }
+        nav a.active, nav a:hover { color: var(--text); }
         header {
-            margin-bottom: 2rem;
-            padding-bottom: 1rem;
-            border-bottom: 1px solid var(--border);
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            gap: 16px;
+            align-items: flex-start;
+            padding-bottom: 14px;
+            border-bottom: 1px solid var(--line);
+            margin-bottom: 16px;
         }
-        
-        h1 {
-            font-size: 1.75rem;
-            font-weight: 600;
-        }
-        
-        .last-refresh {
-            color: var(--text-muted);
-            font-size: 0.875rem;
-        }
-        
-        .refresh-btn {
-            background: var(--primary);
-            color: white;
-            border: none;
-            padding: 0.5rem 1rem;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.875rem;
-            transition: background 0.2s;
-        }
-        
-        .refresh-btn:hover {
-            background: #2563eb;
-        }
-        
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-        
-        .card {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1.5rem;
-        }
-        
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-            padding-bottom: 0.75rem;
-            border-bottom: 1px solid var(--border);
-        }
-        
-        .provider-name {
-            font-size: 1.125rem;
-            font-weight: 600;
-        }
-        
-        .status-badge {
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-        
-        .status-ok {
-            background: rgba(34, 197, 94, 0.2);
-            color: var(--success);
-        }
-        
-        .status-low {
-            background: rgba(245, 158, 11, 0.2);
-            color: var(--warning);
-        }
-        
-        .status-crit {
-            background: rgba(239, 68, 68, 0.2);
-            color: var(--danger);
-        }
-        
-        .status-unknown {
-            background: rgba(148, 163, 184, 0.2);
-            color: var(--text-muted);
-        }
-        
-        .metric-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.5rem 0;
-            border-bottom: 1px solid var(--border);
-        }
-        
-        .metric-row:last-child {
-            border-bottom: none;
-        }
-        
-        .metric-label {
-            color: var(--text-muted);
-            font-size: 0.875rem;
-        }
-        
-        .metric-value {
-            font-weight: 600;
-        }
-        
-        .progress-bar {
-            height: 8px;
-            background: var(--border);
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 0.5rem;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            border-radius: 4px;
-            transition: width 0.3s;
-        }
-        
-        .progress-fill.ok {
-            background: var(--success);
-        }
-        
-        .progress-fill.low {
-            background: var(--warning);
-        }
-        
-        .progress-fill.crit {
-            background: var(--danger);
-        }
-        
-        .error-message {
-            color: var(--danger);
-            font-size: 0.875rem;
-            margin-top: 0.5rem;
-            padding: 0.5rem;
-            background: rgba(239, 68, 68, 0.1);
-            border-radius: 4px;
-        }
-        
-        .summary {
-            background: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-        }
-        
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 1rem;
-            margin-top: 1rem;
-        }
-        
-        .summary-item {
-            text-align: center;
-        }
-        
-        .summary-value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--primary);
-        }
-        
-        .summary-label {
-            color: var(--text-muted);
-            font-size: 0.875rem;
-            margin-top: 0.25rem;
-        }
-        
-        nav {
-            margin-bottom: 2rem;
-        }
-        
-        nav a {
-            color: var(--text-muted);
-            text-decoration: none;
-            margin-right: 1.5rem;
-            transition: color 0.2s;
-        }
-        
-        nav a:hover,
-        nav a.active {
+        h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: 0; }
+        .subhead { color: var(--muted); margin-top: 4px; max-width: 780px; }
+        .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+        button {
+            border: 1px solid var(--line);
+            background: var(--card);
             color: var(--text);
+            border-radius: 6px;
+            padding: 7px 11px;
+            cursor: pointer;
+            font: inherit;
+        }
+        button.primary { background: var(--blue); border-color: var(--blue); color: #06101d; font-weight: 700; }
+        button:disabled { opacity: .55; cursor: wait; }
+        .tabs { display: flex; gap: 6px; margin: 0 0 16px; border-bottom: 1px solid var(--line); }
+        .tab {
+            border: 0;
+            border-bottom: 2px solid transparent;
+            border-radius: 0;
+            background: transparent;
+            color: var(--muted);
+            padding: 8px 12px;
+        }
+        .tab.on { color: var(--text); border-color: var(--blue); }
+        .pane { display: none; }
+        .pane.on { display: block; }
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .metric, .card, .tablebox {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+        }
+        .metric { padding: 13px; }
+        .metric .value { font-size: 22px; font-weight: 750; color: var(--cyan); }
+        .metric .label { color: var(--muted); margin-top: 2px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; }
+        .card { padding: 14px; }
+        .cardhead { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+        .name { font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            height: 23px;
+            padding: 0 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .ok { color: var(--good); background: rgba(50, 194, 115, .14); }
+        .warn { color: var(--warn); background: rgba(232, 173, 54, .14); }
+        .bad { color: var(--bad); background: rgba(240, 91, 91, .14); }
+        .muted { color: var(--muted); background: rgba(154, 168, 189, .14); }
+        .rows { display: grid; gap: 6px; }
+        .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid rgba(49, 59, 82, .72); }
+        .row:first-child { border-top: 0; }
+        .label { color: var(--muted); min-width: 110px; }
+        .value { font-weight: 650; text-align: right; overflow-wrap: anywhere; }
+        .bar { height: 8px; background: #0f1728; border-radius: 999px; overflow: hidden; margin: 10px 0 3px; }
+        .fill { height: 100%; background: var(--good); width: 0; }
+        .fill.low { background: var(--warn); }
+        .fill.critical { background: var(--bad); }
+        .note { color: var(--muted); font-size: 12px; margin-top: 8px; overflow-wrap: anywhere; }
+        .error { color: var(--bad); background: rgba(240, 91, 91, .09); padding: 8px; border-radius: 6px; margin-top: 10px; }
+        .tablebox { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; min-width: 850px; }
+        th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+        th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .empty { color: var(--muted); padding: 18px; text-align: center; }
+        .last { color: var(--muted); font-size: 12px; }
+        @media (max-width: 780px) {
+            .wrap { padding: 12px; }
+            header { display: block; }
+            .actions { justify-content: flex-start; margin-top: 12px; }
+            .summary { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
         }
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="wrap">
         <nav>
             <a href="/">Home</a>
             <a href="/workers">Workers</a>
-            <a href="/budget" class="active">Budget</a>
+            <a href="/budget" class="active">Budgets</a>
             <a href="/receipts">Receipts</a>
         </nav>
-        
+
         <header>
-            <h1>Budget Dashboard</h1>
             <div>
-                <span class="last-refresh" id="lastRefresh">Last refresh: --</span>
-                <button class="refresh-btn" onclick="refreshBudget()">Refresh Now</button>
+                <h1>Budgets</h1>
+                <div class="subhead">Subscription tokens are account scoped. API budgets are owner policy caps and stay separate.</div>
+            </div>
+            <div class="actions">
+                <span class="last" id="lastRefresh">Last refresh: --</span>
+                <button class="primary" id="refreshSubscriptions" onclick="refreshSubscriptions()">Refresh subscriptions</button>
+                <button id="refreshApi" onclick="refreshApiBudget()">Refresh API probes</button>
             </div>
         </header>
-        
-        <div class="summary" id="summaryCard">
-            <h2 style="margin-bottom: 1rem;">Quota Summary</h2>
-            <div class="summary-grid">
-                <div class="summary-item">
-                    <div class="summary-value" id="totalProviders">--</div>
-                    <div class="summary-label">Total Providers</div>
-                </div>
-                <div class="summary-item">
-                    <div class="summary-value" id="healthyProviders">--</div>
-                    <div class="summary-label">Healthy</div>
-                </div>
-                <div class="summary-item">
-                    <div class="summary-value" id="lowQuotaProviders">--</div>
-                    <div class="summary-label">Low Quota</div>
-                </div>
+
+        <div class="tabs">
+            <button class="tab on" data-pane="subscriptions" onclick="showPane('subscriptions')">Subscriptions</button>
+            <button class="tab" data-pane="api" onclick="showPane('api')">API Budgets</button>
+        </div>
+
+        <section class="pane on" id="subscriptions">
+            <div class="summary">
+                <div class="metric"><div class="value" id="subCount">--</div><div class="label">Subscriptions</div></div>
+                <div class="metric"><div class="value" id="provedCount">--</div><div class="label">Usage proved</div></div>
+                <div class="metric"><div class="value" id="appTokens">--</div><div class="label">Used in app</div></div>
+                <div class="metric"><div class="value" id="provedWindows">--</div><div class="label">Quota windows</div></div>
             </div>
-        </div>
-        
-        <div class="grid" id="providerGrid">
-            <!-- Provider cards loaded dynamically -->
-        </div>
+            <div class="grid" id="subscriptionGrid"></div>
+        </section>
+
+        <section class="pane" id="api">
+            <div class="summary">
+                <div class="metric"><div class="value" id="apiPolicyCount">--</div><div class="label">Policy caps</div></div>
+                <div class="metric"><div class="value" id="apiProviderCount">--</div><div class="label">Providers seen</div></div>
+                <div class="metric"><div class="value" id="apiProbeCount">--</div><div class="label">Legacy probes</div></div>
+                <div class="metric"><div class="value">Uncapped</div><div class="label">Default API stance</div></div>
+            </div>
+            <div class="tablebox" id="apiPolicyTable"></div>
+            <div style="height:12px"></div>
+            <div class="tablebox" id="legacyProbeTable"></div>
+        </section>
     </div>
-    
+
     <script>
-        async function loadBudget() {
+        let subscriptionPayload = null;
+        let apiPayload = null;
+
+        const fmt = value => value === null || value === undefined ? "unproved" : Number(value).toLocaleString();
+        const pct = value => value === null || value === undefined || Number.isNaN(Number(value)) ? "unproved" : `${Number(value).toFixed(1)}%`;
+        const esc = value => String(value === null || value === undefined ? "" : value)
+            .replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+        function showPane(name) {
+            document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("on", tab.dataset.pane === name));
+            document.querySelectorAll(".pane").forEach(pane => pane.classList.toggle("on", pane.id === name));
+        }
+
+        async function loadAll() {
+            await Promise.all([loadSubscriptions(), loadApiBudgets()]);
+        }
+
+        async function loadSubscriptions() {
             try {
-                const response = await fetch('/api/budget');
-                const data = await response.json();
-                
-                renderBudget(data);
+                const response = await fetch("/api/subscriptions");
+                subscriptionPayload = await response.json();
+                renderSubscriptions(subscriptionPayload);
             } catch (error) {
-                console.error('Failed to load budget:', error);
-                document.getElementById('providerGrid').innerHTML = `
-                    <div class="card" style="grid-column: 1 / -1;">
-                        <p style="color: var(--danger);">Failed to load budget data: ${error.message}</p>
-                    </div>
-                `;
+                document.getElementById("subscriptionGrid").innerHTML = `<div class="card error">Subscription usage failed: ${esc(error.message)}</div>`;
             }
         }
-        
-        function renderBudget(data) {
-            const grid = document.getElementById('providerGrid');
-            const lastRefresh = document.getElementById('lastRefresh');
-            
-            if (!data || !data.probes || data.probes.length === 0) {
-                grid.innerHTML = `
-                    <div class="card" style="grid-column: 1 / -1;">
-                        <p>No budget probes found. Run 'orchestrator cli refresh-budget' first.</p>
-                    </div>
-                `;
+
+        async function loadApiBudgets() {
+            try {
+                const response = await fetch("/api/api-budgets");
+                apiPayload = await response.json();
+                renderApiBudgets(apiPayload);
+            } catch (error) {
+                document.getElementById("apiPolicyTable").innerHTML = `<div class="empty">API budget load failed: ${esc(error.message)}</div>`;
+            }
+        }
+
+        function renderSubscriptions(data) {
+            const rows = data.subscriptions || [];
+            const totals = data.totals || {};
+            document.getElementById("subCount").textContent = totals.subscriptions ?? rows.length;
+            document.getElementById("provedCount").textContent = totals.proved_usage ?? rows.filter(r => r.ok).length;
+            document.getElementById("appTokens").textContent = fmt(totals.app_tokens || 0);
+            document.getElementById("provedWindows").textContent = fmt(totals.proved_windows || 0);
+            const checked = rows.map(r => r.checked_at).filter(Boolean).sort().pop();
+            document.getElementById("lastRefresh").textContent = checked ? `Last refresh: ${new Date(checked).toLocaleString()}` : "Last refresh: unproved";
+            const grid = document.getElementById("subscriptionGrid");
+            if (!rows.length) {
+                grid.innerHTML = `<div class="card empty">No subscription snapshots yet. Refresh subscriptions to probe logged-in CLIs.</div>`;
                 return;
             }
-            
-            // Update last refresh time
-            if (data.probes[0].probed_at) {
-                const date = new Date(data.probes[0].probed_at);
-                lastRefresh.textContent = `Last refresh: ${date.toLocaleString()}`;
-            }
-            
-            // Calculate summary
-            const total = data.probes.length;
-            const healthy = data.probes.filter(p => p.ok && p.remaining > p.limit * 0.5).length;
-            const low = data.probes.filter(p => p.ok && p.remaining <= p.limit * 0.5 && p.remaining > p.limit * 0.2).length;
-            
-            document.getElementById('totalProviders').textContent = total;
-            document.getElementById('healthyProviders').textContent = healthy;
-            document.getElementById('lowQuotaProviders').textContent = low;
-            
-            // Render provider cards
-            grid.innerHTML = data.probes.map(probe => {
-                const pct = probe.limit > 0 ? (probe.remaining / probe.limit * 100) : 0;
-                let statusClass = 'status-unknown';
-                let progressClass = 'crit';
-                
-                if (!probe.ok) {
-                    statusClass = 'status-unknown';
-                } else if (pct > 50) {
-                    statusClass = 'status-ok';
-                    progressClass = 'ok';
-                } else if (pct > 20) {
-                    statusClass = 'status-low';
-                    progressClass = 'low';
-                } else {
-                    statusClass = 'status-crit';
-                    progressClass = 'crit';
-                }
-                
-                const statusText = !probe.ok ? 'UNKNOWN' : pct > 50 ? 'OK' : pct > 20 ? 'LOW' : 'CRITICAL';
-                
-                return `
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="provider-name">${probe.provider_id}</span>
-                            <span class="status-badge ${statusClass}">${statusText}</span>
-                        </div>
-                        <div class="metric-row">
-                            <span class="metric-label">Remaining</span>
-                            <span class="metric-value">${probe.remaining?.toLocaleString() || 'N/A'}</span>
-                        </div>
-                        <div class="metric-row">
-                            <span class="metric-label">Limit</span>
-                            <span class="metric-value">${probe.limit?.toLocaleString() || 'N/A'}</span>
-                        </div>
-                        <div class="metric-row">
-                            <span class="metric-label">Usage</span>
-                            <span class="metric-value">${pct.toFixed(1)}% remaining</span>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="progress-fill ${progressClass}" style="width: ${Math.min(100, Math.max(0, pct))}%"></div>
-                        </div>
-                        ${probe.error ? `<div class="error-message">${probe.error}</div>` : ''}
-                        <div class="metric-row" style="margin-top: 0.75rem;">
-                            <span class="metric-label">Probed at</span>
-                            <span class="metric-value" style="font-size: 0.75rem;">${probe.probed_at ? new Date(probe.probed_at).toLocaleString() : 'N/A'}</span>
-                        </div>
-                    </div>
-                `;
-            }).join('');
+            grid.innerHTML = rows.map(renderSubscriptionCard).join("");
         }
-        
-        async function refreshBudget() {
-            const btn = document.querySelector('.refresh-btn');
-            btn.disabled = true;
-            btn.textContent = 'Refreshing...';
-            
+
+        function renderSubscriptionCard(row) {
+            const windows = parseWindows(row.usage_windows_json);
+            const pctRemaining = row.tokens_limit && row.tokens_remaining !== null && row.tokens_remaining !== undefined
+                ? Math.max(0, Math.min(100, row.tokens_remaining / row.tokens_limit * 100))
+                : null;
+            const status = row.status === "auth_required" ? "warn"
+                : row.ok && windows.length ? "ok"
+                : row.confidence === "cli_exact" ? (pctRemaining === null ? "ok" : pctRemaining > 30 ? "ok" : pctRemaining > 15 ? "warn" : "bad")
+                : row.ok ? "warn" : "muted";
+            const statusText = row.status === "auth_required" ? "auth needed"
+                : row.ok && windows.length ? "windows proved"
+                : row.confidence === "cli_exact" ? "proved"
+                : row.ok ? "account only" : "unproved";
+            const fillClass = pctRemaining === null ? "" : pctRemaining > 30 ? "" : pctRemaining > 15 ? "low" : "critical";
+            return `
+                <article class="card">
+                    <div class="cardhead">
+                        <div class="name">${esc(row.subscription_name || row.service_id)}</div>
+                        <span class="pill ${status}">${statusText}</span>
+                    </div>
+                    ${pctRemaining === null ? "" : `<div class="bar"><div class="fill ${fillClass}" style="width:${pctRemaining}%"></div></div>`}
+                    <div class="rows">
+                        <div class="row"><span class="label">Account</span><span class="value">${esc(row.account_id || "unproved")}</span></div>
+                        <div class="row"><span class="label">Profile</span><span class="value">${esc(row.profile_id || "default")}</span></div>
+                        <div class="row"><span class="label">Plan</span><span class="value">${esc(row.plan_name || "unproved")}</span></div>
+                        <div class="row"><span class="label">Used in app</span><span class="value">${fmt(row.tokens_used_by_app || 0)}</span></div>
+                        <div class="row"><span class="label">Provider windows</span><span class="value">${windows.length ? `${windows.length} proved` : "unproved"}</span></div>
+                        <div class="row"><span class="label">Total used</span><span class="value">${fmt(row.tokens_used_total)}</span></div>
+                        <div class="row"><span class="label">Remaining</span><span class="value">${fmt(row.tokens_remaining)}</span></div>
+                        <div class="row"><span class="label">Limit</span><span class="value">${fmt(row.tokens_limit)}</span></div>
+                        <div class="row"><span class="label">Reset</span><span class="value">${esc(row.reset_at || "unproved")}</span></div>
+                    </div>
+                    ${windows.length ? renderUsageWindows(windows) : ""}
+                    <div class="note">Source: ${esc(row.source_command || "not found")}</div>
+                    ${row.error ? `<div class="note">${esc(row.error)}</div>` : ""}
+                </article>
+            `;
+        }
+
+        function parseWindows(raw) {
+            if (Array.isArray(raw)) return raw;
             try {
-                const response = await fetch('/api/budget/refresh', { method: 'POST' });
-                const data = await response.json();
-                loadBudget();
+                const parsed = JSON.parse(raw || "[]");
+                return Array.isArray(parsed) ? parsed : [];
+            } catch {
+                return [];
+            }
+        }
+
+        function renderUsageWindows(windows) {
+            return `<div class="rows" style="margin-top:10px">${
+                windows.map(window => {
+                    const remaining = Number(window.remaining_percent);
+                    const width = Number.isFinite(remaining) ? Math.max(0, Math.min(100, remaining)) : 0;
+                    const fill = width > 30 ? "" : width > 15 ? "low" : "critical";
+                    const currentText = window.current !== null && window.current !== undefined
+                        ? `${fmt(window.current)} ${esc(String(window.unit || "units").replaceAll("_", " "))}`
+                        : `${pct(window.remaining_percent)} left / ${pct(window.used_percent)} used`;
+                    return `
+                        <div>
+                            <div class="row">
+                                <span class="label">${esc(window.label || "window")}</span>
+                                <span class="value">${currentText}</span>
+                            </div>
+                            ${Number.isFinite(remaining) ? `<div class="bar"><div class="fill ${fill}" style="width:${width}%"></div></div>` : ""}
+                            <div class="note">Reset: ${esc(window.reset_at || "unproved")}</div>
+                        </div>
+                    `;
+                }).join("")
+            }</div>`;
+        }
+
+        function renderApiBudgets(data) {
+            const policies = data.policies || [];
+            const legacy = data.legacy_probes || [];
+            document.getElementById("apiPolicyCount").textContent = policies.length;
+            document.getElementById("apiProviderCount").textContent = (data.providers_seen || []).length;
+            document.getElementById("apiProbeCount").textContent = legacy.length;
+            document.getElementById("apiPolicyTable").innerHTML = policies.length
+                ? table(["Provider", "Account", "Policy", "Limit", "Spend", "Window", "Enabled"], policies.map(p => [
+                    p.provider_id, p.account_id || "default", p.policy_name || "owner cap", money(p.budget_limit_usd),
+                    money(p.current_spend_usd), p.budget_window || "unset", p.enabled ? "yes" : "no"
+                ]))
+                : `<div class="empty">No owner API caps configured. API use is uncapped until a policy row exists.</div>`;
+            document.getElementById("legacyProbeTable").innerHTML = legacy.length
+                ? table(["Provider", "Probe", "Remaining", "Limit", "Status", "Checked"], legacy.map(p => [
+                    p.provider_id, p.probe_type, fmt(p.remaining), fmt(p.limit), p.ok ? "ok" : "failed", p.probed_at || ""
+                ]))
+                : `<div class="empty">No legacy API probes recorded.</div>`;
+        }
+
+        function table(headers, rows) {
+            return `<table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${
+                rows.map(row => `<tr>${row.map((cell, i) => `<td class="${i >= 3 ? "num" : ""}">${esc(cell)}</td>`).join("")}</tr>`).join("")
+            }</tbody></table>`;
+        }
+
+        function money(value) {
+            return value === null || value === undefined ? "uncapped" : `$${Number(value).toFixed(2)}`;
+        }
+
+        async function refreshSubscriptions() {
+            const btn = document.getElementById("refreshSubscriptions");
+            btn.disabled = true;
+            btn.textContent = "Refreshing...";
+            try {
+                const response = await fetch("/api/subscriptions/refresh", { method: "POST" });
+                subscriptionPayload = await response.json();
+                renderSubscriptions(subscriptionPayload);
             } catch (error) {
-                console.error('Failed to refresh:', error);
-                alert('Failed to refresh budget: ' + error.message);
+                alert(`Subscription refresh failed: ${error.message}`);
             } finally {
                 btn.disabled = false;
-                btn.textContent = 'Refresh Now';
+                btn.textContent = "Refresh subscriptions";
             }
         }
-        
-        // Load on page load
-        loadBudget();
-        
-        // Auto-refresh every 60 seconds
-        setInterval(loadBudget, 60000);
+
+        async function refreshApiBudget() {
+            const btn = document.getElementById("refreshApi");
+            btn.disabled = true;
+            btn.textContent = "Refreshing...";
+            try {
+                await fetch("/api/budget/refresh", { method: "POST" });
+                await loadApiBudgets();
+            } catch (error) {
+                alert(`API probe refresh failed: ${error.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "Refresh API probes";
+            }
+        }
+
+        loadAll();
+        setInterval(loadAll, 60000);
     </script>
 </body>
 </html>

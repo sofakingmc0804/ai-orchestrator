@@ -253,6 +253,44 @@ CREATE TABLE IF NOT EXISTS budget_probes (
     error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS subscription_usage_snapshots (
+    id TEXT PRIMARY KEY,
+    service_id TEXT,
+    account_id TEXT,
+    profile_id TEXT,
+    subscription_name TEXT,
+    plan_name TEXT,
+    source_type TEXT,
+    source_command TEXT,
+    tokens_limit INTEGER,
+    tokens_used_total INTEGER,
+    tokens_remaining INTEGER,
+    tokens_used_by_app INTEGER,
+    tokens_used_elsewhere INTEGER,
+    reset_at TEXT,
+    checked_at TEXT,
+    ok BOOLEAN,
+    confidence TEXT,
+    status TEXT,
+    error TEXT,
+    usage_windows_json TEXT,
+    raw_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS api_budget_policies (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT,
+    account_id TEXT,
+    policy_name TEXT,
+    budget_limit_usd REAL,
+    budget_window TEXT,
+    current_spend_usd REAL,
+    reset_at TEXT,
+    enabled BOOLEAN DEFAULT 0,
+    updated_at TEXT,
+    note TEXT
+);
+
 CREATE TABLE IF NOT EXISTS token_usage (
     id TEXT PRIMARY KEY,
     dispatch_id TEXT REFERENCES dispatches(id),
