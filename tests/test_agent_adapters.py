@@ -7,7 +7,7 @@ import pytest
 
 import orchestrator.adapters.builtins as builtins
 import orchestrator.process.recovery as recovery
-from orchestrator.adapters.builtins import HermesAgentAdapter, LmStudioAdapter, OpenClawGatewayAdapter
+from orchestrator.adapters.builtins import CodexExecAdapter, HermesAgentAdapter, LmStudioAdapter, OpenClawGatewayAdapter
 from orchestrator.config import Settings
 from orchestrator.models import HealthState
 from orchestrator.state.store import StateStore
@@ -53,6 +53,28 @@ def test_lms_command_resolution_prefers_headless_user_cli(monkeypatch: pytest.Mo
 
 def test_terminal_output_cleaner_removes_ansi_sequences() -> None:
     assert builtins._clean_terminal_text("assi\x1b[4D\x1b[K\nassistance") == "assi\nassistance"
+
+
+@pytest.mark.asyncio
+async def test_codex_adapter_ignores_user_config_service_tier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, list[str], float]] = []
+
+    async def fake_run(command: str, args: list[str], timeout: float = 30) -> dict[str, Any]:
+        calls.append((command, args, timeout))
+        output = Path(args[args.index("-o") + 1])
+        output.write_text("CODEX_OK", encoding="utf-8")
+        return {"ok": True, "stdout": "", "stderr": "", "returncode": 0}
+
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    monkeypatch.setattr(builtins, "_run_bounded", fake_run)
+
+    result = await CodexExecAdapter("codex-desktop", "codex-desktop", "Codex Desktop", "subprocess").dispatch({"intent": {"raw_text": "smoke"}})
+
+    args = calls[0][1]
+    assert result["ok"] is True
+    assert "--ignore-user-config" in args
+    assert args[args.index("-m") + 1] == "gpt-5.5"
+    assert "service_tier='fast'" in args
 
 
 @pytest.mark.asyncio

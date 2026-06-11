@@ -16,10 +16,46 @@ def iso(dt: datetime | None = None) -> str:
     return (dt or datetime.now(timezone.utc)).isoformat()
 
 
+class _StateStoreDbFacade:
+    """Compatibility shim for consolidation code copied from a persistent DB API."""
+
+    def __init__(self, store: "StateStore"):
+        self.store = store
+
+    def _params(self, params: tuple[Any, ...]) -> Any:
+        if len(params) == 1 and isinstance(params[0], (tuple, list, dict)):
+            return params[0]
+        return params
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.store.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(query, self._params(params))).fetchall()
+            return [dict(row) for row in rows]
+
+    async def fetchrow(self, query: str, *params: Any) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.store.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute(query, self._params(params))).fetchone()
+            return dict(row) if row is not None else None
+
+    async def execute(self, query: str, *params: Any) -> None:
+        async with aiosqlite.connect(self.store.path) as db:
+            await db.execute(query, self._params(params))
+            await db.commit()
+
+    async def commit(self) -> None:
+        return None
+
+
 class StateStore:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.path = settings.state_path
+        self.db = _StateStoreDbFacade(self)
+
+    async def close(self) -> None:
+        return None
 
     async def initialize(self) -> None:
         ensure_runtime_dirs(self.settings)

@@ -223,6 +223,24 @@ class OllamaHttpAdapter(StaticCliAdapter):
         }
 
 
+class OllamaCloudAdapter(OllamaHttpAdapter):
+    def __init__(self) -> None:
+        StaticCliAdapter.__init__(
+            self,
+            name="ollama-cloud",
+            service_id="ollama-cloud",
+            label="Ollama Cloud",
+            service_group="cloud_clients",
+            protocol="ollama-cloud-http",
+            command="ollama",
+            process_names=["ollama.exe"],
+            billing_class=BillingClass.SUBSCRIPTION_USAGE,
+            capabilities=["coding_chat", "code_repair", "general_reasoning", "local_chat"],
+            consequence_max=ConsequenceTier.MEDIUM,
+        )
+        self.base_url = "http://127.0.0.1:11434"
+
+
 class OllamaCliAdapter(StaticCliAdapter):
     def __init__(self) -> None:
         super().__init__(
@@ -286,11 +304,13 @@ class HermesAgentAdapter(StaticCliAdapter):
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
         prompt = str(envelope.get("intent", {}).get("raw_text") or envelope.get("prompt") or "").strip()
         model = str(envelope.get("model") or "qwen2.5:0.5b")
+        provider = str(envelope.get("provider") or "custom")
         if not prompt:
             return {"ok": False, "error": "No prompt supplied to Hermes adapter."}
+        provider_arg = "nous" if provider in {"nous", "hermes-nous"} else "custom"
         result = await _run_bounded(
             "hermes",
-            ["-z", prompt, "--provider", "custom", "-m", model, "--ignore-rules"],
+            ["-z", prompt, "--provider", provider_arg, "-m", model, "--ignore-rules"],
             timeout=90,
         )
         if not result.get("ok"):
@@ -432,6 +452,9 @@ class CodexExecAdapter(StaticCliAdapter):
             [
                 "exec",
                 "--skip-git-repo-check",
+                "--ignore-user-config",
+                "-m",
+                "gpt-5.5",
                 "--sandbox",
                 "read-only",
                 "--ignore-rules",
@@ -440,6 +463,8 @@ class CodexExecAdapter(StaticCliAdapter):
                 "approval_policy='never'",
                 "-c",
                 "model_reasoning_effort='low'",
+                "-c",
+                "service_tier='fast'",
                 "-o",
                 str(out_file),
                 prompt,
@@ -608,6 +633,7 @@ def build_adapters() -> dict[str, StaticCliAdapter]:
         CodexExecAdapter("codex-desktop", "codex-desktop", "Codex Desktop", "mcp-subprocess"),
         CodexExecAdapter("codex-cli", "codex-cli", "Codex CLI", "subprocess"),
         OllamaHttpAdapter(),
+        OllamaCloudAdapter(),
         OllamaCliAdapter(),
         CopilotCliAdapter("copilot-gh", "copilot-gh", "GitHub Copilot CLI", "copilot-cli"),
         CopilotCliAdapter("copilot-vscode", "copilot-vscode", "GitHub Copilot VS Code", "vscode-extension"),

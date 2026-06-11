@@ -7,6 +7,7 @@ import pytest
 
 from orchestrator.config import Settings
 from orchestrator.dispatch.dispatcher import Dispatcher
+from orchestrator.cli.main import _dispatch
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.models import BillingClass, Capability, ConsequenceTier, ServiceInfo
 from orchestrator.notifications.spine import NotificationSpine
@@ -99,3 +100,97 @@ async def test_prove_adapter_denies_subscription_without_explicit_allowance(tmp_
     assert result.state == "failed"
     assert "--allow-subscription" in str(result.error)
     assert await store.list_dispatches() == []
+
+
+@pytest.mark.asyncio
+async def test_cli_dispatch_returns_compact_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class FakeDispatcher:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def dispatch_text(self, text: str) -> Any:
+            return type(
+                "Result",
+                (),
+                {
+                    "state": "completed",
+                    "dispatch_id": "dsp_test",
+                    "intent_id": "int_test",
+                    "adapter_name": "ollama-http",
+                    "output_path": tmp_path / "result.txt",
+                    "error": None,
+                    "result_text": "x" * 1000,
+                    "receipt": {"model": "qwen", "receipt_path": str(tmp_path / "receipt.json"), "routing_decision": {"large": "y" * 5000}},
+                    "model_dump": lambda self, mode="json": {"receipt": self.receipt, "result_text": self.result_text},
+                },
+            )()
+
+    async def fake_discover() -> tuple[list[ServiceInfo], list[Capability]]:
+        return [], []
+
+    monkeypatch.setattr("orchestrator.cli.main.Dispatcher", FakeDispatcher)
+    monkeypatch.setattr("orchestrator.cli.main.discover_services_and_capabilities", fake_discover)
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+
+    compact = await _dispatch(settings, "short task")
+
+    assert compact["dispatch_id"] == "dsp_test"
+    assert compact["receipt_path"] == str(tmp_path / "receipt.json")
+    assert "receipt" not in compact
+    assert len(str(compact["result_preview"])) == 500
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatch_fallback_uses_candidate_specific_model(tmp_path: Path) -> None:
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.models: list[str] = []
+
+        async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
+            model = str(envelope.get("model") or "")
+            self.models.append(model)
+            if model == "slow-model":
+                return {"ok": False, "error": "slow failed", "repair_action": "try next worker"}
+            return {"ok": True, "model": model, "text": "fast ok"}
+
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    await store.db.execute(
+        "INSERT INTO job_classes(job_class, required_capabilities_json, preferred_stats_json, local_first, approval_floor) VALUES(?,?,?,?,?)",
+        "repo_coding",
+        '["coding", "tools"]',
+        "{}",
+        0,
+        "local_resource",
+    )
+    for model in ("slow-model", "fast-model"):
+        await store.db.execute(
+            """
+            INSERT INTO worker_cards(worker_id, model_id, base_model, surface, provider_id, contract_type,
+              capabilities_json, tools_json, modalities_json, stats_json, best_jobs_json, avoid_jobs_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            f"{model}@ollama-local",
+            model,
+            model,
+            "ollama-local",
+            "ollama-local",
+            "local_resource",
+            '["coding"]',
+            '["tools"]',
+            '["text"]',
+            '{"coding": 8}',
+            '["repo_coding"]',
+            "[]",
+        )
+    fake = FakeAdapter()
+    dispatcher = Dispatcher(settings, store, NotificationSpine(settings.notifications_path, store))
+    dispatcher.adapters = {"ollama-http": fake}  # type: ignore[assignment]
+    dispatcher.max_attempts_per_adapter = 1
+
+    result = await dispatcher.dispatch_text("fix this repo bug")
+
+    assert result.state == "completed"
+    assert fake.models == ["slow-model", "fast-model"]
+    assert result.receipt["model"] == "fast-model"

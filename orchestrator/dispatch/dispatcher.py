@@ -8,11 +8,14 @@ from typing import Any
 
 from orchestrator.adapters.builtins import build_adapters
 from orchestrator.config import Settings
+from orchestrator.dispatch.receipt_enhanced import build_receipt_data
+from orchestrator.governance.job_classifier import classify_with_fallback
 from orchestrator.intent.interpreter import parse_intent
 from orchestrator.models import BillingClass, ConsequenceTier, DispatchResult, Intent, Notification, RoutingDecision, Selection
 from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.routing.engine import route_intent
 from orchestrator.routing.project_policy import approval_required_for_tier, load_project_policy, output_base_for_project
+from orchestrator.routing.worker_routing import route_intent_worker_aware
 from orchestrator.state.store import StateStore, iso
 
 
@@ -25,7 +28,7 @@ class Dispatcher:
         self.max_attempts_per_adapter = 3
         self.retry_backoff_seconds = [0.2, 0.5]
 
-    async def dispatch_text(self, raw_text: str, project_root: Path | None = None) -> DispatchResult:
+    async def dispatch_text(self, raw_text: str, project_root: Path | None = None, job_class_override: str | None = None) -> DispatchResult:
         intent = parse_intent(raw_text)
         project_policy: dict[str, Any] = {}
         if project_root:
@@ -35,7 +38,7 @@ class Dispatcher:
         if self._requires_approval(intent, project_policy):
             await self._request_approval(intent)
             return DispatchResult(dispatch_id="", intent_id=intent.id, adapter_name="", state="awaiting_approval")
-        return await self._execute_intent(intent, project_root, project_policy)
+        return await self._execute_intent(intent, project_root, project_policy, job_class_override=job_class_override)
 
     async def approve_intent(self, intent_id: str, approved: bool) -> DispatchResult:
         row = await self.store.get_intent(intent_id)
@@ -102,11 +105,29 @@ class Dispatcher:
             )
         )
 
-    async def _execute_intent(self, intent: Intent, project_root: Path | None = None, project_policy: dict[str, Any] | None = None) -> DispatchResult:
-        caps = await self.store.list_capabilities()
+    async def _execute_intent(
+        self,
+        intent: Intent,
+        project_root: Path | None = None,
+        project_policy: dict[str, Any] | None = None,
+        job_class_override: str | None = None,
+    ) -> DispatchResult:
+        # Phase 2: Classify intent → job_class
+        classification = classify_with_fallback(intent.raw_text, override=job_class_override)
+        job_class = classification["job_class"]
+
+        # Phase 2: Load workers from DB
+        workers = await self.store.db.fetch("SELECT * FROM worker_cards")
+        job_class_spec = await self.store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", job_class)
+
         quota_state = await self.store.latest_quota_state()
         project_policy = project_policy or await self._project_policy(intent.project_id)
-        decision = route_intent(intent, caps, quota_state, project_policy)
+        if workers:
+            decision = route_intent_worker_aware(intent, workers, job_class, quota_state, project_policy, job_class_spec=job_class_spec)
+        else:
+            capabilities = await self.store.list_capabilities()
+            decision = route_intent(intent, capabilities, quota_state, project_policy)
+
         await self.store.record_routing(decision)
         if not decision.chosen_adapter:
             await self.store.update_intent_state(intent.id, "failed", completed=True)
@@ -126,6 +147,14 @@ class Dispatcher:
         output_base = output_base_for_project(project_root, self.settings.home, self.settings.output_dirname, project_policy)
         out_root = output_base / iso()[:10] / intent.id
         out_root.mkdir(parents=True, exist_ok=True)
+        chosen_candidate = next(
+            (
+                candidate
+                for candidate in decision.candidates_considered
+                if str(candidate.get("adapter_name") or "") == str(decision.chosen_adapter)
+            ),
+            {},
+        )
         envelope: dict[str, Any] = {
             "intent": intent.model_dump(mode="json"),
             "dispatch_id": dispatch_id,
@@ -133,6 +162,12 @@ class Dispatcher:
             "consequence_tier": intent.consequence_tier.value,
             "project_policy": project_policy,
         }
+        model_hint = chosen_candidate.get("recommended_model") or chosen_candidate.get("model_id")
+        if model_hint:
+            envelope["model"] = str(model_hint)
+        provider_hint = chosen_candidate.get("provider_id") or chosen_candidate.get("provider") or chosen_candidate.get("surface")
+        if provider_hint:
+            envelope["provider"] = str(provider_hint)
         await self.store.record_dispatch(
             {
                 "id": dispatch_id,
@@ -145,17 +180,30 @@ class Dispatcher:
         )
         attempts: list[dict[str, Any]] = []
         last_error = "adapter failed"
+        attempted_routes: set[tuple[str, str, str]] = set()
         for candidate in decision.candidates_considered:
             adapter_name = str(candidate.get("adapter_name") or "")
+            candidate_model = str(candidate.get("recommended_model") or candidate.get("model_id") or envelope.get("model") or "")
+            candidate_provider = str(candidate.get("provider_id") or candidate.get("provider") or candidate.get("surface") or envelope.get("provider") or "")
+            route_key = (adapter_name, candidate_model, candidate_provider)
+            if route_key in attempted_routes:
+                continue
+            attempted_routes.add(route_key)
             adapter = self.adapters.get(adapter_name)
             if not adapter:
                 last_error = f"{adapter_name} adapter is not registered"
                 continue
+            attempt_envelope = dict(envelope)
+            if candidate_model:
+                attempt_envelope["model"] = candidate_model
+            if candidate_provider:
+                attempt_envelope["provider"] = candidate_provider
             for attempt_number in range(1, self.max_attempts_per_adapter + 1):
                 attempt_id = f"att_{uuid.uuid4().hex[:16]}"
                 attempt_started = iso()
+                stop_candidate_retries = False
                 try:
-                    result = await adapter.dispatch(envelope)
+                    result = await adapter.dispatch(attempt_envelope)
                     if result.get("ok"):
                         attempt = {
                             "id": attempt_id,
@@ -170,14 +218,15 @@ class Dispatcher:
                         }
                         attempts.append(attempt)
                         await self.store.record_dispatch_attempt(attempt)
-                        return await self._complete_dispatch(dispatch_id, intent, adapter_name, envelope, out_root, result, decision, attempts)
-                    last_error = str(result.get("error") or "adapter returned ok=false")
+                        return await self._complete_dispatch(dispatch_id, intent, adapter_name, attempt_envelope, out_root, result, decision, attempts)
+                    last_error = str(result.get("error") or "adapter returned ok=false").strip() or "adapter returned ok=false"
                     repair_action = str(result.get("repair_action") or "Inspect adapter logs and provider configuration.")
                 except Exception as exc:
-                    last_error = str(exc)
+                    last_error = str(exc).strip() or exc.__class__.__name__
                     repair_action = "Inspect adapter logs and provider configuration."
-                    if "timed out" in last_error.lower():
+                    if "timeout" in exc.__class__.__name__.lower() or "timed out" in last_error.lower():
                         repair_action = "Verify the provider command returns inside the adapter timeout and disable slow fallbacks."
+                        stop_candidate_retries = True
                 attempt = {
                     "id": attempt_id,
                     "dispatch_id": dispatch_id,
@@ -192,6 +241,8 @@ class Dispatcher:
                 }
                 attempts.append(attempt)
                 await self.store.record_dispatch_attempt(attempt)
+                if stop_candidate_retries:
+                    break
                 if attempt_number < self.max_attempts_per_adapter:
                     await asyncio.sleep(self.retry_backoff_seconds[min(attempt_number - 1, len(self.retry_backoff_seconds) - 1)])
             await self.store.add_repair_item(adapter_name, last_error, repair_action)
@@ -369,6 +420,7 @@ class Dispatcher:
             "routing_decision": decision.model_dump(mode="json"),
             "attempts": attempts,
             "output_path": str(result_path),
+            "receipt_path": str(receipt_path),
         }
         receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
         context_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")

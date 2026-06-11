@@ -16,6 +16,7 @@ class BillingClass(StrEnum):
     LOCAL_RESOURCE = "local_resource"
     SUBSCRIPTION_UNLIMITED = "subscription_unlimited"
     SUBSCRIPTION_QUOTA = "subscription_quota"
+    SUBSCRIPTION_USAGE = "subscription_usage"
     METERED_EXTRA_COST = "metered_extra_cost"
     UNKNOWN_COST = "unknown_cost"
 
@@ -58,7 +59,10 @@ class Capability(BaseModel):
     latency_band: str
     consequence_max: ConsequenceTier
     billing_class: BillingClass
+    provider: str = ""
     enabled: bool = True
+    benchmark_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    recommended_model: str | None = None
 
 
 class Selection(BaseModel):
@@ -111,4 +115,3 @@ class Notification(BaseModel):
     body: str
     actions: list[dict[str, str]] = Field(default_factory=list)
     channels_requested: list[str] = Field(default_factory=lambda: ["in_app"])
-

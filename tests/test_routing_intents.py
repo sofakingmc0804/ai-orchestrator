@@ -5,7 +5,7 @@ import pytest
 from orchestrator.adapters.builtins import build_adapters
 from orchestrator.intent.interpreter import parse_intent
 from orchestrator.models import ConsequenceTier
-from orchestrator.routing.engine import route_intent
+from orchestrator.routing.engine import load_score_contract, route_intent
 
 
 async def _caps() -> list[dict[str, object]]:
@@ -137,3 +137,101 @@ def test_project_policy_preference_breaks_same_cost_tie() -> None:
     decision = route_intent(intent, caps, project_policy={"preferred_adapters": ["ollama-http"]})
 
     assert decision.chosen_adapter == "ollama-http"
+
+
+def test_default_score_contract_loads_migrated_repo_contract() -> None:
+    contract = load_score_contract()
+
+    assert contract is not None
+    assert contract["schema_version"].startswith("operation-score-contract/")
+    assert "financial_operations" in contract["domain_leaders"]
+
+
+def test_score_contract_changes_same_cost_local_routing_decision() -> None:
+    intent = parse_intent("handle the local finance operation")
+    intent.parsed_payload["required_capability"] = "local_chat"
+    intent.parsed_payload["domain_id"] = "financial_operations"
+    caps = [
+        {
+            "adapter_name": "lm-studio",
+            "capability_id": "local_chat",
+            "enabled": 1,
+            "billing_class": "local_resource",
+            "consequence_max": "medium",
+            "latency_band": "fast",
+            "provider": "lm_studio",
+        },
+        {
+            "adapter_name": "ollama-http",
+            "capability_id": "local_chat",
+            "enabled": 1,
+            "billing_class": "local_resource",
+            "consequence_max": "medium",
+            "latency_band": "slow",
+            "provider": "ollama",
+        },
+    ]
+    score_contract = {
+        "schema_version": "operation-score-contract/v2",
+        "tested_surfaces": ["ollama_http"],
+        "domain_leaders": {
+            "financial_operations": [
+                {"model": "gemma4:12b", "mean_composite": 0.91, "pass_rate": 1.0},
+                {"model": "gemma4:e4b", "mean_composite": 0.44, "pass_rate": 0.5},
+            ]
+        },
+        "routing_rules": [
+            {
+                "domain_id": "financial_operations",
+                "preferred_local_models": ["gemma4:12b"],
+                "fallback_local_models": ["gemma4:e4b"],
+            }
+        ],
+    }
+
+    without_scores = route_intent(intent, caps, score_contract={})
+    with_scores = route_intent(intent, caps, score_contract=score_contract)
+
+    assert without_scores.chosen_adapter == "lm-studio"
+    assert with_scores.chosen_adapter == "ollama-http"
+    assert with_scores.candidates_considered[0]["recommended_model"] == "gemma4:12b"
+
+
+def test_missing_domain_scores_keep_existing_routing_order() -> None:
+    intent = parse_intent("handle the local finance operation")
+    intent.parsed_payload["required_capability"] = "local_chat"
+    intent.parsed_payload["domain_id"] = "unbenchmarked_domain"
+    caps = [
+        {
+            "adapter_name": "lm-studio",
+            "capability_id": "local_chat",
+            "enabled": 1,
+            "billing_class": "local_resource",
+            "consequence_max": "medium",
+            "latency_band": "fast",
+            "provider": "lm_studio",
+        },
+        {
+            "adapter_name": "ollama-http",
+            "capability_id": "local_chat",
+            "enabled": 1,
+            "billing_class": "local_resource",
+            "consequence_max": "medium",
+            "latency_band": "slow",
+            "provider": "ollama",
+        },
+    ]
+
+    decision = route_intent(
+        intent,
+        caps,
+        score_contract={
+            "schema_version": "operation-score-contract/v2",
+            "tested_surfaces": ["ollama_http"],
+            "domain_leaders": {},
+            "routing_rules": [],
+        },
+    )
+
+    assert decision.chosen_adapter == "lm-studio"
+    assert all("recommended_model" not in row for row in decision.candidates_considered)

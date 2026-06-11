@@ -37,6 +37,7 @@ def capabilities_from_contract(adapter_name: str) -> list[Capability] | None:
     billing_class = BillingClass(str(contract.get("billing_class") or BillingClass.UNKNOWN_COST.value))
     default_latency = str(contract.get("latency_band") or "medium")
     default_consequence = ConsequenceTier(str(contract.get("consequence_max") or ConsequenceTier.MEDIUM.value))
+    provider = str(contract.get("provider") or "")
     capabilities: list[Capability] = []
     for row in rows:
         if isinstance(row, str):
@@ -58,6 +59,7 @@ def capabilities_from_contract(adapter_name: str) -> list[Capability] | None:
                 latency_band=str(item.get("latency_band") or default_latency),
                 consequence_max=ConsequenceTier(str(item.get("consequence_max") or default_consequence.value)),
                 billing_class=BillingClass(str(item.get("billing_class") or billing_class.value)),
+                provider=provider,
                 enabled=bool(item.get("enabled", True)),
             )
         )

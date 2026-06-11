@@ -8,11 +8,15 @@ from typing import Any
 
 from orchestrator.autopilot.watchers import scan_autopilot_roots_once
 from orchestrator.benchmarks.latency import run_selection_latency_benchmark
+from orchestrator.cli.governance import register_governance_cli
+from orchestrator.cli.budget_cli import register_budget_cli
 from orchestrator.config import Settings
 from orchestrator.discovery.auth import probe_auth_and_quota, quota_snapshots
+from orchestrator.discovery.budget_probes import run_all_probes, probe_to_dict
 from orchestrator.discovery.projects import discover_projects
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.dispatch.dispatcher import Dispatcher
+from orchestrator.governance.job_classifier import classify_with_fallback
 from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.notifications.subscribers.runner import run_all_subscribers_once
 from orchestrator.process.recovery import repair_core_services
@@ -38,7 +42,7 @@ async def _refresh(settings: Settings) -> dict[str, int]:
     return {"services": len(services), "capabilities": len(caps), "projects": len(projects)}
 
 
-async def _dispatch(settings: Settings, text: str) -> dict[str, object]:
+async def _dispatch(settings: Settings, text: str, full: bool = False) -> dict[str, object]:
     store = StateStore(settings)
     await store.initialize()
     services, caps = await discover_services_and_capabilities()
@@ -46,7 +50,21 @@ async def _dispatch(settings: Settings, text: str) -> dict[str, object]:
     await store.upsert_capabilities(caps)
     dispatcher = Dispatcher(settings, store, NotificationSpine(settings.notifications_path, store))
     result = await dispatcher.dispatch_text(text)
-    return result.model_dump(mode="json")
+    payload = result.model_dump(mode="json")
+    if full:
+        return payload
+    receipt = result.receipt or {}
+    return {
+        "state": result.state,
+        "dispatch_id": result.dispatch_id,
+        "intent_id": result.intent_id,
+        "adapter_name": result.adapter_name,
+        "model": receipt.get("model"),
+        "output_path": str(result.output_path) if result.output_path else None,
+        "receipt_path": receipt.get("receipt_path"),
+        "error": result.error,
+        "result_preview": (result.result_text or "")[:500] if result.result_text else None,
+    }
 
 
 async def _prove_adapter(settings: Settings, adapter_name: str, prompt: str, capability_id: str | None, allow_subscription: bool) -> dict[str, object]:
@@ -237,6 +255,7 @@ def main() -> None:
     sub.add_parser("owner-receipt")
     dispatch = sub.add_parser("dispatch")
     dispatch.add_argument("text")
+    dispatch.add_argument("--full", action="store_true", help="Print the full dispatch payload instead of a compact receipt summary")
     prove_adapter = sub.add_parser("prove-adapter")
     prove_adapter.add_argument("adapter_name")
     prove_adapter.add_argument("--prompt", default="Adapter proof: answer with OK.")
@@ -283,12 +302,27 @@ def main() -> None:
     review_task.add_argument("--note", default="")
     trigger_task = sub.add_parser("trigger-scheduler-task")
     trigger_task.add_argument("task_id")
+
+    # Governance CLI commands (Phase 2)
+    register_governance_cli(sub)
+
+    # Budget CLI commands (Phase 3)
+    register_budget_cli(sub)
+
     args = parser.parse_args()
 
     settings = Settings.load()
     if args.home:
         home = Path(args.home)
         settings = Settings(home=home, state_path=home / "state.sqlite", notifications_path=home / "notifications.jsonl", log_dir=home / "logs", repo_root=settings.repo_root)
+
+    registered_func = getattr(args, "func", None)
+    if registered_func is not None:
+        args.settings = settings
+        registered_result = asyncio.run(registered_func(args))
+        if registered_result is not None:
+            print(json.dumps(registered_result, indent=2, default=str))
+        return
 
     result: dict[str, Any]
     if args.cmd == "refresh":
@@ -298,7 +332,7 @@ def main() -> None:
     elif args.cmd == "owner-receipt":
         result = asyncio.run(_owner_receipt(settings))
     elif args.cmd == "dispatch":
-        result = asyncio.run(_dispatch(settings, args.text))
+        result = asyncio.run(_dispatch(settings, args.text, args.full))
     elif args.cmd == "prove-adapter":
         result = asyncio.run(_prove_adapter(settings, args.adapter_name, args.prompt, args.capability, args.allow_subscription))
     elif args.cmd == "add-selection":

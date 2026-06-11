@@ -92,7 +92,13 @@ CREATE TABLE IF NOT EXISTS receipts (
     cost_class TEXT,
     success INTEGER,
     output_summary TEXT,
-    full_receipt TEXT
+    full_receipt TEXT,
+    -- Phase 4 additions (2026-06-10)
+    worker_id TEXT,
+    job_class TEXT,
+    routing_reasoning TEXT,
+    budget_state_json TEXT,
+    created_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS routing_decisions (
@@ -195,4 +201,50 @@ CREATE TABLE IF NOT EXISTS selections (
     kind TEXT,
     payload TEXT,
     grouped_with TEXT
+);
+
+-- Worker cards (from governor, added 2026-06-10 during consolidation)
+CREATE TABLE IF NOT EXISTS worker_cards (
+    worker_id TEXT PRIMARY KEY,
+    model_id TEXT,
+    base_model TEXT,
+    surface TEXT,
+    provider_id TEXT,
+    contract_type TEXT,
+    salary_bucket TEXT,
+    overtime_rule TEXT,
+    budget_source_id TEXT,
+    hardware_fit TEXT,
+    context_window INTEGER,
+    capabilities_json TEXT,
+    modalities_json TEXT,
+    tools_json TEXT,
+    stats_json TEXT,
+    best_jobs_json TEXT,
+    avoid_jobs_json TEXT,
+    approval_required BOOLEAN,
+    source_evidence_json TEXT,
+    last_verified TEXT
+);
+
+-- Job classes (from governor, added 2026-06-10 during consolidation)
+CREATE TABLE IF NOT EXISTS job_classes (
+    job_class TEXT PRIMARY KEY,
+    required_capabilities_json TEXT,
+    preferred_stats_json TEXT,
+    local_first BOOLEAN,
+    approval_floor TEXT
+);
+
+-- Budget probes (from governor, added 2026-06-10 during consolidation)
+CREATE TABLE IF NOT EXISTS budget_probes (
+    id TEXT PRIMARY KEY,
+    provider_id TEXT,
+    probe_type TEXT,
+    remaining INTEGER,
+    "limit" INTEGER,
+    reset_at TEXT,
+    probed_at TEXT,
+    ok BOOLEAN,
+    error TEXT
 );

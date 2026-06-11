@@ -1,0 +1,11 @@
+adapter: ollama-cloud
+service_group: cloud_clients
+billing_class: subscription_usage
+provider: ollama_cloud
+latency_band: medium
+consequence_max: medium
+capabilities:
+  - id: coding_chat
+  - id: code_repair
+  - id: general_reasoning
+  - id: local_chat
