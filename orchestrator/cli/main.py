@@ -26,6 +26,7 @@ from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
+from orchestrator.usage.flow import build_token_flow_payload
 
 
 async def _refresh(settings: Settings) -> dict[str, int]:
@@ -248,23 +249,17 @@ async def _owner_receipt(settings: Settings) -> dict[str, object]:
 async def _token_flow(settings: Settings, limit: int = 50) -> dict[str, object]:
     store = StateStore(settings)
     await store.initialize()
-    rows = await store.list_token_usage(limit=limit)
-    summary = await store.token_usage_summary(limit=max(limit, 1000))
-    totals = {
-        "attempts": len(rows),
-        "tokens_in": sum(int(row.get("tokens_in") or 0) for row in rows),
-        "tokens_out": sum(int(row.get("tokens_out") or 0) for row in rows),
-        "tokens_total": sum(int(row.get("tokens_total") or 0) for row in rows),
-        "successes": sum(int(bool(row.get("success"))) for row in rows),
-    }
-    return {
-        "state": "produced",
-        "state_path": str(settings.state_path),
-        "limit": limit,
-        "totals": totals,
-        "by_provider_model": summary,
-        "attempts": rows,
-    }
+    payload = await build_token_flow_payload(store, limit=limit)
+    payload["state_path"] = str(settings.state_path)
+    return payload
+
+
+async def _token_backfill(settings: Settings, limit: int = 10000) -> dict[str, object]:
+    store = StateStore(settings)
+    await store.initialize()
+    result = await store.backfill_token_usage_from_receipts(limit=limit)
+    flow = await build_token_flow_payload(store, limit=50)
+    return {"state": "repaired", "state_path": str(settings.state_path), "backfill": result, "token_flow": flow["totals"]}
 
 
 def main() -> None:
@@ -277,6 +272,8 @@ def main() -> None:
     sub.add_parser("owner-receipt")
     token_flow = sub.add_parser("token-flow")
     token_flow.add_argument("--limit", type=int, default=50)
+    token_backfill = sub.add_parser("token-backfill")
+    token_backfill.add_argument("--limit", type=int, default=10000)
     dispatch = sub.add_parser("dispatch")
     dispatch.add_argument("text")
     dispatch.add_argument("--full", action="store_true", help="Print the full dispatch payload instead of a compact receipt summary")
@@ -357,6 +354,8 @@ def main() -> None:
         result = asyncio.run(_owner_receipt(settings))
     elif args.cmd == "token-flow":
         result = asyncio.run(_token_flow(settings, args.limit))
+    elif args.cmd == "token-backfill":
+        result = asyncio.run(_token_backfill(settings, args.limit))
     elif args.cmd == "dispatch":
         result = asyncio.run(_dispatch(settings, args.text, args.full))
     elif args.cmd == "prove-adapter":

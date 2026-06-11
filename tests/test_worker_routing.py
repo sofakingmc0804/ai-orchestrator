@@ -164,9 +164,56 @@ def test_budget_probe_lowers_subscription_worker_with_depleted_quota() -> None:
             ),
         ],
         "routing_triage",
-        budget_probes=[{"provider_id": "ollama-cloud", "remaining": 1, "limit": 1000, "ok": True, "probed_at": "now"}],
+        budget_probes=[{"provider_id": "ollama-cloud", "remaining": 300, "limit": 1000, "ok": True, "probed_at": "now"}],
     )
 
     cloud = next(row for row in decision.candidates_considered if row["worker_id"] == "cloud-mini@ollama-cloud")
     local = next(row for row in decision.candidates_considered if row["worker_id"] == "local-mini@ollama-local")
     assert cloud["budget_score"] < local["budget_score"]
+
+
+def test_worker_routing_refuses_subscription_quota_at_reserve_floor() -> None:
+    intent = parse_intent("repair this repo bug")
+    decision = route_with_workers(
+        intent,
+        [
+            _worker(
+                "gpt-5.3-codex@github-copilot",
+                "github-copilot",
+                "subscription_quota",
+                ["coding"],
+                ["tools"],
+                ["repo_coding"],
+                stats={"coding": 10, "agentic_loop": 10, "speed": 7, "stability": 8},
+            )
+        ],
+        "repo_coding",
+        quota_state={"github_copilot": {"units_limit": 100, "remaining": 20}},
+        job_class_spec={"required_capabilities_json": '["coding", "tools"]'},
+    )
+
+    assert decision.chosen_adapter is None
+    assert decision.candidates_rejected[0]["rejected_reason"].startswith("quota reserve protected")
+
+
+def test_worker_routing_refuses_subscription_usage_budget_probe_at_reserve_floor() -> None:
+    intent = parse_intent("run this model gateway task")
+    decision = route_with_workers(
+        intent,
+        [
+            _worker(
+                "qwen3-coder-next:cloud@ollama-cloud",
+                "ollama-cloud",
+                "subscription_usage",
+                ["coding"],
+                ["tools"],
+                ["repo_coding"],
+            )
+        ],
+        "repo_coding",
+        budget_probes=[{"provider_id": "ollama", "remaining": 20, "limit": 100, "ok": True, "probed_at": "now"}],
+        job_class_spec={"required_capabilities_json": '["coding", "tools"]'},
+    )
+
+    assert decision.chosen_adapter is None
+    assert decision.candidates_rejected[0]["rejected_reason"].startswith("quota reserve protected")

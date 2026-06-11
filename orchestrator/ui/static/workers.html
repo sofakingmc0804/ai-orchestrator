@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Workers — AI Orchestrator</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #334155;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --primary: #3b82f6;
+            --purple: #8b5cf6;
+            --cyan: #06b6d4;
+        }
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+        
+        .container { max-width: 1600px; margin: 0 auto; }
+        
+        header {
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        h1 { font-size: 1.75rem; font-weight: 600; }
+        
+        nav { margin-bottom: 2rem; }
+        nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            margin-right: 1.5rem;
+            transition: color 0.2s;
+        }
+        nav a:hover, nav a.active { color: var(--text); }
+        
+        .filters {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .filters input, .filters select {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+        }
+        
+        .filters input { min-width: 300px; }
+        
+        .summary-bar {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+        }
+        
+        .summary-item {
+            text-align: center;
+            padding: 0.75rem;
+            background: rgba(59, 130, 246, 0.05);
+            border-radius: 6px;
+        }
+        
+        .summary-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+        
+        .summary-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+        
+        .workers-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
+            gap: 1rem;
+        }
+        
+        .worker-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+        
+        .worker-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-2px);
+        }
+        
+        .worker-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .worker-id {
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--primary);
+            word-break: break-all;
+        }
+        
+        .contract-badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .contract-local { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+        .contract-subscription { background: rgba(59, 130, 246, 0.2); color: var(--primary); }
+        .contract-metered { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+        
+        .worker-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        
+        .detail-item {
+            font-size: 0.875rem;
+        }
+        
+        .detail-label {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            margin-bottom: 0.25rem;
+        }
+        
+        .detail-value {
+            font-weight: 500;
+        }
+        
+        .capabilities {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+        }
+        
+        .cap-badge {
+            padding: 0.25rem 0.5rem;
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+        }
+        
+        .best-jobs {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+        }
+        
+        .best-jobs-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+        
+        .job-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        
+        .job-tag {
+            padding: 0.25rem 0.5rem;
+            background: rgba(139, 92, 246, 0.1);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            border-radius: 4px;
+            font-size: 0.7rem;
+            color: var(--purple);
+        }
+        
+        .stats-row {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.75rem;
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-weight: 600;
+            color: var(--cyan);
+        }
+        
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 0.65rem;
+            margin-top: 0.125rem;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-muted);
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-muted);
+            grid-column: 1 / -1;
+        }
+        
+        .refresh-btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            transition: background 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            background: #2563eb;
+        }
+        
+        .refresh-btn:disabled {
+            background: var(--border);
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav>
+            <a href="/">Home</a>
+            <a href="/workers" class="active">Workers</a>
+            <a href="/budget">Budget</a>
+            <a href="/receipts">Receipts</a>
+        </nav>
+        
+        <header>
+            <h1>Worker Roster</h1>
+            <button class="refresh-btn" id="refreshBtn" onclick="loadWorkers()">Refresh</button>
+        </header>
+        
+        <div class="summary-bar" id="summaryBar">
+            <div class="summary-item">
+                <div class="summary-value" id="totalWorkers">--</div>
+                <div class="summary-label">Total Workers</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value" id="localWorkers">--</div>
+                <div class="summary-label">Local</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value" id="subscriptionWorkers">--</div>
+                <div class="summary-label">Subscription</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value" id="avgContextWindow">--</div>
+                <div class="summary-label">Avg Context (K)</div>
+            </div>
+        </div>
+        
+        <div class="filters">
+            <input type="text" id="searchInput" placeholder="Search workers (model, surface, provider)..." onkeyup="filterWorkers()">
+            <select id="contractFilter" onchange="filterWorkers()">
+                <option value="">All Contract Types</option>
+                <option value="local_resource">Local</option>
+                <option value="subscription_unlimited">Subscription (Unlimited)</option>
+                <option value="subscription_quota">Subscription (Quota)</option>
+                <option value="metered_extra_cost">Metered</option>
+            </select>
+            <select id="surfaceFilter" onchange="filterWorkers()">
+                <option value="">All Surfaces</option>
+                <option value="claude-desktop-mcp">Claude Desktop MCP</option>
+                <option value="claude-code-cli">Claude Code CLI</option>
+                <option value="codex-cli">Codex CLI</option>
+                <option value="copilot-gh">Copilot (GitHub)</option>
+                <option value="copilot-vscode">Copilot (VSCode)</option>
+                <option value="gemini-cli">Gemini CLI</option>
+                <option value="ollama-cli">Ollama CLI</option>
+                <option value="ollama-http">Ollama HTTP</option>
+                <option value="lm-studio">LM Studio</option>
+                <option value="hermes-agent">Hermes Agent</option>
+            </select>
+        </div>
+        
+        <div class="workers-grid" id="workersGrid">
+            <div class="loading">Loading workers...</div>
+        </div>
+    </div>
+    
+    <script>
+        let allWorkers = [];
+        
+        async function loadWorkers() {
+            const btn = document.getElementById('refreshBtn');
+            btn.disabled = true;
+            btn.textContent = 'Loading...';
+            
+            try {
+                const response = await fetch('/api/workers');
+                const data = await response.json();
+                allWorkers = data.workers || [];
+                renderWorkers(allWorkers);
+                updateSummary(allWorkers);
+            } catch (error) {
+                document.getElementById('workersGrid').innerHTML = `
+                    <div class="empty-state">Failed to load workers: ${error.message}</div>
+                `;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Refresh';
+            }
+        }
+        
+        function renderWorkers(workers) {
+            const grid = document.getElementById('workersGrid');
+            
+            if (!workers || workers.length === 0) {
+                grid.innerHTML = '<div class="empty-state">No workers found</div>';
+                return;
+            }
+            
+            grid.innerHTML = workers.map(w => {
+                const contractClass = getContractClass(w.contract_type);
+                const caps = JSON.parse(w.capabilities_json || '[]');
+                const bestJobs = JSON.parse(w.best_jobs_json || '[]');
+                const stats = JSON.parse(w.stats_json || '{}');
+                const contextK = w.context_window ? Math.round(w.context_window / 1000) : 'N/A';
+                
+                return `
+                    <div class="worker-card">
+                        <div class="worker-header">
+                            <div class="worker-id">${w.worker_id}</div>
+                            <span class="contract-badge ${contractClass}">${formatContractType(w.contract_type)}</span>
+                        </div>
+                        
+                        <div class="worker-details">
+                            <div class="detail-item">
+                                <div class="detail-label">Base Model</div>
+                                <div class="detail-value">${w.base_model || 'N/A'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Surface</div>
+                                <div class="detail-value">${w.surface || 'N/A'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Provider</div>
+                                <div class="detail-value">${w.provider_id || 'N/A'}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="detail-label">Context Window</div>
+                                <div class="detail-value">${contextK}K</div>
+                            </div>
+                        </div>
+                        
+                        ${caps.length > 0 ? `
+                            <div class="capabilities">
+                                ${caps.slice(0, 8).map(c => `<span class="cap-badge">${c}</span>`).join('')}
+                                ${caps.length > 8 ? `<span class="cap-badge">+${caps.length - 8} more</span>` : ''}
+                            </div>
+                        ` : ''}
+                        
+                        ${bestJobs.length > 0 ? `
+                            <div class="best-jobs">
+                                <div class="best-jobs-label">Best For</div>
+                                <div class="job-tags">
+                                    ${bestJobs.map(j => `<span class="job-tag">${j}</span>`).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+                        
+                        <div class="stats-row">
+                            <div class="stat-item">
+                                <div class="stat-value">${stats.pass_rate || 'N/A'}</div>
+                                <div class="stat-label">Pass Rate</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value">${stats.avg_latency_ms || 'N/A'}</div>
+                                <div class="stat-label">Latency (ms)</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value">${stats.total_jobs || '0'}</div>
+                                <div class="stat-label">Jobs Done</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function updateSummary(workers) {
+            const total = workers.length;
+            const local = workers.filter(w => w.contract_type === 'local_resource').length;
+            const subscription = workers.filter(w => w.contract_type && w.contract_type.includes('subscription')).length;
+            const avgContext = workers.length > 0 
+                ? Math.round(workers.reduce((sum, w) => sum + (w.context_window || 0), 0) / workers.length / 1000)
+                : 0;
+            
+            document.getElementById('totalWorkers').textContent = total;
+            document.getElementById('localWorkers').textContent = local;
+            document.getElementById('subscriptionWorkers').textContent = subscription;
+            document.getElementById('avgContextWindow').textContent = avgContext;
+        }
+        
+        function getContractClass(type) {
+            if (type === 'local_resource') return 'contract-local';
+            if (type && type.includes('subscription')) return 'contract-subscription';
+            if (type === 'metered_extra_cost') return 'contract-metered';
+            return 'contract-subscription';
+        }
+        
+        function formatContractType(type) {
+            if (type === 'local_resource') return 'Local';
+            if (type === 'subscription_unlimited') return 'Sub (∞)';
+            if (type === 'subscription_quota') return 'Sub (Quota)';
+            if (type === 'metered_extra_cost') return 'Metered';
+            return type || 'Unknown';
+        }
+        
+        function filterWorkers() {
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            const contract = document.getElementById('contractFilter').value;
+            const surface = document.getElementById('surfaceFilter').value;
+            
+            const filtered = allWorkers.filter(w => {
+                const matchesSearch = !search || 
+                    (w.worker_id && w.worker_id.toLowerCase().includes(search)) ||
+                    (w.base_model && w.base_model.toLowerCase().includes(search)) ||
+                    (w.surface && w.surface.toLowerCase().includes(search)) ||
+                    (w.provider_id && w.provider_id.toLowerCase().includes(search));
+                
+                const matchesContract = !contract || w.contract_type === contract;
+                const matchesSurface = !surface || w.surface === surface;
+                
+                return matchesSearch && matchesContract && matchesSurface;
+            });
+            
+            renderWorkers(filtered);
+            updateSummary(filtered);
+        }
+        
+        loadWorkers();
+    </script>
+</body>
+</html>

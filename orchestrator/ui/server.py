@@ -11,6 +11,7 @@ from orchestrator.autopilot.watchers import scan_autopilot_roots_once
 from orchestrator.benchmarks.latency import run_selection_latency_benchmark
 from orchestrator.config import Settings
 from orchestrator.discovery.auth import probe_auth_and_quota, quota_snapshots
+from orchestrator.discovery.budget_probes import probe_to_dict, run_all_probes
 from orchestrator.discovery.projects import discover_projects
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.dispatch.dispatcher import Dispatcher
@@ -22,6 +23,7 @@ from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
 from orchestrator.scheduler.cron import start_due_scheduler_thread
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
 from orchestrator.state.store import StateStore
+from orchestrator.usage.flow import build_token_flow_payload
 
 
 class IntentRequest(BaseModel):
@@ -59,6 +61,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
         return (static_dir / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/workers", response_class=HTMLResponse)
+    async def workers_page() -> str:
+        return (static_dir / "workers.html").read_text(encoding="utf-8")
+
+    @app.get("/budget", response_class=HTMLResponse)
+    async def budget_page() -> str:
+        return (static_dir / "budget.html").read_text(encoding="utf-8")
+
+    @app.get("/receipts", response_class=HTMLResponse)
+    async def receipts_page() -> str:
+        return (static_dir / "receipts.html").read_text(encoding="utf-8")
+
+    @app.get("/api/status")
+    async def dashboard_status() -> dict[str, object]:
+        auth_state = probe_auth_and_quota()
+        await store.record_quota_snapshots(quota_snapshots(auth_state))
+        return {
+            "dispatches": await store.list_dispatches(limit=100),
+            "auth_quota": auth_state,
+            "state_path": str(settings.state_path),
+            "notifications_path": str(settings.notifications_path),
+        }
+
+    @app.get("/api/workers")
+    async def workers() -> dict[str, object]:
+        return {"workers": await store.list_worker_cards()}
+
+    @app.get("/api/receipts")
+    async def receipts(limit: int = 50) -> dict[str, object]:
+        return {"receipts": await store.list_receipts(limit=limit)}
+
+    @app.get("/api/budget")
+    async def budget() -> dict[str, object]:
+        return {"probes": await store.list_budget_probes()}
+
+    @app.post("/api/budget/refresh")
+    async def budget_refresh() -> dict[str, object]:
+        probes = [probe_to_dict(probe) for probe in run_all_probes()]
+        result = await store.upsert_budget_probes(probes)
+        return {**result, "probes": probes}
 
     @app.get("/api/services")
     async def services() -> list[dict[str, object]]:
@@ -125,6 +168,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/approvals")
     async def approvals() -> list[dict[str, object]]:
         return await store.list_pending_approvals()
+
+    @app.get("/api/token-flow")
+    async def token_flow(limit: int = 50) -> dict[str, object]:
+        return await build_token_flow_payload(store, limit=limit)
 
     @app.post("/api/selections")
     async def add_selection(payload: dict[str, object]) -> dict[str, object]:

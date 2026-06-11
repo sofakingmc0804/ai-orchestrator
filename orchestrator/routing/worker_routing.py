@@ -163,6 +163,14 @@ def _provider_keys(provider: str) -> set[str]:
     return keys
 
 
+def _lookup_by_provider(provider: str, rows: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    keys = _provider_keys(provider)
+    for key, row in rows.items():
+        if key in keys or key.replace("-", "_") in keys or key.replace("_", "-") in keys:
+            return row
+    return None
+
+
 def _budget_score(worker: dict[str, Any], budget_lookup: dict[str, dict[str, Any]]) -> float:
     contract = str(worker.get("contract_type") or "")
     if contract == BillingClass.LOCAL_RESOURCE.value:
@@ -170,7 +178,7 @@ def _budget_score(worker: dict[str, Any], budget_lookup: dict[str, dict[str, Any
     if contract == BillingClass.SUBSCRIPTION_UNLIMITED.value:
         return 0.9
     provider = str(worker.get("provider_id") or worker.get("surface") or "")
-    probe = next((row for key, row in budget_lookup.items() if key in _provider_keys(provider)), None)
+    probe = _lookup_by_provider(provider, budget_lookup)
     if not probe:
         return 0.45 if contract in {BillingClass.SUBSCRIPTION_QUOTA.value, BillingClass.SUBSCRIPTION_USAGE.value} else 0.0
     if not probe.get("ok"):
@@ -180,6 +188,39 @@ def _budget_score(worker: dict[str, Any], budget_lookup: dict[str, dict[str, Any
     if limit <= 0:
         return 0.75
     return max(0.0, min(1.0, remaining / limit))
+
+
+def _reserve_rejection_reason(
+    intent: Intent,
+    worker: dict[str, Any],
+    adapter_name: str,
+    quota_state: dict[str, dict[str, Any]],
+    budget_lookup: dict[str, dict[str, Any]],
+) -> str | None:
+    contract = str(worker.get("contract_type") or "")
+    if contract not in {BillingClass.SUBSCRIPTION_QUOTA.value, BillingClass.SUBSCRIPTION_USAGE.value}:
+        return None
+
+    provider = str(worker.get("provider_id") or worker.get("surface") or PROVIDER_BY_ADAPTER.get(adapter_name) or adapter_name)
+    quota = _lookup_by_provider(provider, quota_state)
+    probe = _lookup_by_provider(provider, budget_lookup)
+    source = quota or probe
+    if not source:
+        return None
+    if source.get("ok") is not None and not source.get("ok"):
+        return f"quota probe failed for {provider}: {source.get('error') or 'probe unavailable'}"
+
+    limit = int(source.get("units_limit") or source.get("limit") or 0)
+    remaining = int(source.get("remaining") or 0)
+    if limit <= 0:
+        return None
+
+    priority = str(intent.parsed_payload.get("priority") or "").lower()
+    reserve = 0.0 if priority == "urgent" else RESERVE_BY_TIER.get(intent.consequence_tier.value, 0.20)
+    reserve_units = limit * reserve
+    if remaining <= reserve_units:
+        return f"quota reserve protected for {provider}: remaining {remaining}/{limit} at reserve {reserve:.0%}"
+    return None
 
 
 def _contract_pressure_score(worker: dict[str, Any]) -> float:
@@ -347,6 +388,12 @@ def route_with_workers(
         row["adapter_name"] = adapter_name
         row["provider"] = worker.get("provider_id") or worker.get("surface")
         reason = _project_policy_rejection(row, project_policy)
+        if reason:
+            row["rejected_reason"] = reason
+            rejected.append(row)
+            continue
+
+        reason = _reserve_rejection_reason(intent, worker, adapter_name, quota_state, budget_lookup)
         if reason:
             row["rejected_reason"] = reason
             rejected.append(row)

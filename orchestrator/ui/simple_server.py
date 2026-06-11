@@ -5,12 +5,13 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from orchestrator.config import Settings
 from orchestrator.autopilot.watchers import scan_autopilot_roots_once
 from orchestrator.benchmarks.latency import run_selection_latency_benchmark
 from orchestrator.discovery.auth import probe_auth_and_quota, quota_snapshots
+from orchestrator.discovery.budget_probes import probe_to_dict, run_all_probes
 from orchestrator.discovery.projects import discover_projects
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.dispatch.dispatcher import Dispatcher
@@ -23,6 +24,7 @@ from orchestrator.scheduler.cron import start_due_scheduler_thread
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
+from orchestrator.usage.flow import build_token_flow_payload
 
 
 class OrchestratorRuntime:
@@ -87,9 +89,19 @@ def make_handler(runtime: OrchestratorRuntime):
             return payload if isinstance(payload, dict) else {}
 
         def do_GET(self) -> None:
-            path = urlparse(self.path).path
+            parsed_url = urlparse(self.path)
+            path = parsed_url.path
+            query = parse_qs(parsed_url.query)
             if path == "/":
                 self._send(200, (static_dir / "index.html").read_bytes(), "text/html; charset=utf-8")
+                return
+            pages = {
+                "/workers": "workers.html",
+                "/budget": "budget.html",
+                "/receipts": "receipts.html",
+            }
+            if path in pages:
+                self._send(200, (static_dir / pages[path]).read_bytes(), "text/html; charset=utf-8")
                 return
             if path.startswith("/static/"):
                 target = (static_dir / path.removeprefix("/static/")).resolve()
@@ -104,6 +116,35 @@ def make_handler(runtime: OrchestratorRuntime):
                 return
             if path == "/api/services":
                 self._send(200, _json_bytes(asyncio.run(runtime.store.list_services())))
+                return
+            if path == "/api/status":
+                auth_state = probe_auth_and_quota()
+                asyncio.run(runtime.store.record_quota_snapshots(quota_snapshots(auth_state)))
+                self._send(
+                    200,
+                    _json_bytes(
+                        {
+                            "dispatches": asyncio.run(runtime.store.list_dispatches(limit=100)),
+                            "auth_quota": auth_state,
+                            "state_path": str(runtime.settings.state_path),
+                            "notifications_path": str(runtime.settings.notifications_path),
+                        }
+                    ),
+                )
+                return
+            if path == "/api/workers":
+                self._send(200, _json_bytes({"workers": asyncio.run(runtime.store.list_worker_cards())}))
+                return
+            if path == "/api/receipts":
+                raw_limit = (query.get("limit") or ["50"])[0]
+                try:
+                    limit = max(1, min(int(raw_limit), 1000))
+                except ValueError:
+                    limit = 50
+                self._send(200, _json_bytes({"receipts": asyncio.run(runtime.store.list_receipts(limit=limit))}))
+                return
+            if path == "/api/budget":
+                self._send(200, _json_bytes({"probes": asyncio.run(runtime.store.list_budget_probes())}))
                 return
             if path == "/api/capabilities":
                 self._send(200, _json_bytes(asyncio.run(runtime.store.list_capabilities())))
@@ -155,6 +196,14 @@ def make_handler(runtime: OrchestratorRuntime):
             if path == "/api/approvals":
                 self._send(200, _json_bytes(asyncio.run(runtime.store.list_pending_approvals())))
                 return
+            if path == "/api/token-flow":
+                raw_limit = (query.get("limit") or ["50"])[0]
+                try:
+                    limit = max(1, min(int(raw_limit), 1000))
+                except ValueError:
+                    limit = 50
+                self._send(200, _json_bytes(asyncio.run(build_token_flow_payload(runtime.store, limit=limit))))
+                return
             self._send(404, b"not found", "text/plain")
 
         def do_POST(self) -> None:
@@ -162,6 +211,11 @@ def make_handler(runtime: OrchestratorRuntime):
             payload = self._read_json()
             if path == "/api/refresh":
                 self._send(200, _json_bytes(asyncio.run(runtime.refresh())))
+                return
+            if path == "/api/budget/refresh":
+                probes = [probe_to_dict(probe) for probe in run_all_probes()]
+                result = asyncio.run(runtime.store.upsert_budget_probes(probes))
+                self._send(200, _json_bytes({**result, "probes": probes}))
                 return
             if path == "/api/repair-services":
                 self._send(200, _json_bytes(asyncio.run(repair_core_services(runtime.store))))

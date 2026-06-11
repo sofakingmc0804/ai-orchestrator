@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Receipts — AI Orchestrator</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #334155;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --primary: #3b82f6;
+            --code-bg: #0f172a;
+        }
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+        
+        .container { max-width: 1400px; margin: 0 auto; }
+        
+        header {
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        h1 { font-size: 1.75rem; font-weight: 600; }
+        
+        nav { margin-bottom: 2rem; }
+        nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            margin-right: 1.5rem;
+            transition: color 0.2s;
+        }
+        nav a:hover, nav a.active { color: var(--text); }
+        
+        .filters {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .filters input, .filters select {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+        }
+        
+        .filters input { min-width: 250px; }
+        
+        .receipts-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .receipts-table th,
+        .receipts-table td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .receipts-table th {
+            background: rgba(59, 130, 246, 0.1);
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .receipts-table tr:hover {
+            background: rgba(59, 130, 246, 0.05);
+        }
+        
+        .receipts-table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .status-success { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+        .status-failed { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+        
+        .job-class-badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            background: rgba(59, 130, 246, 0.2);
+            color: var(--primary);
+        }
+        
+        .expand-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+        }
+        
+        .expand-btn:hover {
+            background: var(--border);
+            color: var(--text);
+        }
+        
+        .detail-row {
+            display: none;
+            background: var(--code-bg);
+            padding: 1rem;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.75rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .detail-row.expanded {
+            display: table-row;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-muted);
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-muted);
+        }
+        
+        .summary-bar {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            gap: 2rem;
+        }
+        
+        .summary-item {
+            text-align: center;
+        }
+        
+        .summary-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+        
+        .summary-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav>
+            <a href="/">Home</a>
+            <a href="/workers">Workers</a>
+            <a href="/budget">Budget</a>
+            <a href="/receipts" class="active">Receipts</a>
+        </nav>
+        
+        <header>
+            <h1>Dispatch Receipts</h1>
+            <div>
+                <button class="expand-btn" onclick="expandAll()">Expand All</button>
+                <button class="expand-btn" onclick="collapseAll()">Collapse All</button>
+            </div>
+        </header>
+        
+        <div class="filters">
+            <input type="text" id="searchInput" placeholder="Search receipts (dispatch_id, model, job class)..." onkeyup="filterReceipts()">
+            <select id="jobClassFilter" onchange="filterReceipts()">
+                <option value="">All Job Classes</option>
+                <option value="repo_coding">repo_coding</option>
+                <option value="agentic_repair">agentic_repair</option>
+                <option value="bulk_extraction">bulk_extraction</option>
+                <option value="classification">classification</option>
+                <option value="summarization">summarization</option>
+                <option value="code_review">code_review</option>
+                <option value="quick_question">quick_question</option>
+            </select>
+            <select id="statusFilter" onchange="filterReceipts()">
+                <option value="">All Status</option>
+                <option value="success">Success</option>
+                <option value="failed">Failed</option>
+            </select>
+        </div>
+        
+        <div class="summary-bar" id="summaryBar">
+            <div class="summary-item">
+                <div class="summary-value" id="totalReceipts">--</div>
+                <div class="summary-label">Total Receipts</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value" id="successRate">--</div>
+                <div class="summary-label">Success Rate</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value" id="totalTokens">--</div>
+                <div class="summary-label">Total Tokens</div>
+            </div>
+        </div>
+        
+        <table class="receipts-table">
+            <thead>
+                <tr>
+                    <th style="width: 40px;"></th>
+                    <th>Dispatch ID</th>
+                    <th>Worker</th>
+                    <th>Job Class</th>
+                    <th>Model</th>
+                    <th>Tokens</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody id="receiptsBody">
+                <tr><td colspan="8" class="loading">Loading receipts...</td></tr>
+            </tbody>
+        </table>
+    </div>
+    
+    <script>
+        let allReceipts = [];
+        
+        async function loadReceipts() {
+            try {
+                const response = await fetch('/api/receipts?limit=50');
+                const data = await response.json();
+                allReceipts = data.receipts || [];
+                renderReceipts(allReceipts);
+                updateSummary(allReceipts);
+            } catch (error) {
+                document.getElementById('receiptsBody').innerHTML = `
+                    <tr><td colspan="8" style="color: var(--danger);">Failed to load receipts: ${error.message}</td></tr>
+                `;
+            }
+        }
+        
+        function renderReceipts(receipts) {
+            const tbody = document.getElementById('receiptsBody');
+            
+            if (!receipts || receipts.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No receipts found</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = receipts.map((r, idx) => {
+                const statusClass = r.success ? 'status-success' : 'status-failed';
+                const statusText = r.success ? '✓ Success' : '✗ Failed';
+                const tokens = (r.tokens_in || 0) + (r.tokens_out || 0);
+                const created = r.created_at ? new Date(r.created_at).toLocaleString() : 'N/A';
+                
+                return `
+                    <tr>
+                        <td><button class="expand-btn" onclick="toggleDetail(${idx})">▼</button></td>
+                        <td style="font-family: monospace; font-size: 0.75rem;">${r.dispatch_id || 'N/A'}</td>
+                        <td>${r.worker_id || r.service || 'N/A'}</td>
+                        <td><span class="job-class-badge">${r.job_class || 'N/A'}</span></td>
+                        <td>${r.model || 'N/A'}</td>
+                        <td>${tokens.toLocaleString()}</td>
+                        <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                        <td>${created}</td>
+                    </tr>
+                    <tr class="detail-row" id="detail-${idx}">
+                        <td colspan="8">
+                            <strong>Routing Reasoning:</strong><br/>
+                            ${r.routing_reasoning || 'N/A'}<br/><br/>
+                            <strong>Budget State:</strong><br/>
+                            <pre>${JSON.stringify(JSON.parse(r.budget_state_json || '{}'), null, 2)}</pre>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function updateSummary(receipts) {
+            const total = receipts.length;
+            const success = receipts.filter(r => r.success).length;
+            const rate = total > 0 ? Math.round((success / total) * 100) : 0;
+            const tokens = receipts.reduce((sum, r) => sum + (r.tokens_in || 0) + (r.tokens_out || 0), 0);
+            
+            document.getElementById('totalReceipts').textContent = total;
+            document.getElementById('successRate').textContent = `${rate}%`;
+            document.getElementById('totalTokens').textContent = tokens.toLocaleString();
+        }
+        
+        function toggleDetail(idx) {
+            const row = document.getElementById(`detail-${idx}`);
+            row.classList.toggle('expanded');
+        }
+        
+        function expandAll() {
+            document.querySelectorAll('.detail-row').forEach(row => row.classList.add('expanded'));
+        }
+        
+        function collapseAll() {
+            document.querySelectorAll('.detail-row').forEach(row => row.classList.remove('expanded'));
+        }
+        
+        function filterReceipts() {
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            const jobClass = document.getElementById('jobClassFilter').value;
+            const status = document.getElementById('statusFilter').value;
+            
+            const filtered = allReceipts.filter(r => {
+                const matchesSearch = !search || 
+                    (r.dispatch_id && r.dispatch_id.toLowerCase().includes(search)) ||
+                    (r.model && r.model.toLowerCase().includes(search)) ||
+                    (r.job_class && r.job_class.toLowerCase().includes(search));
+                
+                const matchesJobClass = !jobClass || r.job_class === jobClass;
+                const matchesStatus = !status || (status === 'success' && r.success) || (status === 'failed' && !r.success);
+                
+                return matchesSearch && matchesJobClass && matchesStatus;
+            });
+            
+            renderReceipts(filtered);
+            updateSummary(filtered);
+        }
+        
+        loadReceipts();
+    </script>
+</body>
+</html>

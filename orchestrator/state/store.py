@@ -10,6 +10,7 @@ import aiosqlite
 
 from orchestrator.config import Settings, ensure_runtime_dirs
 from orchestrator.models import Capability, Intent, Notification, RoutingDecision, Selection, ServiceInfo
+from orchestrator.usage.tokens import estimate_tokens
 
 
 def iso(dt: datetime | None = None) -> str:
@@ -617,6 +618,147 @@ class StateStore:
             item["avg_tokens_total"] = item["tokens_total"] / attempts
             item["success_rate"] = int(item.get("successes") or 0) / attempts
         return grouped
+
+    async def list_worker_cards(self, limit: int = 500) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute("SELECT * FROM worker_cards ORDER BY contract_type, worker_id LIMIT ?", (limit,))
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def list_receipts(self, limit: int = 100) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute("SELECT * FROM receipts ORDER BY COALESCE(created_at, dispatch_id) DESC LIMIT ?", (limit,))
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def list_budget_probes(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute('SELECT * FROM budget_probes ORDER BY provider_id, probe_type')).fetchall()
+            return [dict(row) for row in rows]
+
+    async def upsert_budget_probes(self, probes: list[dict[str, Any]]) -> dict[str, int]:
+        stored = 0
+        failed = 0
+        async with aiosqlite.connect(self.path) as db:
+            for probe in probes:
+                await db.execute(
+                    """
+                    INSERT INTO budget_probes (
+                        id, provider_id, probe_type, remaining, "limit",
+                        reset_at, probed_at, ok, error
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (id) DO UPDATE SET
+                        remaining=excluded.remaining,
+                        "limit"=excluded."limit",
+                        reset_at=excluded.reset_at,
+                        probed_at=excluded.probed_at,
+                        ok=excluded.ok,
+                        error=excluded.error
+                    """,
+                    (
+                        probe["id"],
+                        probe["provider_id"],
+                        probe["probe_type"],
+                        probe.get("remaining"),
+                        probe.get("limit"),
+                        probe.get("reset_at"),
+                        probe.get("probed_at"),
+                        int(bool(probe.get("ok"))),
+                        probe.get("error"),
+                    ),
+                )
+                if probe.get("ok"):
+                    stored += 1
+                else:
+                    failed += 1
+            await db.commit()
+        return {"stored": stored, "failed": failed, "total": len(probes)}
+
+    async def backfill_token_usage_from_receipts(self, limit: int = 10000) -> dict[str, Any]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT
+                      r.*,
+                      d.intent_id AS dispatch_intent_id,
+                      d.adapter_name AS dispatch_adapter_name,
+                      d.envelope AS dispatch_envelope,
+                      d.completed_at AS dispatch_completed_at
+                    FROM receipts r
+                    JOIN dispatches d ON d.id = r.dispatch_id
+                    LEFT JOIN token_usage tu ON tu.dispatch_id = r.dispatch_id
+                    WHERE tu.id IS NULL
+                    ORDER BY COALESCE(r.created_at, d.completed_at, r.dispatch_id) ASC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            ).fetchall()
+
+        created = 0
+        skipped = 0
+        for row in rows:
+            item = dict(row)
+            dispatch_id = str(item.get("dispatch_id") or "")
+            if not dispatch_id:
+                skipped += 1
+                continue
+            try:
+                envelope = json.loads(str(item.get("dispatch_envelope") or "{}"))
+            except json.JSONDecodeError:
+                envelope = {}
+            try:
+                full_receipt = json.loads(str(item.get("full_receipt") or "{}"))
+            except json.JSONDecodeError:
+                full_receipt = {}
+
+            prompt = ""
+            raw_intent = envelope.get("intent") if isinstance(envelope, dict) else {}
+            if isinstance(raw_intent, dict):
+                prompt = str(raw_intent.get("raw_text") or "")
+            output_summary = str(item.get("output_summary") or full_receipt.get("output_summary") or "")
+            tokens_in = int(item.get("tokens_in") or 0) or estimate_tokens(prompt)
+            tokens_out = int(item.get("tokens_out") or 0) or estimate_tokens(output_summary)
+            usage = {
+                "id": f"tok_backfill_{dispatch_id}",
+                "dispatch_id": dispatch_id,
+                "attempt_id": f"backfill:{dispatch_id}",
+                "intent_id": item.get("dispatch_intent_id"),
+                "adapter_name": item.get("service") or item.get("dispatch_adapter_name"),
+                "provider": item.get("service") or item.get("dispatch_adapter_name"),
+                "model": item.get("model"),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "tokens_total": tokens_in + tokens_out,
+                "success": bool(item.get("success")),
+                "token_source": "receipt_backfill",
+                "confidence": "estimated",
+                "quota_provider": item.get("service") or item.get("dispatch_adapter_name"),
+                "raw_usage_json": json.dumps(
+                    {
+                        "source": "receipt_backfill",
+                        "receipt_tokens_in": item.get("tokens_in"),
+                        "receipt_tokens_out": item.get("tokens_out"),
+                        "estimated_prompt": bool(not int(item.get("tokens_in") or 0)),
+                        "estimated_output": bool(not int(item.get("tokens_out") or 0)),
+                    },
+                    sort_keys=True,
+                ),
+                "created_at": item.get("created_at") or item.get("dispatch_completed_at") or iso(),
+            }
+            await self.record_token_usage(usage)
+            created += 1
+
+        if created or skipped:
+            await self.audit("token_flow", "backfilled_receipts", "token_usage", {"created": created, "skipped": skipped, "limit": limit})
+        return {"created": created, "skipped": skipped, "limit": limit}
 
     async def record_dispatch_attempt(self, attempt: dict[str, Any]) -> None:
         async with aiosqlite.connect(self.path) as db:

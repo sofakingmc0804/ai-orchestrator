@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
+
+from orchestrator.config import Settings
+from orchestrator.state.store import StateStore, iso
 from orchestrator.usage.tokens import estimate_tokens, extract_token_usage, flowmeter_snapshot
 
 
@@ -69,3 +74,73 @@ def test_flowmeter_snapshot_estimates_quota_after_attempt() -> None:
     assert snapshot["quota_remaining_after_estimate"] == 875
     assert snapshot["quota_ratio_after_estimate"] == 0.4375
     assert snapshot["quota_probe_ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_backfills_legacy_receipts_into_estimated_token_rows(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    await store.record_dispatch(
+        {
+            "id": "dsp_legacy",
+            "intent_id": "int_legacy",
+            "adapter_name": "legacy-adapter",
+            "envelope": {},
+            "state": "completed",
+            "started_at": iso(),
+            "completed_at": iso(),
+        },
+        receipt={
+            "service": "legacy-adapter",
+            "capability": "local_chat",
+            "model": "legacy-model",
+            "tokens_in": 12,
+            "tokens_out": 7,
+            "success": True,
+            "output_summary": "legacy output",
+        },
+    )
+
+    result = await store.backfill_token_usage_from_receipts()
+    second = await store.backfill_token_usage_from_receipts()
+    rows = await store.list_token_usage(dispatch_id="dsp_legacy")
+
+    assert result["created"] == 1
+    assert second["created"] == 0
+    assert rows[0]["attempt_id"] == "backfill:dsp_legacy"
+    assert rows[0]["tokens_total"] == 19
+    assert rows[0]["token_source"] == "receipt_backfill"
+    assert rows[0]["confidence"] == "estimated"
+
+
+@pytest.mark.asyncio
+async def test_backfill_estimates_missing_receipt_token_counts(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    await store.record_dispatch(
+        {
+            "id": "dsp_estimated",
+            "intent_id": "int_estimated",
+            "adapter_name": "legacy-adapter",
+            "envelope": {"intent": {"raw_text": "summarize this old task"}},
+            "state": "completed",
+            "started_at": iso(),
+            "completed_at": iso(),
+        },
+        receipt={
+            "service": "legacy-adapter",
+            "capability": "summarize_text",
+            "model": "legacy-model",
+            "success": True,
+            "output_summary": "old task summary",
+        },
+    )
+
+    result = await store.backfill_token_usage_from_receipts()
+    rows = await store.list_token_usage(dispatch_id="dsp_estimated")
+
+    assert result["created"] == 1
+    assert rows[0]["tokens_in"] == estimate_tokens("summarize this old task")
+    assert rows[0]["tokens_out"] == estimate_tokens("old task summary")
