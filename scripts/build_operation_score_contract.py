@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Build an orchestrator-ready score contract from local operation benchmark runs."""
+"""Build an orchestrator-ready score contract from local operation benchmark runs.
+
+v2 -- Population-relative scoring (2026-06-07)
+
+All model rankings are derived from comparative benchmark performance.
+No absolute thresholds determine preferred/fallback status. The best
+model in the tested population is preferred regardless of its absolute
+score. Routing decisions use mean composite scores produced by the
+dimensional validator system (v2) for relative ranking.
+
+Backward compatible: reads both old-format JSONL (binary passed only)
+and new-format JSONL (with validation.scores.composite).
+"""
 
 from __future__ import annotations
 
@@ -12,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PACK = ROOT / "benchmarks" / "fixtures" / "operations" / "first_pack.json"
-DEFAULT_OUTPUT = ROOT / "orchestrator_contracts" / "local_model_operation_scores_2026-06-07.json"
+DEFAULT_OUTPUT = ROOT / "orchestrator_contracts" / "local_model_operation_scores.json"
 
 
 def load_pack(path: Path) -> dict:
@@ -97,16 +109,88 @@ def failure_modes(rows: list[dict]) -> dict[str, int]:
     return dict(sorted(modes.items()))
 
 
+# ---------------------------------------------------------------------------
+# Composite score extraction (backward-compatible)
+# ---------------------------------------------------------------------------
+
+def _row_composite(row: dict) -> float:
+    """Extract composite score from a benchmark result row.
+
+    New-format rows (dimensional_v2 validators) have
+    validation.scores.composite as a 0.0-1.0 float.
+
+    Old-format rows only have a binary passed field.
+    For those, return 1.0 if passed else 0.0.
+    """
+    validation = row.get("validation") or {}
+    scores = validation.get("scores")
+    if isinstance(scores, dict) and "composite" in scores:
+        return float(scores["composite"])
+    return 1.0 if row.get("passed") else 0.0
+
+
+def _row_dimensional(row: dict) -> dict:
+    """Extract per-dimension scores, falling back to zeros for old rows."""
+    validation = row.get("validation") or {}
+    scores = validation.get("scores")
+    if isinstance(scores, dict):
+        return {
+            "structural": float(scores.get("structural", 0.0)),
+            "content": float(scores.get("content", 0.0)),
+            "functional": float(scores.get("functional", 0.0)),
+            "composite": float(scores.get("composite", 0.0)),
+        }
+    c = 1.0 if row.get("passed") else 0.0
+    return {"structural": c, "content": c, "functional": c, "composite": c}
+
+
+def _mean_dimensions(rows: list[dict]) -> dict:
+    """Compute mean of each dimensional score across rows."""
+    if not rows:
+        return {"structural": 0.0, "content": 0.0, "functional": 0.0, "composite": 0.0}
+    dims = [_row_dimensional(r) for r in rows]
+    return {
+        axis: round(statistics.mean(d[axis] for d in dims), 4)
+        for axis in ("structural", "content", "functional", "composite")
+    }
+
+
+# ---------------------------------------------------------------------------
+# Group scoring
+# ---------------------------------------------------------------------------
+
 def score_group(rows: list[dict]) -> dict:
+    """Score a group of benchmark rows with both legacy and dimensional metrics."""
     runs = len(rows)
     passed = sum(1 for row in rows if row.get("passed"))
+    composites = [_row_composite(r) for r in rows]
+    mean_composite = round(statistics.mean(composites), 4) if composites else 0.0
+    dimensions = _mean_dimensions(rows)
     return {
         "runs": runs,
         "passed": passed,
         "pass_rate": round(passed / runs, 4) if runs else 0.0,
+        "mean_composite": mean_composite,
+        "mean_dimensions": dimensions,
         "avg_wall_duration_ms": average_ms(rows),
         "failure_modes": failure_modes(rows),
     }
+
+
+# ---------------------------------------------------------------------------
+# Population-relative ranking
+# ---------------------------------------------------------------------------
+
+def _percentile(value: float, all_values: list[float]) -> float:
+    """Compute percentile rank of value within the population.
+
+    Returns 0.0-1.0. If all values are equal, returns 0.5.
+    """
+    if len(all_values) <= 1:
+        return 1.0
+    below = sum(1 for v in all_values if v < value)
+    equal = sum(1 for v in all_values if v == value)
+    return round((below + 0.5 * equal) / len(all_values), 4)
 
 
 def build_contract(pack: dict, rows: list[dict], source_files: list[Path]) -> dict:
@@ -130,8 +214,10 @@ def build_contract(pack: dict, rows: list[dict], source_files: list[Path]) -> di
                 domains[domain] = score_group(domain_rows)
         model_scores[model] = score_group(model_rows) | {"domains": domains}
 
+    # -- Population-relative domain rankings --------------------------------
     domain_leaders: dict[str, list[dict]] = {}
     routing_rules: list[dict] = []
+
     for domain in sorted(pack["domains"]):
         candidates = []
         for model in sorted(by_model):
@@ -139,45 +225,91 @@ def build_contract(pack: dict, rows: list[dict], source_files: list[Path]) -> di
             if not domain_rows:
                 continue
             score = score_group(domain_rows)
-            candidates.append(
-                {
-                    "model": model,
-                    "pass_rate": score["pass_rate"],
-                    "runs": score["runs"],
-                    "avg_wall_duration_ms": score["avg_wall_duration_ms"],
-                    "failure_modes": score["failure_modes"],
-                }
-            )
+            candidates.append({
+                "model": model,
+                "mean_composite": score["mean_composite"],
+                "mean_dimensions": score["mean_dimensions"],
+                "pass_rate": score["pass_rate"],
+                "runs": score["runs"],
+                "avg_wall_duration_ms": score["avg_wall_duration_ms"],
+                "failure_modes": score["failure_modes"],
+            })
+
+        # Primary sort: mean_composite desc, tiebreak: runs desc, latency asc
         candidates.sort(
-            key=lambda item: (
-                item["pass_rate"],
-                item["runs"],
-                -(item["avg_wall_duration_ms"] or 999999999),
+            key=lambda c: (
+                c["mean_composite"],
+                c["runs"],
+                -(c["avg_wall_duration_ms"] or 999999999),
             ),
             reverse=True,
         )
+
+        # Assign population-relative rank and percentile
+        all_composites = [c["mean_composite"] for c in candidates]
+        for rank_idx, candidate in enumerate(candidates):
+            candidate["population_rank"] = rank_idx + 1
+            candidate["population_size"] = len(candidates)
+            candidate["percentile"] = _percentile(candidate["mean_composite"], all_composites)
+
         domain_leaders[domain] = candidates
-        preferred = [item["model"] for item in candidates if item["pass_rate"] >= 0.8]
-        fallback = [item["model"] for item in candidates[:3]]
-        routing_rules.append(
-            {
-                "domain_id": domain,
-                "minimum_local_pass_rate": 0.8,
-                "preferred_local_models": preferred,
-                "fallback_local_models": fallback,
-                "route_to_remote_or_human_when": [
-                    "no preferred_local_models are present",
-                    "the task has external authority, legal, financial, security, or public publishing consequence",
-                    "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice",
-                ],
-            }
-        )
+
+        # Preferred = top model(s) that produced measurable signal.
+        # When best_composite > 0, the top model(s) are preferred regardless
+        # of absolute score (population-relative ranking).
+        # When best_composite == 0, NO model produced useful output for this
+        # domain, so preferred is empty and routing escalates.
+        best_composite = candidates[0]["mean_composite"] if candidates else 0.0
+        if best_composite > 0.0:
+            preferred = [
+                c["model"] for c in candidates
+                if c["mean_composite"] == best_composite
+            ]
+        else:
+            preferred = []
+        # Fallback = next tier (up to 3 models not already in preferred)
+        fallback = [
+            c["model"] for c in candidates
+            if c["model"] not in preferred
+        ][:3]
+
+        routing_rules.append({
+            "domain_id": domain,
+            "ranking_method": "population_relative_composite",
+            "preferred_local_models": preferred,
+            "fallback_local_models": fallback,
+            "best_composite": best_composite,
+            "population_size": len(candidates),
+            "route_to_remote_or_human_when": [
+                "no local models have been benchmarked for this domain",
+                "the task has external authority, legal, financial, security, or public publishing consequence",
+                "the local model omits JSON, hides reasoning instead of answering, or fails the validator twice",
+            ],
+        })
+
+    # Derive which benchmark surfaces produced this data
+    tested_surfaces = sorted({
+        str(row.get("surface") or "unknown")
+        for row in rows
+        if row.get("surface")
+    })
 
     expected_tasks = len(pack["tasks"])
     observed_models = sorted(by_model)
     full_matrix_runs = len(observed_models) * expected_tasks
     return {
-        "schema_version": "operation-score-contract/v1",
+        "schema_version": "operation-score-contract/v2",
+        "scoring_method": "population_relative_composite",
+        "tested_surfaces": tested_surfaces,
+        "scoring_note": (
+            "All rankings are relative to the tested model population. "
+            "No absolute threshold determines preferred status. The best "
+            "model by mean composite score is preferred regardless of "
+            "absolute score level. Composite scores are produced by "
+            "dimensional validators (structural, content, functional axes). "
+            "Legacy rows without dimensional scores are assigned 1.0 (passed) "
+            "or 0.0 (failed) as composite."
+        ),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "source_result_files": [str(path) for path in source_files],
         "task_pack": {
@@ -224,10 +356,11 @@ def main() -> int:
     output.write_text(json.dumps(contract, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"wrote {output}")
     print(
-        "runs={runs}; models={models}; full_matrix={full}".format(
+        "runs={runs}; models={models}; full_matrix={full}; scoring={scoring}".format(
             runs=contract["completion_state"]["deduped_runs"],
             models=contract["completion_state"]["observed_model_count"],
             full=contract["completion_state"]["has_one_trial_full_matrix"],
+            scoring=contract["scoring_method"],
         )
     )
     return 0

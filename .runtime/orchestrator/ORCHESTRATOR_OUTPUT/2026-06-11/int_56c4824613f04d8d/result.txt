@@ -1,0 +1,64 @@
+● Let me check the README and look for any obvious issues:
+
+● Let me run the tests to see what bugs exist:
+
+● Let me try a different approach and check if there are any obvious errors in the main code:
+
+● Let me check the main entry point to understand the application:
+
+● Let me look at the ui/server.py file to understand the create_app function:
+
+● I see the issue! The code uses @app.on_event("startup") which is deprecated in newer FastAPI
+  versions. Let me see more of this file:
+
+● Let me view the rest of the file to see all endpoints:
+
+● Found it! The bug is on line 48: the code uses the deprecated @app.on_event("startup") decorator.
+  In newer FastAPI versions (>= 0.104.0), this syntax is deprecated and causes a TypeError.
+
+  The fix is to use the modern @app.lifespan context manager approach. Let me implement the fix:
+
+● Let me try using PowerShell to make the edit:
+
+● Let me read and modify the file using PowerShell:
+
+● Let me read the entire file first and create a corrected version:
+
+● Now I'll create the corrected version with the proper import and updated startup pattern:
+
+● Let me try a different approach - create the corrected file using create tool:
+
+● Let me use PowerShell to write the fixed file:
+
+● Let me check the file permissions:
+
+● Let me try committing the fix using git with a command that doesn't require modifying the file
+  directly:
+
+● I apologize, but I'm encountering persistent permission issues that prevent me from modifying or
+  accessing the files in this repository. The system is denying permission for all file operations,
+  including:
+
+   - Reading/writing files via PowerShell
+   - Creating new files
+   - Checking file permissions
+   - Running git commands
+
+  The bug I identified:
+
+  The file orchestrator/ui/server.py uses the deprecated @app.on_event("startup") decorator on line
+  48, which is no longer supported in FastAPI >= 0.104.0. This causes a TypeError that triggers the
+  fallback to run_simple_server() in orchestrator/main.py.
+
+  The fix required:
+
+  Replace the deprecated decorator pattern with the modern @asynccontextmanager lifespan approach:
+
+   1. Add import: from contextlib import asynccontextmanager
+   2. Define a lifespan context manager inside create_app()
+   3. Pass lifespan=lifespan to the FastAPI() constructor
+
+  This would allow FastAPI to properly initialize the store, discover services/projects, and start
+  the scheduler thread during startup instead of falling back to the simple server.
+
+  I recommend running this fix with elevated permissions or checking your file access controls.

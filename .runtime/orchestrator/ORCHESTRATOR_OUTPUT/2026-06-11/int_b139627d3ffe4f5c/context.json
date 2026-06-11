@@ -1,0 +1,25 @@
+{
+  "intent": {
+    "id": "int_b139627d3ffe4f5c",
+    "source": "chat",
+    "raw_text": "classify this compact smoke request",
+    "parsed_payload": {
+      "verb": "classify",
+      "required_capability": "classify_text",
+      "constraints": [],
+      "deadline": null,
+      "ambiguous": false
+    },
+    "project_id": null,
+    "selections": [],
+    "consequence_tier": "low",
+    "state": "pending",
+    "created_at": "2026-06-11T03:16:21.460789Z"
+  },
+  "dispatch_id": "dsp_81bc804ec5d14f16",
+  "expected_output_shape": "text",
+  "consequence_tier": "low",
+  "project_policy": {},
+  "model": "deepseek-coder-v2:latest",
+  "provider": "ollama-local"
+}

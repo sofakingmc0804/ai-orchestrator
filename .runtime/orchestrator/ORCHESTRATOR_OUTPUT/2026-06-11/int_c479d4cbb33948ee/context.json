@@ -1,0 +1,25 @@
+{
+  "intent": {
+    "id": "int_c479d4cbb33948ee",
+    "source": "chat",
+    "raw_text": "classify this compact quota proof",
+    "parsed_payload": {
+      "verb": "classify",
+      "required_capability": "classify_text",
+      "constraints": [],
+      "deadline": null,
+      "ambiguous": false
+    },
+    "project_id": null,
+    "selections": [],
+    "consequence_tier": "low",
+    "state": "pending",
+    "created_at": "2026-06-11T04:05:25.394052Z"
+  },
+  "dispatch_id": "dsp_7a5c8459cd6743f6",
+  "expected_output_shape": "text",
+  "consequence_tier": "low",
+  "project_policy": {},
+  "model": "qwen2.5:0.5b",
+  "provider": "ollama-local"
+}

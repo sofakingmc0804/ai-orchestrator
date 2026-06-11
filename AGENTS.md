@@ -47,10 +47,13 @@ Desktop Commander may return empty on G:\ paths. Use PowerShell:
 - No cold outreach drafts to anyone
 - Never frame Example as any single domain — use the connection principle
 
-## AI Resource Governor
-- Before nontrivial AI/model work, route the task through `C:\Users\Couch\.ai-resource-governor\bin\ai-route.ps1` or the governed `hermes`/`openclaw` shims.
-- Default local work to Ollama models selected by `C:\Users\Couch\.ai-resource-governor\policy.json`; bulk extraction, classification, OCR, embeddings, and cheap validation must stay local unless the governor receipt allows escalation.
-- Treat Copilot, Codex account routes, Claude Max, Gemini OAuth, and Ollama Cloud as subscription resources, not free air. Scarce quota keeps a 20 percent reserve unless the task is urgent and the receipt names the value reason.
-- OpenAI API, Anthropic API, OpenRouter, direct Gemini API, and any unknown-cost provider are forbidden defaults. They stay disabled until `inventory.sqlite` classifies them as already-paid and `policy.json` allows them.
-- Every model route needs a receipt under `C:\Users\Couch\.ai-resource-governor\receipts\` or an entry in `C:\Users\Couch\.ai-resource-governor\repair-queue.jsonl` naming the failed surface and next repair action.
-- Trading platform operations are excluded from this governor until Matt explicitly reopens that lane.
+## AI Resource Governor (Consolidated into AI Orchestrator)
+- **New Location:** `C:\Users\Couch\dev\ai-orchestrator\`
+- **Legacy Shim:** `.ai-resource-governor/bin/ai-route.ps1` → delegates to orchestrator
+- Before nontrivial AI/model work, route through `python -m orchestrator.cli.main route` or the governed `hermes`/`openclaw` shims (updated to use orchestrator backend).
+- Default local work to Ollama models selected by orchestrator's budget probes; bulk extraction, classification, OCR, embeddings, and cheap validation stay local unless budget allows escalation.
+- Treat Copilot, Codex account routes, Claude Max, Gemini OAuth, and Ollama Cloud as subscription resources. Scarce quota keeps 20% reserve unless urgent.
+- Metered/unknown-cost providers disabled until inventory classifies as already-paid and policy allows.
+- Every dispatch recorded in receipts with worker_id, job_class, routing_reasoning, budget_state.
+- Trading platform operations excluded until explicitly reopened.
+- **Migration:** See `dev/ai-orchestrator/docs/MIGRATION_COMPLETE.md` for full consolidation details.

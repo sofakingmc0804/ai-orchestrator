@@ -1,0 +1,23 @@
+{
+  "intent": {
+    "id": "int_8596436c7aa34c9a",
+    "source": "chat",
+    "raw_text": "classify local orchestrator repair smoke",
+    "parsed_payload": {
+      "verb": "classify",
+      "required_capability": "classify_text",
+      "constraints": [],
+      "deadline": null,
+      "ambiguous": false
+    },
+    "project_id": null,
+    "selections": [],
+    "consequence_tier": "medium",
+    "state": "pending",
+    "created_at": "2026-06-11T02:57:12.463444Z"
+  },
+  "dispatch_id": "dsp_e3fda34d22e84e27",
+  "expected_output_shape": "text",
+  "consequence_tier": "medium",
+  "project_policy": {}
+}

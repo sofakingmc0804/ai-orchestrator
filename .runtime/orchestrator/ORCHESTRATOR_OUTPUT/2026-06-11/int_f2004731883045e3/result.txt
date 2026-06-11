@@ -1,0 +1,4 @@
+- Light: Non-flammable
+- Temperature: Below 70°C (158°F)
+- Ventilation status: Good or acceptable
+- Quantity: Less than 240 milliliters (9 teaspoons)

@@ -83,7 +83,9 @@ def load_pack(path: Path, task_filter: str | None) -> list[dict]:
 
 def post_chat(model: str, task: dict, timeout: int, num_predict: int) -> dict:
     contract = "Return only a single JSON object. No markdown. No prose outside JSON."
-    prompt = f"{contract}\n\n{task['prompt']}"
+    context = task.get("context", "")
+    prompt_body = f"{context}\n\n{task['prompt']}" if context else task["prompt"]
+    prompt = f"{contract}\n\n{prompt_body}"
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -253,7 +255,7 @@ def main() -> int:
     parser.add_argument("--tasks", help="Comma-separated task ids. Defaults to every task in the pack.")
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=180)
-    parser.add_argument("--num-predict", type=int, default=256)
+    parser.add_argument("--num-predict", type=int, default=1024)
     parser.add_argument(
         "--request-deadline",
         type=int,
