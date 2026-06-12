@@ -1,0 +1,58 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/Couch/dev/ai-orchestrator/.codex/hooks/skill_gate_repo.py\"",
+            "commandWindows": "python \"C:\\Users\\Couch\\dev\\ai-orchestrator\\.codex\\hooks\\skill_gate_repo.py\"",
+            "timeout": 30,
+            "statusMessage": "Selecting skill route"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/Couch/dev/ai-orchestrator/.codex/hooks/skill_gate_repo.py\"",
+            "commandWindows": "python \"C:\\Users\\Couch\\dev\\ai-orchestrator\\.codex\\hooks\\skill_gate_repo.py\"",
+            "timeout": 30,
+            "statusMessage": "Checking skill gate"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/Couch/dev/ai-orchestrator/.codex/hooks/skill_gate_repo.py\"",
+            "commandWindows": "python \"C:\\Users\\Couch\\dev\\ai-orchestrator\\.codex\\hooks\\skill_gate_repo.py\"",
+            "timeout": 30,
+            "statusMessage": "Checking permission route"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"C:/Users/Couch/dev/ai-orchestrator/.codex/hooks/skill_gate_repo.py\"",
+            "commandWindows": "python \"C:\\Users\\Couch\\dev\\ai-orchestrator\\.codex\\hooks\\skill_gate_repo.py\"",
+            "timeout": 30,
+            "statusMessage": "Verifying terminal receipt"
+          }
+        ]
+      }
+    ]
+  }
+}

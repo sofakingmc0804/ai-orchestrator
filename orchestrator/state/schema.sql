@@ -315,3 +315,24 @@ CREATE TABLE IF NOT EXISTS token_usage (
     raw_usage_json TEXT,
     created_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS skill_hook_receipts (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT,
+    session_id TEXT,
+    turn_id TEXT,
+    hook_event_name TEXT,
+    cwd TEXT,
+    prompt TEXT,
+    tool_name TEXT,
+    decision TEXT,
+    confidence REAL,
+    selected_skills_json TEXT,
+    interpreted_actions_json TEXT,
+    authority_checks_json TEXT,
+    confirmation_state TEXT,
+    terminal_state_requirement TEXT,
+    reason TEXT,
+    raw_event_json TEXT,
+    created_at TEXT
+);

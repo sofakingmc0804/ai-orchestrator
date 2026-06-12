@@ -16,6 +16,7 @@ from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.routing.engine import route_intent
 from orchestrator.routing.project_policy import approval_required_for_tier, load_project_policy, output_base_for_project
 from orchestrator.routing.worker_routing import route_intent_worker_aware
+from orchestrator.skills.detector import detect_skill_route
 from orchestrator.state.store import StateStore, iso
 from orchestrator.usage.tokens import extract_token_usage, flowmeter_snapshot
 
@@ -116,6 +117,7 @@ class Dispatcher:
         # Phase 2: Classify intent → job_class
         classification = classify_with_fallback(intent.raw_text, override=job_class_override)
         job_class = classification["job_class"]
+        skill_hook_plan = detect_skill_route(intent.raw_text, cwd=project_root or self.settings.repo_root, source_event="dispatcher")
 
         # Phase 2: Load workers from DB
         workers = await self.store.db.fetch("SELECT * FROM worker_cards")
@@ -173,6 +175,7 @@ class Dispatcher:
             "expected_output_shape": "text",
             "consequence_tier": intent.consequence_tier.value,
             "project_policy": project_policy,
+            "skill_hook_plan": skill_hook_plan.receipt_payload(),
         }
         model_hint = chosen_candidate.get("recommended_model") or chosen_candidate.get("model_id")
         if model_hint:
@@ -519,6 +522,16 @@ class Dispatcher:
             "routing_reasoning": decision.reasoning,
             "budget_state_json": json.dumps({str(row.get("provider_id")): row for row in budget_probes}, default=str),
         }
+        skill_hook_plan = envelope.get("skill_hook_plan") if isinstance(envelope.get("skill_hook_plan"), dict) else {}
+        receipt.update(
+            {
+                "skill_hook_plan_id": skill_hook_plan.get("id"),
+                "selected_skills": skill_hook_plan.get("selected_skills", []),
+                "interpreted_actions": skill_hook_plan.get("interpreted_actions", []),
+                "authority_checks": skill_hook_plan.get("authority_checks", []),
+                "terminal_state_requirement": skill_hook_plan.get("terminal_state_requirement"),
+            }
+        )
         receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
         context_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
         await self.store.resolve_repair_items(adapter_name, {"dispatch_id": dispatch_id, "intent_id": intent.id})

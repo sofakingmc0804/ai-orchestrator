@@ -1,0 +1,736 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from orchestrator.config import Settings
+from orchestrator.dispatch.dispatcher import Dispatcher
+from orchestrator.models import BillingClass, Capability, ConsequenceTier, ServiceInfo
+from orchestrator.notifications.spine import NotificationSpine
+from orchestrator.skills.detector import detect_skill_route
+from orchestrator.skills.gate import handle_permission_request, handle_pre_tool_use, handle_stop, handle_user_prompt_submit
+from orchestrator.skills.models import AuthorityCheck
+from orchestrator.skills.runtime import run_hook_event
+from orchestrator.state.store import StateStore
+
+
+def _skill_names(plan: Any) -> set[str]:
+    return {skill.name for skill in plan.selected_skills}
+
+
+def _approved_desktop_plan(cwd: Path, *, expires_delta: timedelta = timedelta(minutes=10)) -> Any:
+    plan = detect_skill_route("use my logged-in Chrome tab to inspect the page", cwd=cwd)
+    checks = [
+        AuthorityCheck(
+            name="desktop_control_lease",
+            status="passed",
+            reason="User approved visible desktop or Chrome control for this pending task.",
+            expires_at=(datetime.now(timezone.utc) + expires_delta).isoformat(),
+            scope_cwd=str(cwd.resolve()),
+        )
+        if check.name == "desktop_control_lease"
+        else check
+        for check in plan.authority_checks
+    ]
+    return plan.model_copy(update={"authority_checks": checks})
+
+
+def test_code_repair_prompt_selects_development_skills() -> None:
+    plan = detect_skill_route("fix this repo bug and add tests", cwd=Path.cwd())
+
+    assert {"codex-capability-router", "superpowers:test-driven-development", "superpowers:verification-before-completion"} <= _skill_names(plan)
+    assert plan.domain == "code"
+    assert plan.interpreted_actions[0].mutates is True
+    assert plan.confirmation_state == "not_required"
+    assert plan.terminal_state_requirement == "built"
+
+
+def test_codex_hook_prompt_selects_openai_docs() -> None:
+    plan = detect_skill_route("Explain how Codex hooks should enforce skill activation", cwd=Path.cwd())
+
+    assert "openai-docs" in _skill_names(plan)
+    assert "codex-capability-router" in _skill_names(plan)
+    assert plan.domain == "codex"
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected_skill", "expected_domain"),
+    [
+        ("Open localhost:3000 and tell me whether the page renders correctly.", "browser-use:browser", "browser"),
+        ("Run a deterministic browser regression check and capture a screenshot for the local app.", "playwright", "browser"),
+        ("Update the connected Google Sheet and verify the changed range.", "google-drive:google-sheets", "connected_app"),
+        ("Search Gmail for the latest thread from Balluff and extract the action item.", "gmail:gmail", "connected_app"),
+        ("Resize this Canva design for LinkedIn and Instagram.", "canva:canva-resize-for-all-social-media", "connected_app"),
+    ],
+)
+def test_router_benchmark_child_skill_prompts_select_expected_skill(prompt: str, expected_skill: str, expected_domain: str) -> None:
+    plan = detect_skill_route(prompt, cwd=Path.cwd())
+
+    assert expected_skill in _skill_names(plan)
+    assert plan.domain == expected_domain
+
+
+def test_medium_confidence_prompt_injects_single_confirmation_question() -> None:
+    plan = detect_skill_route("work on the thing", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": "work on the thing", "cwd": str(Path.cwd())}, plan)
+
+    assert plan.confirmation_state == "required"
+    assert "decision" not in decision
+    context = decision["hookSpecificOutput"]["additionalContext"]
+    assert context.count("?") == 1
+    assert "confirm route" in context.lower()
+    assert "use skills:" in context.lower()
+
+
+def test_medium_confidence_non_ambiguous_prompt_does_not_request_confirmation() -> None:
+    plan = detect_skill_route("continue", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert plan.confirmation_state == "not_required"
+    assert "confirm route" not in context.lower()
+    assert "use skills:" not in context.lower()
+
+
+def test_visible_desktop_prompt_is_managed_without_confirmation_route() -> None:
+    plan = detect_skill_route("use my logged-in Chrome tab to inspect the page", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert plan.confirmation_state == "not_required"
+    checks = {check.name: check for check in plan.authority_checks}
+    assert checks["desktop_control_lease"].status == "required"
+    assert "background-first" in context.lower()
+    assert "confirm route" not in context.lower()
+    assert "forbidden" not in context.lower()
+
+
+def test_obvious_code_repair_prompt_injects_route_without_confirmation_prompt() -> None:
+    plan = detect_skill_route("fix this repo bug and add tests", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert "decision" not in decision
+    assert plan.id in context
+    assert "superpowers:test-driven-development" in context
+    assert "superpowers:verification-before-completion" in context
+    assert "confirm route" not in context.lower()
+    assert "use skills:" not in context.lower()
+    assert "cancel route" not in context.lower()
+
+
+def test_external_mutation_still_requires_confirmation() -> None:
+    plan = detect_skill_route("send this Gmail reply to the customer", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert plan.confirmation_state == "required"
+    assert "confirm route" in context.lower()
+    assert "gmail:gmail" in context
+
+
+def test_local_repo_cleanup_does_not_require_route_confirmation() -> None:
+    plan = detect_skill_route("delete generated files in this repo", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert plan.confirmation_state == "not_required"
+    assert "superpowers:test-driven-development" in context
+    assert "confirm route" not in context.lower()
+
+
+def test_govcon_local_build_cleanup_prompt_does_not_require_route_confirmation() -> None:
+    prompt = (
+        "Inspect the public-monitor promotions and the bid package folders created around 2026-06-12 06:20 AM. "
+        "Trace why the folders received the same PDF and Unknown Solicitation summary, remove or quarantine the "
+        "contaminated packages, repair the document-fetch/package-build path, and prove the fix with a validation receipt. "
+        "Authority: GovCon AGENTS.md, README.md, live pipeline/docreader/dashboard code, state/opportunities.json, "
+        "DIBBS RFQ public PDFs."
+    )
+    plan = detect_skill_route(prompt, cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert plan.confirmation_state == "not_required"
+    assert "superpowers:test-driven-development" in context
+    assert "confirm route" not in context.lower()
+
+
+def test_broad_destructive_machine_prompt_still_requires_confirmation() -> None:
+    plan = detect_skill_route("wipe the C:\\ drive and reset the machine", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert plan.confirmation_state == "required"
+    assert "confirm route" in context.lower()
+
+
+def test_confirmation_reply_proceeds_and_marks_confirmed() -> None:
+    prompt = "Yes, that skill route is correct: use repo coding skills to fix the bug."
+    plan = detect_skill_route(prompt, cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "cwd": str(Path.cwd())}, plan)
+
+    assert plan.confirmation_state == "confirmed"
+    assert "decision" not in decision
+    assert decision["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "selected skills" in decision["hookSpecificOutput"]["additionalContext"].lower()
+
+
+def test_short_confirmation_reply_proceeds_and_marks_confirmed() -> None:
+    prompt = "Yes, confirm that route."
+    plan = detect_skill_route(prompt, cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "cwd": str(Path.cwd())}, plan)
+
+    assert plan.confirmation_state == "confirmed"
+    assert "decision" not in decision
+
+
+def test_user_prompt_submit_emits_valid_additional_context() -> None:
+    prompt = "Tell me what this repository is for."
+    plan = detect_skill_route(prompt, cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": prompt, "cwd": str(Path.cwd())}, plan)
+
+    assert "decision" not in decision
+    assert decision["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "terminal state" in decision["hookSpecificOutput"]["additionalContext"].lower()
+
+
+def test_pre_tool_use_rewrites_visible_desktop_command_without_stopping_turn() -> None:
+    plan = detect_skill_route("inspect my logged-in Chrome tab", cwd=Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "allow"
+    assert "updatedInput" in output
+    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+    assert "yes/no" in output["updatedInput"]["command"].lower()
+    assert "confirm route" not in output["updatedInput"]["command"].lower()
+
+
+def test_pre_tool_use_does_not_rewrite_text_search_that_mentions_chrome() -> None:
+    plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "rg -n \"Chrome\" AGENTS.md"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+
+
+def test_pre_tool_use_rewrites_unplanned_visible_desktop_command() -> None:
+    plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "allow"
+    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+
+
+def test_pre_tool_use_rewrites_expired_desktop_control_lease() -> None:
+    plan = _approved_desktop_plan(Path.cwd(), expires_delta=timedelta(minutes=-1))
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(Path.cwd()),
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "allow"
+    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+
+
+def test_pre_tool_use_rewrites_desktop_control_lease_for_wrong_cwd(tmp_path: Path) -> None:
+    approved_cwd = tmp_path / "approved"
+    other_cwd = tmp_path / "other"
+    approved_cwd.mkdir()
+    other_cwd.mkdir()
+    plan = _approved_desktop_plan(approved_cwd)
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(other_cwd),
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "allow"
+    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+
+
+def test_permission_request_allows_valid_desktop_control_lease() -> None:
+    plan = _approved_desktop_plan(Path.cwd())
+    decision = handle_permission_request(
+        {
+            "hook_event_name": "PermissionRequest",
+            "cwd": str(Path.cwd()),
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PermissionRequest"
+    assert output["decision"]["behavior"] == "allow"
+
+
+def test_permission_request_without_desktop_control_lease_falls_through_to_native_prompt() -> None:
+    plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
+    decision = handle_permission_request(
+        {
+            "hook_event_name": "PermissionRequest",
+            "cwd": str(Path.cwd()),
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        plan,
+    )
+
+    assert "hookSpecificOutput" not in decision
+    assert "systemMessage" in decision
+    assert "one-click" in decision["systemMessage"]
+
+
+def test_pre_tool_use_denies_apply_patch_without_skill_plan() -> None:
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "apply_patch",
+            "tool_input": {"command": "*** Begin Patch\n*** End Patch\n"},
+        },
+        None,
+    )
+
+    assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "skill hook plan" in decision["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_obvious_code_repair_plan_allows_mutation_without_confirmation(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-auto",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": "fix this repo bug and add tests",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    pre_tool = await run_hook_event(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-auto",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "tool_name": "apply_patch",
+            "tool_input": {"command": "*** Begin Patch\n*** End Patch\n"},
+        },
+        settings=settings,
+        record=False,
+    )
+    assert "decision" not in pre_tool
+    assert pre_tool["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+
+
+@pytest.mark.asyncio
+async def test_continue_reply_reuses_prior_obvious_plan_without_confirmation(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-continue",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": "fix this repo bug and add tests",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    continued = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-continue",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "prompt": "continue",
+        },
+        settings=settings,
+        record=False,
+    )
+    context = continued["hookSpecificOutput"]["additionalContext"]
+
+    assert "Original user prompt: fix this repo bug and add tests" in context
+    assert "superpowers:test-driven-development" in context
+    assert "confirm route" not in context.lower()
+
+    pre_tool = await run_hook_event(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-continue",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "tool_name": "apply_patch",
+            "tool_input": {"command": "*** Begin Patch\n*** End Patch\n"},
+        },
+        settings=settings,
+        record=False,
+    )
+    assert "decision" not in pre_tool
+    assert pre_tool["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+
+
+@pytest.mark.asyncio
+async def test_yes_reply_approves_pending_desktop_control_lease(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-desktop",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": "use my logged-in Chrome tab to inspect the page",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    approved = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-desktop",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "prompt": "yes",
+        },
+        settings=settings,
+        record=False,
+    )
+    context = approved["hookSpecificOutput"]["additionalContext"]
+    assert "desktop_control_lease: passed" in context
+    assert "confirm route" not in context.lower()
+
+    pre_tool = await run_hook_event(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-desktop",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        settings=settings,
+        record=False,
+    )
+    output = pre_tool["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+
+
+@pytest.mark.asyncio
+async def test_yes_approved_desktop_lease_is_cwd_scoped(tmp_path: Path) -> None:
+    approved_cwd = tmp_path / "approved"
+    other_cwd = tmp_path / "other"
+    approved_cwd.mkdir()
+    other_cwd.mkdir()
+    settings = Settings(home=tmp_path / "runtime", state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-desktop-scope",
+            "turn_id": "turn-1",
+            "cwd": str(approved_cwd),
+            "prompt": "use my logged-in Chrome tab to inspect the page",
+        },
+        settings=settings,
+        record=False,
+    )
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-desktop-scope",
+            "turn_id": "turn-2",
+            "cwd": str(approved_cwd),
+            "prompt": "yes",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    pre_tool = await run_hook_event(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-desktop-scope",
+            "turn_id": "turn-2",
+            "cwd": str(other_cwd),
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        settings=settings,
+        record=False,
+    )
+
+    output = pre_tool["hookSpecificOutput"]
+    assert output["permissionDecision"] == "allow"
+    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_permission_request_allows_valid_desktop_lease(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-permission",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": "use my logged-in Chrome tab to inspect the page",
+        },
+        settings=settings,
+        record=False,
+    )
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-permission",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "prompt": "yes",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    permission = await run_hook_event(
+        {
+            "hook_event_name": "PermissionRequest",
+            "session_id": "session-permission",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "tool_name": "Bash",
+            "tool_input": {"command": "Start-Process chrome.exe https://www.google.com"},
+        },
+        settings=settings,
+        record=False,
+    )
+
+    output = permission["hookSpecificOutput"]
+    assert output["hookEventName"] == "PermissionRequest"
+    assert output["decision"]["behavior"] == "allow"
+
+
+@pytest.mark.asyncio
+async def test_confirmation_reply_uses_pending_plan_and_allows_risky_mutation(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    first = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": "push this commit to GitHub",
+        },
+        settings=settings,
+        record=False,
+    )
+    first_context = first["hookSpecificOutput"]["additionalContext"]
+    plan_id = first_context.split("Plan: ", maxsplit=1)[1].splitlines()[0]
+
+    denied = await run_hook_event(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push origin main"},
+        },
+        settings=settings,
+        record=False,
+    )
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    confirmed = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-1",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "prompt": f"confirm route {plan_id}",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    context = confirmed["hookSpecificOutput"]["additionalContext"]
+    assert "Original user prompt: push this commit to GitHub" in context
+    assert "Confirmation state: confirmed" in context
+
+    pre_tool = await run_hook_event(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-1",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push origin main"},
+        },
+        settings=settings,
+        record=False,
+    )
+    assert "decision" not in pre_tool
+    assert pre_tool["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+
+
+@pytest.mark.asyncio
+async def test_override_reply_uses_named_skills_from_pending_plan(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-override",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": "work on the thing",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    override = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-override",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "prompt": "use skills: openai-docs",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    context = override["hookSpecificOutput"]["additionalContext"]
+    assert "openai-docs" in context
+    assert "Confirmation state: confirmed" in context
+
+
+def test_stop_continues_when_terminal_receipt_is_missing() -> None:
+    plan = detect_skill_route("fix this repo bug and add tests", cwd=Path.cwd())
+    decision = handle_stop(
+        {
+            "hook_event_name": "Stop",
+            "last_assistant_message": "I made the change.",
+            "stop_hook_active": False,
+        },
+        plan,
+    )
+
+    assert decision["decision"] == "block"
+    assert "terminal state" in decision["reason"].lower()
+
+
+def test_stop_does_not_continue_low_risk_standard_prompt_without_receipt() -> None:
+    plan = detect_skill_route("continue", cwd=Path.cwd())
+    decision = handle_stop(
+        {
+            "hook_event_name": "Stop",
+            "last_assistant_message": "Continuing.",
+            "stop_hook_active": False,
+        },
+        plan,
+    )
+
+    assert decision == {}
+
+
+@pytest.mark.asyncio
+async def test_schema_migration_creates_skill_hook_receipts(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+
+    with sqlite3.connect(settings.state_path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(skill_hook_receipts)").fetchall()]
+
+    assert {"id", "plan_id", "hook_event_name", "selected_skills_json", "terminal_state_requirement"} <= set(columns)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_receipt_embeds_selected_skills(tmp_path: Path) -> None:
+    class FakeLocalAdapter:
+        async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
+            return {"ok": True, "model": "fake-local", "text": "ok"}
+
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    await store.upsert_services([ServiceInfo(id="fake-local", name="Fake Local", service_group="test", adapter_name="fake-local", protocol="test")])
+    await store.upsert_capabilities(
+        [
+            Capability(
+                id="fake-local:code_repair",
+                adapter_name="fake-local",
+                capability_id="code_repair",
+                rating_instruction=3,
+                rating_quality=3,
+                latency_band="fast",
+                consequence_max=ConsequenceTier.MEDIUM,
+                billing_class=BillingClass.LOCAL_RESOURCE,
+            )
+        ]
+    )
+    dispatcher = Dispatcher(settings, store, NotificationSpine(settings.notifications_path, store))
+    dispatcher.adapters = {"fake-local": FakeLocalAdapter()}  # type: ignore[assignment]
+
+    result = await dispatcher.dispatch_text("fix this repo bug and add tests")
+
+    assert result.state == "completed"
+    assert result.receipt["skill_hook_plan_id"]
+    selected = {item["name"] for item in result.receipt["selected_skills"]}
+    assert "superpowers:test-driven-development" in selected
+    assert result.receipt["terminal_state_requirement"] == "built"
+    saved_receipt = json.loads(Path(str(result.receipt["receipt_path"])).read_text(encoding="utf-8"))
+    assert saved_receipt["selected_skills"] == result.receipt["selected_skills"]

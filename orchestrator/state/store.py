@@ -67,6 +67,7 @@ class StateStore:
             await self._ensure_worker_card_columns(db)
             await self._ensure_receipt_columns(db)
             await self._ensure_budget_lane_tables(db)
+            await self._ensure_skill_hook_receipts_table(db)
             await db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (1, iso()),
@@ -172,6 +173,32 @@ class StateStore:
         for column, statement in additions.items():
             if column not in columns:
                 await db.execute(statement)
+
+    async def _ensure_skill_hook_receipts_table(self, db: aiosqlite.Connection) -> None:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS skill_hook_receipts (
+                id TEXT PRIMARY KEY,
+                plan_id TEXT,
+                session_id TEXT,
+                turn_id TEXT,
+                hook_event_name TEXT,
+                cwd TEXT,
+                prompt TEXT,
+                tool_name TEXT,
+                decision TEXT,
+                confidence REAL,
+                selected_skills_json TEXT,
+                interpreted_actions_json TEXT,
+                authority_checks_json TEXT,
+                confirmation_state TEXT,
+                terminal_state_requirement TEXT,
+                reason TEXT,
+                raw_event_json TEXT,
+                created_at TEXT
+            )
+            """
+        )
 
     async def _audit_in_db(self, db: aiosqlite.Connection, actor: str, action: str, target: str, detail: dict[str, Any] | None = None) -> None:
         await db.execute(
@@ -690,6 +717,69 @@ class StateStore:
                 await db.execute("SELECT * FROM receipts ORDER BY COALESCE(created_at, dispatch_id) DESC LIMIT ?", (limit,))
             ).fetchall()
             return [dict(row) for row in rows]
+
+    async def record_skill_hook_receipt(self, receipt: dict[str, Any]) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO skill_hook_receipts(
+                    id, plan_id, session_id, turn_id, hook_event_name, cwd, prompt, tool_name,
+                    decision, confidence, selected_skills_json, interpreted_actions_json,
+                    authority_checks_json, confirmation_state, terminal_state_requirement,
+                    reason, raw_event_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    decision=excluded.decision,
+                    reason=excluded.reason,
+                    raw_event_json=excluded.raw_event_json
+                """,
+                (
+                    receipt["id"],
+                    receipt.get("plan_id"),
+                    receipt.get("session_id"),
+                    receipt.get("turn_id"),
+                    receipt.get("hook_event_name"),
+                    receipt.get("cwd"),
+                    receipt.get("prompt"),
+                    receipt.get("tool_name"),
+                    receipt.get("decision"),
+                    receipt.get("confidence"),
+                    json.dumps(receipt.get("selected_skills") or []),
+                    json.dumps(receipt.get("interpreted_actions") or []),
+                    json.dumps(receipt.get("authority_checks") or []),
+                    receipt.get("confirmation_state"),
+                    receipt.get("terminal_state_requirement"),
+                    receipt.get("reason"),
+                    json.dumps(receipt.get("raw_event") or {}),
+                    receipt.get("created_at") or iso(),
+                ),
+            )
+            await self._audit_in_db(db, "skill_hook_gate", "skill_hook_receipt", str(receipt["id"]), receipt)
+            await db.commit()
+
+    async def list_skill_hook_receipts(self, limit: int = 100) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute("SELECT * FROM skill_hook_receipts ORDER BY created_at DESC LIMIT ?", (limit,))
+            ).fetchall()
+            receipts: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                for source, target in [
+                    ("selected_skills_json", "selected_skills"),
+                    ("interpreted_actions_json", "interpreted_actions"),
+                    ("authority_checks_json", "authority_checks"),
+                    ("raw_event_json", "raw_event"),
+                ]:
+                    default_json = "{}" if source == "raw_event_json" else "[]"
+                    try:
+                        item[target] = json.loads(str(item.get(source) or default_json))
+                    except json.JSONDecodeError:
+                        item[target] = {} if source == "raw_event_json" else []
+                receipts.append(item)
+            return receipts
 
     async def list_budget_probes(self) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.path) as db:

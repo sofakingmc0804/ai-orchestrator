@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ from orchestrator.process.repair_retry import retry_open_repairs
 from orchestrator.reports.owner_receipt import export_owner_receipt
 from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
+from orchestrator.skills.detector import detect_skill_route
+from orchestrator.skills.runtime import run_hook_event
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
 from orchestrator.usage.flow import build_token_flow_payload
@@ -262,6 +265,23 @@ async def _token_backfill(settings: Settings, limit: int = 10000) -> dict[str, o
     return {"state": "repaired", "state_path": str(settings.state_path), "backfill": result, "token_flow": flow["totals"]}
 
 
+async def _skill_route(settings: Settings, text: str, cwd: str | None = None) -> dict[str, object]:
+    plan = detect_skill_route(text, cwd=cwd or settings.repo_root, source_event="cli")
+    return {"state": "produced", "skill_hook_plan": plan.receipt_payload()}
+
+
+async def _hook_gate(settings: Settings) -> dict[str, object]:
+    raw = sys.stdin.read()
+    event = json.loads(raw) if raw.strip() else {}
+    return await run_hook_event(event, settings=settings)
+
+
+async def _skill_hook_receipts(settings: Settings, limit: int = 20) -> dict[str, object]:
+    store = StateStore(settings)
+    await store.initialize()
+    return {"state": "produced", "receipts": await store.list_skill_hook_receipts(limit=limit)}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="orchestrator")
     parser.add_argument("--home", default=None)
@@ -274,6 +294,12 @@ def main() -> None:
     token_flow.add_argument("--limit", type=int, default=50)
     token_backfill = sub.add_parser("token-backfill")
     token_backfill.add_argument("--limit", type=int, default=10000)
+    skill_route = sub.add_parser("skill-route")
+    skill_route.add_argument("--text", required=True)
+    skill_route.add_argument("--cwd", default=None)
+    sub.add_parser("hook-gate")
+    skill_hook_receipts = sub.add_parser("skill-hook-receipts")
+    skill_hook_receipts.add_argument("--last", type=int, default=20)
     dispatch = sub.add_parser("dispatch")
     dispatch.add_argument("text")
     dispatch.add_argument("--full", action="store_true", help="Print the full dispatch payload instead of a compact receipt summary")
@@ -356,6 +382,12 @@ def main() -> None:
         result = asyncio.run(_token_flow(settings, args.limit))
     elif args.cmd == "token-backfill":
         result = asyncio.run(_token_backfill(settings, args.limit))
+    elif args.cmd == "skill-route":
+        result = asyncio.run(_skill_route(settings, args.text, args.cwd))
+    elif args.cmd == "hook-gate":
+        result = asyncio.run(_hook_gate(settings))
+    elif args.cmd == "skill-hook-receipts":
+        result = asyncio.run(_skill_hook_receipts(settings, args.last))
     elif args.cmd == "dispatch":
         result = asyncio.run(_dispatch(settings, args.text, args.full))
     elif args.cmd == "prove-adapter":
