@@ -9,6 +9,7 @@ from typing import Any
 import aiosqlite
 
 from orchestrator.config import Settings
+from orchestrator.provider_aliases import canonical_provider, lookup_by_provider
 from orchestrator.registry.contracts import load_contract
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
@@ -26,8 +27,64 @@ def _receipt_path_from_output(output_path: str | None) -> str:
     return str(candidate if candidate.exists() else path)
 
 
-def _fmt_quota(provider: str, billing_class: str, quota_state: dict[str, dict[str, Any]]) -> str:
-    quota = quota_state.get(provider)
+def _snapshot_by_service_id(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(row.get("service_id")): row for row in rows if row.get("service_id")}
+
+
+def _usage_windows(row: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = row.get("usage_windows_json") or "[]"
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    try:
+        parsed = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return []
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+
+def _fmt_percent_value(value: Any) -> str | None:
+    try:
+        return f"{float(value):.1f}%"
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_subscription_usage(row: dict[str, Any]) -> str:
+    checked = str(row.get("checked_at") or "unknown")
+    status = str(row.get("status") or ("ok" if row.get("ok") else "unproved"))
+    window_parts: list[str] = []
+    for window in _usage_windows(row)[:3]:
+        label = str(window.get("label") or "usage window")
+        remaining = _fmt_percent_value(window.get("remaining_percent"))
+        used = _fmt_percent_value(window.get("used_percent"))
+        if remaining:
+            window_parts.append(f"{label} {remaining} remaining")
+        elif used:
+            window_parts.append(f"{label} {used} used")
+    if window_parts:
+        return f"subscription usage: {'; '.join(window_parts)} (status {status}; checked {checked})"
+
+    limit = row.get("tokens_limit")
+    remaining = row.get("tokens_remaining")
+    used = row.get("tokens_used_total")
+    if limit is not None and remaining is not None:
+        return f"subscription usage: {_fmt_int(remaining)}/{_fmt_int(limit)} tokens remaining (status {status}; checked {checked})"
+    if used is not None:
+        return f"subscription usage: {_fmt_int(used)} tokens used (status {status}; checked {checked})"
+    return f"subscription usage snapshot {status}; checked {checked}"
+
+
+def _fmt_quota(
+    provider: str,
+    billing_class: str,
+    quota_state: dict[str, dict[str, Any]],
+    subscription_usage_state: dict[str, dict[str, Any]],
+) -> str:
+    if billing_class == "subscription_usage":
+        subscription_usage = lookup_by_provider(provider, subscription_usage_state)
+        if subscription_usage:
+            return _fmt_subscription_usage(subscription_usage)
+    quota = lookup_by_provider(provider, quota_state)
     if quota:
         limit = int(quota.get("units_limit") or 0)
         remaining = int(quota.get("remaining") or 0)
@@ -41,6 +98,8 @@ def _fmt_quota(provider: str, billing_class: str, quota_state: dict[str, dict[st
         return "fixed subscription; no scarce quota recorded"
     if billing_class == "subscription_quota":
         return "subscription quota; no live probe recorded"
+    if billing_class == "subscription_usage":
+        return "subscription usage; no live usage probe recorded"
     if billing_class == "metered_extra_cost":
         return "metered extra cost; forbidden default"
     return "unknown cost; disabled until classified"
@@ -87,6 +146,7 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
     services = await store.list_services()
     capabilities = await store.list_capabilities()
     quota_state = await store.latest_quota_state()
+    subscription_usage_state = _snapshot_by_service_id(await store.list_subscription_usage_snapshots())
     repair_queue = await store.list_repair_queue()
     receipts = await _latest_receipts(settings)
     token_rows = await store.list_token_usage(limit=500)
@@ -101,7 +161,7 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
     for service in services:
         adapter = str(service.get("adapter_name") or "")
         contract = load_contract(adapter) or {}
-        provider = str(contract.get("provider") or adapter)
+        provider = canonical_provider(str(contract.get("provider") or adapter))
         adapter_caps = caps_by_adapter.get(adapter, [])
         billing_classes = sorted({str(row.get("billing_class") or "unknown_cost") for row in adapter_caps})
         billing_class = str(contract.get("billing_class") or (billing_classes[0] if billing_classes else "unknown_cost"))
@@ -115,7 +175,7 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
                 "cost": billing_class,
                 "health": str(service.get("health_state") or "unknown"),
                 "capabilities": capability_names or "none",
-                "quota": _fmt_quota(provider, billing_class, quota_state),
+                "quota": _fmt_quota(provider, billing_class, quota_state, subscription_usage_state),
                 "proof": _receipt_path_from_output(str(proof.get("output_path") or "")),
             }
         )

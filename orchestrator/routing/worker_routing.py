@@ -19,6 +19,7 @@ import json
 from typing import Any
 
 from orchestrator.models import BillingClass, ConsequenceTier, Intent, RoutingDecision
+from orchestrator.provider_aliases import lookup_by_provider
 from orchestrator.routing.engine import (
     BILLING_ORDER,
     FORBIDDEN,
@@ -138,39 +139,6 @@ def _worker_capability_match(worker: dict[str, Any], required_caps: set[str]) ->
     return len(required_caps & worker_caps) / len(required_caps)
 
 
-def _provider_keys(provider: str) -> set[str]:
-    normalized = provider.strip()
-    keys = {normalized, normalized.replace("-", "_"), normalized.replace("_", "-")}
-    alias_roots = {
-        "ollama-local": "ollama",
-        "ollama-http": "ollama",
-        "ollama-cli": "ollama",
-        "ollama-cloud": "ollama",
-        "github-copilot": "github_copilot",
-        "copilot-gh": "github_copilot",
-        "claude-max": "claude",
-        "claude-code-cli": "claude",
-        "gemini-cli": "gemini",
-        "gemini-oauth": "gemini",
-        "codex-chatgpt": "codex",
-        "codex-cli": "codex",
-        "hermes-nous": "nous",
-        "hermes-agent": "nous",
-    }
-    alias = alias_roots.get(normalized) or alias_roots.get(normalized.replace("_", "-"))
-    if alias:
-        keys.update({alias, alias.replace("-", "_"), alias.replace("_", "-")})
-    return keys
-
-
-def _lookup_by_provider(provider: str, rows: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
-    keys = _provider_keys(provider)
-    for key, row in rows.items():
-        if key in keys or key.replace("-", "_") in keys or key.replace("_", "-") in keys:
-            return row
-    return None
-
-
 def _budget_score(worker: dict[str, Any], budget_lookup: dict[str, dict[str, Any]]) -> float:
     contract = str(worker.get("contract_type") or "")
     if contract == BillingClass.LOCAL_RESOURCE.value:
@@ -178,7 +146,7 @@ def _budget_score(worker: dict[str, Any], budget_lookup: dict[str, dict[str, Any
     if contract == BillingClass.SUBSCRIPTION_UNLIMITED.value:
         return 0.9
     provider = str(worker.get("provider_id") or worker.get("surface") or "")
-    probe = _lookup_by_provider(provider, budget_lookup)
+    probe = lookup_by_provider(provider, budget_lookup)
     if not probe:
         return 0.45 if contract in {BillingClass.SUBSCRIPTION_QUOTA.value, BillingClass.SUBSCRIPTION_USAGE.value} else 0.0
     if not probe.get("ok"):
@@ -202,8 +170,8 @@ def _reserve_rejection_reason(
         return None
 
     provider = str(worker.get("provider_id") or worker.get("surface") or PROVIDER_BY_ADAPTER.get(adapter_name) or adapter_name)
-    quota = _lookup_by_provider(provider, quota_state)
-    probe = _lookup_by_provider(provider, budget_lookup)
+    quota = lookup_by_provider(provider, quota_state)
+    probe = lookup_by_provider(provider, budget_lookup)
     source = quota or probe
     if not source:
         return None
