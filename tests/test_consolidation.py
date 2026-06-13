@@ -8,7 +8,7 @@ Verifies the migrated orchestrator works end-to-end:
 4. Receipt is recorded
 5. UI endpoints respond
 
-Run: python -m tests.test_consolidation
+Run: python tests/test_consolidation.py
 """
 
 from __future__ import annotations
@@ -28,13 +28,13 @@ def get_db_path() -> Path:
     return Path(__file__).parent.parent / '.runtime' / 'orchestrator' / 'state.sqlite'
 
 
-def test_worker_roster() -> bool:
+def _check_worker_roster() -> bool:
     """Test 1: Worker roster loads."""
     print("Test 1: Worker roster...")
     
     db_path = get_db_path()
     if not db_path.exists():
-        print(f"  ❌ Database not found: {db_path}")
+        print(f"  [FAIL] Database not found: {db_path}")
         return False
     
     conn = sqlite3.connect(str(db_path))
@@ -42,14 +42,14 @@ def test_worker_roster() -> bool:
     conn.close()
     
     if count < 10:
-        print(f"  ❌ Expected 10+ workers, got {count}")
+        print(f"  [FAIL] Expected 10+ workers, got {count}")
         return False
     
-    print(f"  ✅ {count} workers loaded")
+    print(f"  [OK] {count} workers loaded")
     return True
 
 
-def test_budget_probes() -> bool:
+def _check_budget_probes() -> bool:
     """Test 2: Budget probes table exists."""
     print("Test 2: Budget probes...")
     
@@ -58,30 +58,30 @@ def test_budget_probes() -> bool:
     
     try:
         count = conn.execute("SELECT COUNT(*) FROM budget_probes").fetchone()[0]
-        print(f"  ✅ Budget probes table exists ({count} records)")
+        print(f"  [OK] Budget probes table exists ({count} records)")
         return True
     except sqlite3.OperationalError:
-        print("  ❌ Budget probes table not found")
+        print("  [FAIL] Budget probes table not found")
         return False
     finally:
         conn.close()
 
 
-def test_routing_engine() -> bool:
+def _check_routing_engine() -> bool:
     """Test 3: Routing engine imports."""
     print("Test 3: Routing engine...")
     
     try:
         from orchestrator.routing.engine import route_intent
         from orchestrator.routing.worker_routing import route_intent_worker_aware
-        print("  ✅ Routing engine imports successfully")
+        print("  [OK] Routing engine imports successfully")
         return True
     except ImportError as e:
-        print(f"  ❌ Import failed: {e}")
+        print(f"  [FAIL] Import failed: {e}")
         return False
 
 
-def test_receipt_schema() -> bool:
+def _check_receipt_schema() -> bool:
     """Test 4: Receipt schema has Phase 4 columns."""
     print("Test 4: Receipt schema...")
     
@@ -95,48 +95,48 @@ def test_receipt_schema() -> bool:
         missing = [c for c in required_columns if c not in columns]
         
         if missing:
-            print(f"  ❌ Missing columns: {missing}")
+            print(f"  [FAIL] Missing columns: {missing}")
             return False
         
-        print(f"  ✅ All Phase 4 columns present")
+        print("  [OK] All Phase 4 columns present")
         return True
     except sqlite3.OperationalError:
-        print("  ❌ Receipts table not found")
+        print("  [FAIL] Receipts table not found")
         return False
     finally:
         conn.close()
 
 
-def test_governance_module() -> bool:
+def _check_governance_module() -> bool:
     """Test 5: Governance module imports."""
     print("Test 5: Governance module...")
     
     try:
         from orchestrator.governance.job_classifier import classify_with_fallback
         from orchestrator.governance.worker_roster_builder import build_worker_roster
-        print("  ✅ Governance module imports successfully")
+        print("  [OK] Governance module imports successfully")
         return True
     except ImportError as e:
-        print(f"  ❌ Import failed: {e}")
+        print(f"  [FAIL] Import failed: {e}")
         return False
 
 
-def test_cli_commands() -> bool:
+def _check_cli_commands() -> bool:
     """Test 6: CLI commands import."""
     print("Test 6: CLI commands...")
     
     try:
         from orchestrator.cli.main import main
-        from orchestrator.cli.governance import governance_cli
-        from orchestrator.cli.budget_cli import budget_cli
-        print("  ✅ CLI commands import successfully")
+        from orchestrator.cli.governance import register_governance_cli
+        from orchestrator.cli.budget_cli import register_budget_cli
+        print("  [OK] CLI commands import successfully")
         return True
     except ImportError as e:
-        print(f"  ❌ Import failed: {e}")
+        print(f"  [FAIL] Import failed: {e}")
         return False
 
 
-def test_ui_static_files() -> bool:
+def _check_ui_static_files() -> bool:
     """Test 7: UI static files exist."""
     print("Test 7: UI static files...")
     
@@ -149,43 +149,75 @@ def test_ui_static_files() -> bool:
             missing.append(f)
     
     if missing:
-        print(f"  ❌ Missing UI files: {missing}")
+        print(f"  [FAIL] Missing UI files: {missing}")
         return False
     
-    print(f"  ✅ All UI files present ({len(required_files)} files)")
+    print(f"  [OK] All UI files present ({len(required_files)} files)")
     return True
 
 
-def test_dispatch_module() -> bool:
+def _check_dispatch_module() -> bool:
     """Test 8: Dispatch module with enhanced receipts."""
     print("Test 8: Dispatch module...")
     
     try:
         from orchestrator.dispatch.dispatcher import Dispatcher
         from orchestrator.dispatch.receipt_enhanced import build_receipt_data
-        print("  ✅ Dispatch module imports successfully")
+        print("  [OK] Dispatch module imports successfully")
         return True
     except ImportError as e:
-        print(f"  ❌ Import failed: {e}")
+        print(f"  [FAIL] Import failed: {e}")
         return False
+
+
+def test_worker_roster() -> None:
+    assert _check_worker_roster()
+
+
+def test_budget_probes() -> None:
+    assert _check_budget_probes()
+
+
+def test_routing_engine() -> None:
+    assert _check_routing_engine()
+
+
+def test_receipt_schema() -> None:
+    assert _check_receipt_schema()
+
+
+def test_governance_module() -> None:
+    assert _check_governance_module()
+
+
+def test_cli_commands() -> None:
+    assert _check_cli_commands()
+
+
+def test_ui_static_files() -> None:
+    assert _check_ui_static_files()
+
+
+def test_dispatch_module() -> None:
+    assert _check_dispatch_module()
 
 
 def run_all_tests() -> bool:
     """Run all tests and report."""
     print("=" * 60)
-    print("AI Orchestrator — Consolidation End-to-End Test")
+    print("AI Orchestrator - Consolidation End-to-End Test")
     print("=" * 60)
     print()
     
     tests = [
-        test_worker_roster,
-        test_budget_probes,
-        test_routing_engine,
-        test_receipt_schema,
-        test_governance_module,
-        test_cli_commands,
-        test_ui_static_files,
-        test_dispatch_module,
+        _check_worker_roster,
+        _check_budget_probes,
+        _check_routing_engine,
+        _check_receipt_schema,
+        _check_governance_module,
+        _check_cli_commands,
+        _check_ui_static_files,
+        _check_dispatch_module,
     ]
     
     results = []
@@ -194,7 +226,7 @@ def run_all_tests() -> bool:
             result = test()
             results.append(result)
         except Exception as e:
-            print(f"  ❌ Exception: {e}")
+            print(f"  [FAIL] Exception: {e}")
             results.append(False)
         print()
     
@@ -204,10 +236,10 @@ def run_all_tests() -> bool:
     print(f"Results: {passed}/{total} tests passed")
     
     if passed == total:
-        print("✅ ALL TESTS PASSED — Consolidation complete!")
+        print("[OK] ALL TESTS PASSED - Consolidation complete!")
         return True
     else:
-        print("❌ SOME TESTS FAILED — Review errors above")
+        print("[FAIL] SOME TESTS FAILED - Review errors above")
         return False
 
 

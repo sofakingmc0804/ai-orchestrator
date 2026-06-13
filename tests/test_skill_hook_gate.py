@@ -9,18 +9,53 @@ from typing import Any
 import pytest
 
 from orchestrator.config import Settings
+from orchestrator.cli.main import _skill_hook_plan
 from orchestrator.dispatch.dispatcher import Dispatcher
 from orchestrator.models import BillingClass, Capability, ConsequenceTier, ServiceInfo
 from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.skills.detector import detect_skill_route
 from orchestrator.skills.gate import handle_permission_request, handle_pre_tool_use, handle_stop, handle_user_prompt_submit
 from orchestrator.skills.models import AuthorityCheck
-from orchestrator.skills.runtime import run_hook_event
+from orchestrator.skills.runtime import persist_plan, run_hook_event
 from orchestrator.state.store import StateStore
 
 
 def _skill_names(plan: Any) -> set[str]:
     return {skill.name for skill in plan.selected_skills}
+
+
+def _ambient_suggestion_prompt() -> str:
+    return """
+# Overview
+
+Generate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project:
+C:\\Users\\Couch\\dev\\ai-orchestrator
+
+Use relevant connected apps or MCP sources available in this session.
+For local project suggestions, inspect recent git history so each suggestion is grounded in the repo.
+Avoid suggestions that merely ask the user to work on the thing.
+
+Recent Codex threads in this project:
+[
+  {
+    "title": "Confirm route shp_709358f3764b4d7b",
+    "preview": "confirm route shp_709358f3764b4d7b"
+  },
+  {
+    "title": "Assess ai-orchestrator gaps",
+    "preview": "What skills should you be using to improve the ai-orchestrator? What is it not accomplishing?"
+  },
+  {
+    "title": "Fix health status drift",
+    "preview": "Trace how status is computed, fix the smallest shared mechanism, and add tests."
+  }
+]
+
+Bad title: "Debug nightly query devtools reopen"
+Better title: "Fix nightly query devtools not opening by resetting Electron state"
+
+Return 0 to 3 fresh suggestions.
+""".strip()
 
 
 def _approved_desktop_plan(cwd: Path, *, expires_delta: timedelta = timedelta(minutes=10)) -> Any:
@@ -56,6 +91,24 @@ def test_codex_hook_prompt_selects_openai_docs() -> None:
     assert "openai-docs" in _skill_names(plan)
     assert "codex-capability-router" in _skill_names(plan)
     assert plan.domain == "codex"
+
+
+def test_ambient_suggestion_prompt_is_read_only_discovery_without_confirmation() -> None:
+    plan = detect_skill_route(_ambient_suggestion_prompt(), cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    action = plan.interpreted_actions[0]
+    checks = {check.name: check for check in plan.authority_checks}
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert action.mutates is False
+    assert plan.consequence == "low"
+    assert plan.confirmation_state == "not_required"
+    assert "openai-docs" not in _skill_names(plan)
+    assert "superpowers:systematic-debugging" not in _skill_names(plan)
+    assert checks["connected_app_tool_proof"].status == "required"
+    assert "omitted large prompt" in context.lower()
+    assert "confirm route" not in context.lower()
 
 
 @pytest.mark.parametrize(
@@ -173,6 +226,17 @@ def test_broad_destructive_machine_prompt_still_requires_confirmation() -> None:
 
     context = decision["hookSpecificOutput"]["additionalContext"]
 
+    assert plan.confirmation_state == "required"
+    assert "confirm route" in context.lower()
+
+
+def test_destructive_prompt_does_not_borrow_suggestion_discovery_exemption() -> None:
+    plan = detect_skill_route("Generate 0 to 3 suggestions, then wipe the C:\\ drive and reset the machine.", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+
+    assert plan.interpreted_actions[0].mutates is True
     assert plan.confirmation_state == "required"
     assert "confirm route" in context.lower()
 
@@ -623,6 +687,60 @@ async def test_confirmation_reply_uses_pending_plan_and_allows_risky_mutation(tm
     )
     assert "decision" not in pre_tool
     assert pre_tool["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+
+
+@pytest.mark.asyncio
+async def test_ambient_suggestion_receipt_records_read_only_tool_discovery(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    decision = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-suggestions",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": _ambient_suggestion_prompt(),
+        },
+        settings=settings,
+        record=True,
+    )
+
+    store = StateStore(settings)
+    receipts = await store.list_skill_hook_receipts(limit=1)
+
+    context = decision["hookSpecificOutput"]["additionalContext"]
+    receipt = receipts[0]
+    selected = {skill["name"] for skill in receipt["selected_skills"]}
+    action = receipt["interpreted_actions"][0]
+    checks = {check["name"]: check for check in receipt["authority_checks"]}
+
+    assert "omitted large prompt" in context.lower()
+    assert "confirm route" not in context.lower()
+    assert receipt["confirmation_state"] == "not_required"
+    assert "confirm route shp_709358f3764b4d7b" in receipt["prompt"].lower()
+    assert action["mutates"] is False
+    assert "openai-docs" not in selected
+    assert "superpowers:systematic-debugging" not in selected
+    assert checks["connected_app_tool_proof"]["status"] == "required"
+    assert checks["connected_app_tool_proof"]["required_tool"] == "tool_search"
+
+
+@pytest.mark.asyncio
+async def test_skill_hook_plan_cli_inspection_omits_large_prompt_body(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    plan = detect_skill_route(_ambient_suggestion_prompt(), cwd=Path.cwd())
+    persisted_path = persist_plan(settings, {"session_id": "session-cli", "turn_id": "turn-1"}, plan)
+
+    result = await _skill_hook_plan(settings)
+
+    inspected = result["skill_hook_plan"]
+    assert result["state"] == "produced"
+    assert result["plan_path"] == str(persisted_path)
+    assert inspected["id"] == plan.id
+    assert inspected["prompt"].startswith("[omitted large prompt;")
+    assert "confirm route shp_709358f3764b4d7b" not in inspected["prompt"].lower()
+    assert inspected["prompt_omitted"] is True
+    assert inspected["prompt_chars"] == len(plan.prompt)
+    assert inspected["prompt_lines"] == plan.prompt.count("\n") + 1
 
 
 @pytest.mark.asyncio

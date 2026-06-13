@@ -26,6 +26,8 @@ from orchestrator.reports.owner_receipt import export_owner_receipt
 from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
 from orchestrator.skills.detector import detect_skill_route
+from orchestrator.skills.gate import prompt_for_context
+from orchestrator.skills.models import SkillHookPlan
 from orchestrator.skills.runtime import run_hook_event
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
@@ -282,6 +284,30 @@ async def _skill_hook_receipts(settings: Settings, limit: int = 20) -> dict[str,
     return {"state": "produced", "receipts": await store.list_skill_hook_receipts(limit=limit)}
 
 
+def _skill_hook_plan_payload(plan: SkillHookPlan) -> dict[str, object]:
+    payload = plan.receipt_payload()
+    prompt_display = prompt_for_context(plan.prompt)
+    payload["prompt"] = prompt_display
+    payload["prompt_chars"] = len(plan.prompt)
+    payload["prompt_lines"] = plan.prompt.count("\n") + 1 if plan.prompt else 0
+    payload["prompt_omitted"] = prompt_display != plan.prompt
+    return payload
+
+
+async def _skill_hook_plan(settings: Settings) -> dict[str, object]:
+    plan_dir = settings.home / "skill-hooks" / "plans"
+    if not plan_dir.exists():
+        return {"state": "produced", "plan_path": None, "skill_hook_plan": None}
+    paths = sorted(plan_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in paths:
+        try:
+            plan = SkillHookPlan.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+        return {"state": "produced", "plan_path": str(path), "skill_hook_plan": _skill_hook_plan_payload(plan)}
+    return {"state": "produced", "plan_path": None, "skill_hook_plan": None}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="orchestrator")
     parser.add_argument("--home", default=None)
@@ -300,6 +326,7 @@ def main() -> None:
     sub.add_parser("hook-gate")
     skill_hook_receipts = sub.add_parser("skill-hook-receipts")
     skill_hook_receipts.add_argument("--last", type=int, default=20)
+    sub.add_parser("skill-hook-plan")
     dispatch = sub.add_parser("dispatch")
     dispatch.add_argument("text")
     dispatch.add_argument("--full", action="store_true", help="Print the full dispatch payload instead of a compact receipt summary")
@@ -388,6 +415,8 @@ def main() -> None:
         result = asyncio.run(_hook_gate(settings))
     elif args.cmd == "skill-hook-receipts":
         result = asyncio.run(_skill_hook_receipts(settings, args.last))
+    elif args.cmd == "skill-hook-plan":
+        result = asyncio.run(_skill_hook_plan(settings))
     elif args.cmd == "dispatch":
         result = asyncio.run(_dispatch(settings, args.text, args.full))
     elif args.cmd == "prove-adapter":

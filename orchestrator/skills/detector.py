@@ -87,6 +87,23 @@ DANGEROUS_DESTRUCTIVE_PATTERNS = (
     r"\b(delete|remove)\s+(all|everything|entire|whole)\b",
     r"\b(delete|remove)\s+([a-z]:\\|/)\b",
 )
+READ_ONLY_DISCOVERY_PATTERNS = (
+    r"\bambient suggestion candidates\b",
+    r"\byour task is to determine if any suggestions should be excluded\b",
+)
+CONNECTED_APP_TOOL_PROOF_TERMS = (
+    "calendar",
+    "canva",
+    "connected app",
+    "connected apps",
+    "github",
+    "gmail",
+    "google drive",
+    "google sheet",
+    "mcp source",
+    "mcp sources",
+    "tool discovery",
+)
 
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
@@ -95,6 +112,20 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
 
 def _is_dangerous_destructive(text: str) -> bool:
     return any(re.search(pattern, text) for pattern in DANGEROUS_DESTRUCTIVE_PATTERNS)
+
+
+def _is_read_only_discovery_prompt(text: str) -> bool:
+    if any(re.search(pattern, text) for pattern in READ_ONLY_DISCOVERY_PATTERNS):
+        return True
+    has_codex_suggestion_envelope = (
+        re.search(r"\bgenerate\s+0\s+to\s+\d+\s+hyperpersonalized suggestions\b", text) is not None
+        or re.search(r"\breturn\s+0\s+to\s+\d+\s+fresh suggestions\b", text) is not None
+    )
+    return has_codex_suggestion_envelope and "recent codex threads" in text and "local project" in text
+
+
+def _requires_connected_app_tool_proof(text: str) -> bool:
+    return _contains_any(text, CONNECTED_APP_TOOL_PROOF_TERMS)
 
 
 def _verb_for_text(text: str) -> str:
@@ -129,7 +160,9 @@ def _selected(name: str, inventory: SkillInventory, reason: str) -> SelectedSkil
     )
 
 
-def _domain_for_text(lowered: str) -> str:
+def _domain_for_text(lowered: str, read_only_discovery: bool = False) -> str:
+    if read_only_discovery:
+        return "discovery"
     if _contains_any(lowered, OPENAI_TERMS):
         return "codex"
     if any(term in lowered for term in ("gmail", "email", "calendar", "drive", "docs", "sheet", "canva", "github")):
@@ -216,7 +249,7 @@ def _authority_checks(lowered: str, inventory: SkillInventory, mutates: bool, co
         )
     else:
         checks.append(AuthorityCheck(name="desktop_control_lease", status="passed", reason="No visible desktop or Chrome control requested."))
-    if any(term in lowered for term in ("gmail", "google drive", "google sheet", "calendar", "canva", "github")):
+    if _requires_connected_app_tool_proof(lowered):
         checks.append(
             AuthorityCheck(
                 name="connected_app_tool_proof",
@@ -261,26 +294,27 @@ def detect_skill_route(
 ) -> SkillHookPlan:
     inventory = inventory or load_default_skill_inventory()
     lowered = prompt.lower()
-    mutates = _contains_any(lowered, MUTATING_TERMS)
-    domain = _domain_for_text(lowered)
-    interaction_type = _interaction_for_text(lowered, mutates, domain)
-    confidence = _confidence_for_text(lowered, domain, mutates)
+    read_only_discovery = _is_read_only_discovery_prompt(lowered)
+    mutates = False if read_only_discovery else _contains_any(lowered, MUTATING_TERMS)
+    domain = _domain_for_text(lowered, read_only_discovery=read_only_discovery)
+    interaction_type = "investigate" if read_only_discovery else _interaction_for_text(lowered, mutates, domain)
+    confidence = 0.88 if read_only_discovery else _confidence_for_text(lowered, domain, mutates)
     confirmation_state, question = _confirmation_state(lowered, domain, mutates, confidence)
     terminal_state = _terminal_state(domain, interaction_type, mutates)
 
     selected = [_selected("codex-capability-router", inventory, "Nontrivial request requires route classification before action.")]
-    if domain == "codex":
+    if domain == "codex" and not read_only_discovery:
         selected.append(_selected("openai-docs", inventory, "Codex/OpenAI behavior must be checked against official docs."))
     _select_domain_skills(lowered, domain, selected, inventory)
     if domain == "code" and mutates:
         selected.append(_selected("superpowers:test-driven-development", inventory, "Implementation or repair requires failing tests before production code."))
         selected.append(_selected("superpowers:verification-before-completion", inventory, "Completion claims require verification output."))
-    if any(term in lowered for term in ("debug", "diagnose", "root cause", "test fail", "failing test")):
+    if not read_only_discovery and any(term in lowered for term in ("debug", "diagnose", "root cause", "test fail", "failing test")):
         selected.append(_selected("superpowers:systematic-debugging", inventory, "Debugging requires root-cause tracing before repair."))
 
     action = InterpretedAction(
-        verb=_verb_for_text(prompt),
-        target=domain,
+        verb="discover" if read_only_discovery else _verb_for_text(prompt),
+        target="suggestions" if read_only_discovery else domain,
         domain=domain,
         mutates=mutates,
         consequence="medium" if mutates else "low",

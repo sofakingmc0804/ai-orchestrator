@@ -42,6 +42,16 @@ MUTATING_COMMAND_PATTERNS = [
     r"\bpython\b.*\b(migrate|write|generate|scaffold)\b",
 ]
 
+MAX_INLINE_PROMPT_CHARS = 600
+MAX_INLINE_PROMPT_LINES = 12
+
+
+def prompt_for_context(prompt: str) -> str:
+    if len(prompt) <= MAX_INLINE_PROMPT_CHARS and prompt.count("\n") < MAX_INLINE_PROMPT_LINES:
+        return prompt
+    line_count = prompt.count("\n") + 1 if prompt else 0
+    return f"[omitted large prompt; {len(prompt)} chars, {line_count} lines; full text remains in the persisted plan and receipt]"
+
 
 def _hook_context(plan: SkillHookPlan) -> str:
     skills = "\n".join(f"- {skill.name}: {skill.reason}" for skill in plan.selected_skills)
@@ -52,7 +62,7 @@ def _hook_context(plan: SkillHookPlan) -> str:
     checks = "\n".join(f"- {check.name}: {check.status}; {check.reason}" for check in plan.authority_checks)
     return (
         f"Skill hook plan: {plan.id}\n"
-        f"Original user prompt: {plan.prompt}\n"
+        f"Original user prompt: {prompt_for_context(plan.prompt)}\n"
         f"Selected skills:\n{skills}\n"
         f"Interpreted actions:\n{actions}\n"
         f"Authority checks:\n{checks}\n"
