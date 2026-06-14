@@ -39,6 +39,175 @@
       }
     },
     {
+      "task_id": "BENCH-CODE-REPAIR-001",
+      "domain_id": "code_repair",
+      "validator": "required_fields_and_terms",
+      "context": "A repository has one failing pytest: test_total_handles_none. The function total(values) currently crashes when values is None. The requested repair must be narrow, preserve existing behavior for lists, and include the test command used as proof.",
+      "prompt": "Return JSON with keys diagnosis, patch_scope, tests, terminal_state. Choose the smallest code repair for the failing pytest.",
+      "expected": {
+        "terminal_state": ["repaired", "produced"],
+        "must_contain": {
+          "diagnosis": ["None"],
+          "patch_scope": ["smallest", "total"],
+          "tests": ["pytest"],
+          "terminal_state": ["repaired", "produced"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-AGENTIC-REPAIR-001",
+      "domain_id": "agentic_repair",
+      "validator": "required_fields_and_terms",
+      "context": "A service restart failed twice. Logs show the config file path is missing, then the health check fails. The repair loop must change approach after one repeated failure and end with a verification command.",
+      "prompt": "Return JSON with keys hypothesis, repair_attempt, changed_approach, verification, terminal_state.",
+      "expected": {
+        "terminal_state": ["repaired", "investigated_and_routed", "blocked_after_repair_attempt"],
+        "must_contain": {
+          "hypothesis": ["config"],
+          "repair_attempt": ["path"],
+          "changed_approach": ["after", "failure"],
+          "verification": ["health"],
+          "terminal_state": ["repaired", "investigated_and_routed", "blocked_after_repair_attempt"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-EXTRACT-001",
+      "domain_id": "structured_extraction",
+      "validator": "required_fields_and_terms",
+      "context": "Source text: Invoice INV-44 from North Mill Supply totals 418.72 USD and is due 2026-07-01. The extraction must not add any fields not present in the source.",
+      "prompt": "Return JSON with keys invoice_id, vendor, total, currency, due_date, source_span.",
+      "expected": {
+        "must_contain": {
+          "invoice_id": ["INV-44"],
+          "vendor": ["North Mill Supply"],
+          "total": ["418.72"],
+          "currency": ["USD"],
+          "due_date": ["2026-07-01"],
+          "source_span": ["Invoice"]
+        },
+        "forbidden_terms": ["Net 30", "paid"]
+      }
+    },
+    {
+      "task_id": "BENCH-CLASSIFY-001",
+      "domain_id": "language_reasoning",
+      "validator": "required_fields_and_terms",
+      "context": "Message: Please tag these 40 support emails by urgency and product area. No external lookup is needed.",
+      "prompt": "Classify the job. Return JSON with keys job_class, confidence, evidence.",
+      "expected": {
+        "must_contain": {
+          "job_class": ["classification"],
+          "confidence": ["0."],
+          "evidence": ["tag", "urgency"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-SUMMARY-001",
+      "domain_id": "summarization",
+      "validator": "required_fields_and_terms",
+      "context": "Meeting notes: The team approved the April invoice reconciliation, rejected Chrome-based Gmail automation, and assigned Ana to produce a connector repair packet by Friday.",
+      "prompt": "Return JSON with keys summary, decisions, owner, deadline.",
+      "expected": {
+        "must_contain": {
+          "summary": ["invoice", "Gmail"],
+          "decisions": ["approved", "rejected"],
+          "owner": ["Ana"],
+          "deadline": ["Friday"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-TRANSLATE-001",
+      "domain_id": "translation",
+      "validator": "required_fields_and_terms",
+      "context": "Translate this instruction into Spanish: Close the repair ticket after the receipt is saved.",
+      "prompt": "Return JSON with keys language, translation, preserved_terms.",
+      "expected": {
+        "must_contain": {
+          "language": ["Spanish"],
+          "translation": ["cerrar", "recibo"],
+          "preserved_terms": ["repair ticket"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-CODEREVIEW-001",
+      "domain_id": "code_review",
+      "validator": "required_fields_and_terms",
+      "context": "Patch: def delete(path): shutil.rmtree(path). No path validation is present. The repo rule says recursive deletion must verify the resolved target stays inside the intended workspace.",
+      "prompt": "Return JSON with keys finding, severity, mechanism, required_test.",
+      "expected": {
+        "must_contain": {
+          "finding": ["rmtree"],
+          "severity": ["high", "P1"],
+          "mechanism": ["path", "workspace"],
+          "required_test": ["outside"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-DOCS-001",
+      "domain_id": "documentation",
+      "validator": "required_fields_and_terms",
+      "context": "A CLI command writes operation_quality_scores rows with proof_kind='live'. The documentation must name the trigger, input, output, receipt, and completion test.",
+      "prompt": "Return JSON with keys trigger, input, output, receipt, completion_test.",
+      "expected": {
+        "must_contain": {
+          "trigger": ["CLI"],
+          "input": ["operation_quality_scores"],
+          "output": ["rows"],
+          "receipt": ["proof_kind"],
+          "completion_test": ["live"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-QUESTION-001",
+      "domain_id": "language_reasoning",
+      "validator": "required_fields_and_terms",
+      "context": "Packet: The dashboard server listens on http://127.0.0.1:8765. The test server used port 8766 only because 8765 was occupied.",
+      "prompt": "Answer the factual question: what is the primary dashboard port? Return JSON with keys answer, citation.",
+      "expected": {
+        "must_contain": {
+          "answer": ["8765"],
+          "citation": ["Packet"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-TECHANALYSIS-001",
+      "domain_id": "technical_analysis",
+      "validator": "required_fields_and_terms",
+      "context": "Architecture problem: Hermes currently chooses a model directly. Target architecture: Hermes calls the neutral route API, which ranks workers by health, live quota, measured quality, and cost.",
+      "prompt": "Return JSON with keys current_flaw, target_control, ranking_inputs, proof.",
+      "expected": {
+        "must_contain": {
+          "current_flaw": ["chooses", "directly"],
+          "target_control": ["route API"],
+          "ranking_inputs": ["health", "quota", "quality", "cost"],
+          "proof": ["receipt", "API"]
+        }
+      }
+    },
+    {
+      "task_id": "BENCH-PIPELINE-001",
+      "domain_id": "data_pipeline",
+      "validator": "required_fields_and_terms",
+      "context": "Pipeline task: ingest a CSV, validate required columns, normalize dates to ISO-8601, write a durable receipt, and reject rows missing account_id.",
+      "prompt": "Return JSON with keys ingest_step, validation_step, transform_step, reject_rule, receipt.",
+      "expected": {
+        "must_contain": {
+          "ingest_step": ["CSV"],
+          "validation_step": ["columns"],
+          "transform_step": ["ISO"],
+          "reject_rule": ["account_id"],
+          "receipt": ["receipt"]
+        }
+      }
+    },
+    {
       "task_id": "BENCH-REGEX-001",
       "domain_id": "regex_pattern_creation",
       "validator": "regex_suite",

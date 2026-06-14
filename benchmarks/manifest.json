@@ -180,6 +180,108 @@
       ]
     },
     {
+      "domain_id": "code_repair",
+      "description": "Diagnose a failing repository behavior, name the smallest repair scope, and prove the change with tests.",
+      "deterministic_validators": [
+        "failure mechanism named",
+        "patch scope bounded",
+        "test command present",
+        "valid terminal state"
+      ]
+    },
+    {
+      "domain_id": "agentic_repair",
+      "description": "Run a bounded repair loop that changes approach after repeated failure and verifies the final state.",
+      "deterministic_validators": [
+        "hypothesis tied to evidence",
+        "repair attempt named",
+        "repeated failure changes approach",
+        "verification command present"
+      ]
+    },
+    {
+      "domain_id": "structured_extraction",
+      "description": "Extract source fields without adding unsupported facts.",
+      "deterministic_validators": [
+        "required fields present",
+        "source terms preserved",
+        "forbidden inferred fields absent",
+        "source span present"
+      ]
+    },
+    {
+      "domain_id": "summarization",
+      "description": "Condense source notes while preserving decisions, owners, deadlines, and rejected paths.",
+      "deterministic_validators": [
+        "source decisions preserved",
+        "owner preserved",
+        "deadline preserved",
+        "unsupported facts absent"
+      ]
+    },
+    {
+      "domain_id": "translation",
+      "description": "Translate bounded operational instructions while preserving named terms and action meaning.",
+      "deterministic_validators": [
+        "target language identified",
+        "action verb translated",
+        "key object translated",
+        "preserved terms listed"
+      ]
+    },
+    {
+      "domain_id": "code_review",
+      "description": "Review code changes for concrete behavioral risk, mechanism, severity, and missing proof.",
+      "deterministic_validators": [
+        "finding names code mechanism",
+        "severity present",
+        "required test present",
+        "workspace safety boundary checked"
+      ]
+    },
+    {
+      "domain_id": "documentation",
+      "description": "Write operational documentation with trigger, inputs, output, receipt, and completion test.",
+      "deterministic_validators": [
+        "trigger named",
+        "input named",
+        "output named",
+        "receipt named",
+        "completion test named"
+      ]
+    },
+    {
+      "domain_id": "public_content_law",
+      "description": "Rewrite public content without generic AI syntax, while preserving operator pressure and proof.",
+      "deterministic_validators": [
+        "banned phrases absent",
+        "operator voice terms present",
+        "not-just-but pattern absent",
+        "single JSON object returned"
+      ]
+    },
+    {
+      "domain_id": "technical_analysis",
+      "description": "Analyze system architecture by naming the current flaw, target control path, ranking inputs, and proof.",
+      "deterministic_validators": [
+        "current mechanism named",
+        "target control named",
+        "ranking inputs complete",
+        "proof path present"
+      ]
+    },
+    {
+      "domain_id": "data_pipeline",
+      "description": "Design deterministic data pipeline steps for ingestion, validation, transformation, rejection, and receipt.",
+      "deterministic_validators": [
+        "ingest source named",
+        "validation rule named",
+        "transform rule named",
+        "reject rule named",
+        "receipt named"
+      ]
+    },
+    {
       "domain_id": "regex_pattern_creation",
       "description": "Create safe regex and language-pattern detectors for logs, filenames, receipts, model IDs, hidden text, and public-content law.",
       "deterministic_validators": [
@@ -197,6 +299,17 @@
         "missing proof flagged",
         "no fabricated account facts",
         "audit receipt present"
+      ]
+    },
+    {
+      "domain_id": "data_analytics_kpi_diagnostics",
+      "description": "Diagnose KPI movement using denominators, changed counts, likely mechanism, and completion proof.",
+      "deterministic_validators": [
+        "metric named",
+        "old and new values preserved",
+        "denominator preserved",
+        "likely cause named",
+        "completion test present"
       ]
     },
     {
@@ -293,19 +406,92 @@
       ]
     }
   ],
+  "job_class_operation_map": {
+    "agentic_repair": {
+      "domain_id": "agentic_repair",
+      "task_ids": ["BENCH-AGENTIC-REPAIR-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "brainstorming": {
+      "domain_id": "conceptualization_strategy",
+      "task_ids": ["BENCH-CONCEPT-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "bulk_extraction": {
+      "domain_id": "structured_extraction",
+      "task_ids": ["BENCH-EXTRACT-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "classification": {
+      "domain_id": "language_reasoning",
+      "task_ids": ["BENCH-CLASSIFY-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "code_review": {
+      "domain_id": "code_review",
+      "task_ids": ["BENCH-CODEREVIEW-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "creative_writing": {
+      "domain_id": "public_content_law",
+      "task_ids": ["BENCH-VOICE-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "data_pipeline": {
+      "domain_id": "data_pipeline",
+      "task_ids": ["BENCH-PIPELINE-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "data_science": {
+      "domain_id": "data_analytics_kpi_diagnostics",
+      "task_ids": ["BENCH-KPI-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "documentation": {
+      "domain_id": "documentation",
+      "task_ids": ["BENCH-DOCS-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "quick_question": {
+      "domain_id": "language_reasoning",
+      "task_ids": ["BENCH-QUESTION-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "repo_coding": {
+      "domain_id": "code_repair",
+      "task_ids": ["BENCH-CODE-REPAIR-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "summarization": {
+      "domain_id": "summarization",
+      "task_ids": ["BENCH-SUMMARY-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "technical_analysis": {
+      "domain_id": "technical_analysis",
+      "task_ids": ["BENCH-TECHANALYSIS-001"],
+      "referee_type": "deterministic_ground_truth"
+    },
+    "translation": {
+      "domain_id": "translation",
+      "task_ids": ["BENCH-TRANSLATE-001"],
+      "referee_type": "deterministic_ground_truth"
+    }
+  },
   "first_benchmark_pack": [
-    "BENCH-LOCAL-001",
-    "BENCH-LOCAL-002",
-    "BENCH-ROSTER-001",
-    "BENCH-VOICE-001",
-    "BENCH-ROUTE-001",
-    "BENCH-PI-001",
-    "BENCH-RETRO-001",
-    "BENCH-RESUME-001",
-    "BENCH-EMBED-001",
-    "BENCH-DOC-001",
     "BENCH-BIZOPS-001",
     "BENCH-ROLE-001",
+    "BENCH-CODE-REPAIR-001",
+    "BENCH-AGENTIC-REPAIR-001",
+    "BENCH-EXTRACT-001",
+    "BENCH-CLASSIFY-001",
+    "BENCH-SUMMARY-001",
+    "BENCH-TRANSLATE-001",
+    "BENCH-CODEREVIEW-001",
+    "BENCH-DOCS-001",
+    "BENCH-QUESTION-001",
+    "BENCH-TECHANALYSIS-001",
+    "BENCH-PIPELINE-001",
     "BENCH-REGEX-001",
     "BENCH-FINOPS-001",
     "BENCH-MARKET-001",
