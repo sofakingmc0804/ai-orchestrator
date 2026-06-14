@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -67,12 +68,98 @@ class StateStore:
             await self._ensure_worker_card_columns(db)
             await self._ensure_receipt_columns(db)
             await self._ensure_budget_lane_tables(db)
+            await self._ensure_operation_quality_scores_table(db)
             await self._ensure_skill_hook_receipts_table(db)
             await db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (1, iso()),
             )
             await db.commit()
+
+    @staticmethod
+    def _legacy_orchestrator_home() -> Path:
+        configured = os.getenv("ORCHESTRATOR_LEGACY_HOME")
+        return Path(configured).expanduser() if configured else Path.home() / ".orchestrator"
+
+    @staticmethod
+    def _repo_adapter_proof_path(path_text: str, legacy_root: Path, repo_root: Path) -> str | None:
+        if not path_text:
+            return None
+        try:
+            path = Path(path_text).expanduser().resolve(strict=False)
+            old_root = legacy_root.expanduser().resolve(strict=False)
+            relative = path.relative_to(old_root)
+        except (OSError, ValueError):
+            return None
+        candidate = repo_root / relative
+        return str(candidate) if candidate.exists() else None
+
+    async def migrate_legacy_adapter_proof_paths(self, legacy_home: Path | None = None) -> dict[str, int]:
+        legacy_root = (legacy_home or self._legacy_orchestrator_home()) / "adapter-proof"
+        repo_root = self.settings.home / "adapter-proof"
+        try:
+            if legacy_root.resolve(strict=False) == repo_root.resolve(strict=False):
+                return {"dispatches": 0, "receipts": 0}
+        except OSError:
+            return {"dispatches": 0, "receipts": 0}
+        if not repo_root.exists():
+            return {"dispatches": 0, "receipts": 0}
+
+        dispatch_updates = 0
+        receipt_updates = 0
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT d.id, d.output_path, r.full_receipt
+                    FROM dispatches d
+                    LEFT JOIN receipts r ON r.dispatch_id = d.id
+                    WHERE d.output_path IS NOT NULL
+                    """
+                )
+            ).fetchall()
+            for row in rows:
+                dispatch_id = str(row["id"])
+                new_output = self._repo_adapter_proof_path(str(row["output_path"] or ""), legacy_root, repo_root)
+                if new_output and new_output != str(row["output_path"]):
+                    await db.execute("UPDATE dispatches SET output_path = ? WHERE id = ?", (new_output, dispatch_id))
+                    dispatch_updates += 1
+
+                full_receipt = row["full_receipt"]
+                if not full_receipt:
+                    continue
+                try:
+                    payload = json.loads(str(full_receipt))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                changed = False
+                for key in ("output_path", "receipt_path"):
+                    value = payload.get(key)
+                    if not isinstance(value, str):
+                        continue
+                    replacement = self._repo_adapter_proof_path(value, legacy_root, repo_root)
+                    if replacement and replacement != value:
+                        payload[key] = replacement
+                        changed = True
+                if changed:
+                    await db.execute(
+                        "UPDATE receipts SET full_receipt = ? WHERE dispatch_id = ?",
+                        (json.dumps(payload), dispatch_id),
+                    )
+                    receipt_updates += 1
+            if dispatch_updates or receipt_updates:
+                await self._audit_in_db(
+                    db,
+                    "runtime_migration",
+                    "legacy_adapter_proof_paths_migrated",
+                    str(repo_root),
+                    {"dispatches": dispatch_updates, "receipts": receipt_updates, "legacy_root": str(legacy_root)},
+                )
+            await db.commit()
+        return {"dispatches": dispatch_updates, "receipts": receipt_updates}
 
     async def _ensure_scheduler_task_columns(self, db: aiosqlite.Connection) -> None:
         rows = await (await db.execute("PRAGMA table_info(scheduler_tasks)")).fetchall()
@@ -168,6 +255,8 @@ class StateStore:
             "job_class": "ALTER TABLE receipts ADD COLUMN job_class TEXT",
             "routing_reasoning": "ALTER TABLE receipts ADD COLUMN routing_reasoning TEXT",
             "budget_state_json": "ALTER TABLE receipts ADD COLUMN budget_state_json TEXT",
+            "raw_output": "ALTER TABLE receipts ADD COLUMN raw_output TEXT",
+            "proof_kind": "ALTER TABLE receipts ADD COLUMN proof_kind TEXT",
             "created_at": "ALTER TABLE receipts ADD COLUMN created_at TEXT",
         }
         for column, statement in additions.items():
@@ -195,6 +284,25 @@ class StateStore:
                 terminal_state_requirement TEXT,
                 reason TEXT,
                 raw_event_json TEXT,
+                created_at TEXT
+            )
+            """
+        )
+
+    async def _ensure_operation_quality_scores_table(self, db: aiosqlite.Connection) -> None:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS operation_quality_scores (
+                id TEXT PRIMARY KEY,
+                dispatch_id TEXT REFERENCES dispatches(id),
+                worker_id TEXT,
+                operation_domain TEXT,
+                validator_name TEXT,
+                composite_score REAL,
+                dimensional_scores_json TEXT,
+                task_id TEXT,
+                proof_kind TEXT DEFAULT 'live',
+                validation_json TEXT,
                 created_at TEXT
             )
             """
@@ -573,8 +681,8 @@ class StateStore:
             if receipt:
                 await db.execute(
                     """
-                    INSERT INTO receipts(dispatch_id, service, capability, model, tokens_in, tokens_out, cost_class, success, output_summary, full_receipt, worker_id, job_class, routing_reasoning, budget_state_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO receipts(dispatch_id, service, capability, model, tokens_in, tokens_out, cost_class, success, output_summary, full_receipt, worker_id, job_class, routing_reasoning, budget_state_json, raw_output, proof_kind, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(dispatch_id) DO UPDATE SET
                       service=excluded.service,
                       capability=excluded.capability,
@@ -589,6 +697,8 @@ class StateStore:
                       job_class=excluded.job_class,
                       routing_reasoning=excluded.routing_reasoning,
                       budget_state_json=excluded.budget_state_json,
+                      raw_output=excluded.raw_output,
+                      proof_kind=excluded.proof_kind,
                       created_at=excluded.created_at
                     """,
                     (
@@ -606,12 +716,96 @@ class StateStore:
                         receipt.get("job_class"),
                         receipt.get("routing_reasoning"),
                         receipt.get("budget_state_json"),
+                        receipt.get("raw_output"),
+                        receipt.get("proof_kind"),
                         receipt.get("created_at") or iso(),
                     ),
                 )
             await self._audit_in_db(db, str(dispatch.get("adapter_name") or "dispatcher"), "dispatch_state", str(dispatch["id"]), dispatch)
             await self._refresh_intent_project_memory_in_db(db, str(dispatch["intent_id"]))
             await db.commit()
+
+    async def record_operation_quality_score(self, score: dict[str, Any]) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO operation_quality_scores(
+                    id, dispatch_id, worker_id, operation_domain, validator_name,
+                    composite_score, dimensional_scores_json, task_id, proof_kind,
+                    validation_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    dispatch_id=excluded.dispatch_id,
+                    worker_id=excluded.worker_id,
+                    operation_domain=excluded.operation_domain,
+                    validator_name=excluded.validator_name,
+                    composite_score=excluded.composite_score,
+                    dimensional_scores_json=excluded.dimensional_scores_json,
+                    task_id=excluded.task_id,
+                    proof_kind=excluded.proof_kind,
+                    validation_json=excluded.validation_json,
+                    created_at=excluded.created_at
+                """,
+                (
+                    score.get("id") or f"oqs_{uuid.uuid4().hex[:16]}",
+                    score["dispatch_id"],
+                    score["worker_id"],
+                    score["operation_domain"],
+                    score["validator_name"],
+                    float(score.get("composite_score") or 0.0),
+                    json.dumps(score.get("dimensional_scores") or score.get("dimensional_scores_json") or {}),
+                    score.get("task_id"),
+                    score.get("proof_kind") or "live",
+                    json.dumps(score.get("validation") or {}),
+                    score.get("created_at") or iso(),
+                ),
+            )
+            await self._audit_in_db(db, "quality_loop", "operation_quality_score", str(score["dispatch_id"]), score)
+            await db.commit()
+
+    async def list_operation_quality_scores(self, limit: int = 200) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    "SELECT * FROM operation_quality_scores ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                )
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def load_live_operation_quality_scores(self, limit: int = 1000) -> dict[str, dict[str, dict[str, Any]]]:
+        rows = await self.list_operation_quality_scores(limit=limit)
+        grouped: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            if str(row.get("proof_kind") or "") != "live":
+                continue
+            worker_id = str(row.get("worker_id") or "")
+            domain = str(row.get("operation_domain") or "")
+            if not worker_id or not domain:
+                continue
+            item = grouped.setdefault(worker_id, {}).setdefault(
+                domain,
+                {
+                    "worker_id": worker_id,
+                    "operation_domain": domain,
+                    "sample_count": 0,
+                    "score_total": 0.0,
+                    "latest_dispatch_id": row.get("dispatch_id"),
+                    "latest_created_at": row.get("created_at"),
+                },
+            )
+            item["sample_count"] += 1
+            item["score_total"] += float(row.get("composite_score") or 0.0)
+            if str(row.get("created_at") or "") > str(item.get("latest_created_at") or ""):
+                item["latest_dispatch_id"] = row.get("dispatch_id")
+                item["latest_created_at"] = row.get("created_at")
+        for by_domain in grouped.values():
+            for item in by_domain.values():
+                count = max(int(item.get("sample_count") or 0), 1)
+                item["composite_score"] = round(float(item.pop("score_total")) / count, 4)
+        return grouped
 
     async def record_token_usage(self, usage: dict[str, Any]) -> None:
         async with aiosqlite.connect(self.path) as db:
@@ -1073,6 +1267,34 @@ class StateStore:
             db.row_factory = aiosqlite.Row
             rows = await (
                 await db.execute("SELECT * FROM dispatches ORDER BY started_at DESC LIMIT ?", (limit,))
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    async def list_live_proven_dispatches(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Completed dispatches whose receipt carries proof_kind='live'.
+
+        This is the integrity floor for spec-status: a dispatch counts as
+        'proven' only when this code path persisted real adapter evidence
+        (raw_output), never when a bare completed row or hand-imported proof
+        was written. Joins intents so callers can tell whether a queued
+        selection actually drove the dispatch (selection -> dispatch round trip).
+        """
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT d.id AS id, d.adapter_name AS adapter_name, d.output_path AS output_path,
+                           r.proof_kind AS proof_kind, r.raw_output AS raw_output,
+                           i.source AS intent_source, i.selections AS intent_selections
+                    FROM dispatches d
+                    JOIN receipts r ON r.dispatch_id = d.id
+                    LEFT JOIN intents i ON i.id = d.intent_id
+                    WHERE d.state = 'completed' AND r.proof_kind = 'live'
+                    ORDER BY d.started_at DESC LIMIT ?
+                    """,
+                    (limit,),
+                )
             ).fetchall()
             return [dict(r) for r in rows]
 

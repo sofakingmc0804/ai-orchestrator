@@ -24,9 +24,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from orchestrator.config import Settings
 
-ROOT = Path.home() / ".ai-resource-governor"
-DB_PATH = ROOT / "inventory.sqlite"
+SETTINGS = Settings.load()
+ROOT = SETTINGS.home
+LEGACY_ROOT = Path.home() / ".ai-resource-governor"
+DB_PATH = SETTINGS.state_path
 ROSTER_PATH = ROOT / "worker_roster_v2.json"
 HERMES_CATALOG_PATH = ROOT / "hermes-model-catalog.compact.json"
 RECEIPTS = ROOT / "receipts"
@@ -38,7 +41,7 @@ DESKTOP_HERMES_CACHE = DESKTOP_HERMES_HOME / "cache" / "model_catalog.json"
 DESKTOP_GOVERNED_CATALOG = DESKTOP_HERMES_HOME / "cache" / "model_catalog.governed.json"
 PROVIDER_MODELS_CACHE = DESKTOP_HERMES_HOME / "provider_models_cache.json"
 OLLAMA_CLOUD_CACHE = DESKTOP_HERMES_HOME / "ollama_cloud_models_cache.json"
-SOURCE_ROSTER = ROOT / "model-roster.json"
+SOURCE_ROSTER = ROOT / "model-roster.json" if (ROOT / "model-roster.json").exists() else LEGACY_ROOT / "model-roster.json"
 NOUS_FREE_DEFAULT = "stepfun/step-3.7-flash:free"
 NOUS_PROVED_FREE_MODELS = {"stepfun/step-3.7-flash:free", "nvidia/nemotron-3-ultra:free"}
 
@@ -307,6 +310,43 @@ def connect() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     return con
+
+
+def load_live_operation_quality_scores(db_path: Path | None = None) -> dict[str, dict[str, dict[str, Any]]]:
+    path = db_path or DB_PATH
+    if not path.exists():
+        return {}
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            """
+            SELECT worker_id, operation_domain, COUNT(*) AS sample_count,
+                   AVG(composite_score) AS composite_score,
+                   MAX(created_at) AS latest_created_at
+            FROM operation_quality_scores
+            WHERE proof_kind = 'live'
+            GROUP BY worker_id, operation_domain
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        worker_id = str(row["worker_id"] or "")
+        domain = str(row["operation_domain"] or "")
+        if not worker_id or not domain:
+            continue
+        grouped.setdefault(worker_id, {})[domain] = {
+            "worker_id": worker_id,
+            "operation_domain": domain,
+            "sample_count": int(row["sample_count"] or 0),
+            "composite_score": round(float(row["composite_score"] or 0.0), 4),
+            "latest_created_at": row["latest_created_at"],
+        }
+    return grouped
 
 
 def migrate_schema(con: sqlite3.Connection) -> None:

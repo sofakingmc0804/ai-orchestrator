@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from benchmarks.validators.operation_validators import validate_task
+
 from orchestrator.adapters.builtins import build_adapters
 from orchestrator.config import Settings
 from orchestrator.dispatch.receipt_enhanced import build_receipt_data
@@ -125,6 +127,7 @@ class Dispatcher:
         subscription_usage_snapshots = await self.store.list_subscription_usage_snapshots()
         budget_probes = await self.store.list_budget_probes()
         token_usage_summary = await self.store.token_usage_summary()
+        operation_quality_scores = await self.store.load_live_operation_quality_scores()
 
         quota_state = await self.store.latest_quota_state()
         project_policy = project_policy or await self._project_policy(intent.project_id)
@@ -139,6 +142,7 @@ class Dispatcher:
                 budget_probes=budget_probes,
                 subscription_usage_snapshots=subscription_usage_snapshots,
                 token_usage_summary=token_usage_summary,
+                operation_quality_scores=operation_quality_scores,
             )
         else:
             capabilities = await self.store.list_capabilities()
@@ -179,6 +183,9 @@ class Dispatcher:
             "project_policy": project_policy,
             "skill_hook_plan": skill_hook_plan.receipt_payload(),
         }
+        operation_task = intent.parsed_payload.get("operation_task")
+        if isinstance(operation_task, dict):
+            envelope["operation_task"] = operation_task
         model_hint = chosen_candidate.get("recommended_model") or chosen_candidate.get("model_id")
         if model_hint:
             envelope["model"] = str(model_hint)
@@ -548,6 +555,9 @@ class Dispatcher:
             "raw_output": (json.dumps(result.get("raw"), default=str)[:20000] if result.get("raw") is not None else text[:20000]),
             "proof_kind": "live",
         }
+        quality_score = await self._score_operation_dispatch(dispatch_id, envelope, result, chosen_candidate, job_class)
+        if quality_score:
+            receipt["operation_quality_score"] = quality_score
         skill_hook_plan = envelope.get("skill_hook_plan") if isinstance(envelope.get("skill_hook_plan"), dict) else {}
         receipt.update(
             {
@@ -585,3 +595,34 @@ class Dispatcher:
             )
         )
         return DispatchResult(dispatch_id=dispatch_id, intent_id=intent.id, adapter_name=adapter_name, state="completed", output_path=result_path, result_text=text, receipt=receipt)
+
+    async def _score_operation_dispatch(
+        self,
+        dispatch_id: str,
+        envelope: dict[str, Any],
+        result: dict[str, Any],
+        chosen_candidate: dict[str, Any],
+        job_class: str,
+    ) -> dict[str, Any] | None:
+        task = envelope.get("operation_task")
+        if not isinstance(task, dict):
+            return None
+        raw_output = str(result.get("text") or "")
+        validation = validate_task(task, raw_output)
+        scores = validation.get("scores") if isinstance(validation.get("scores"), dict) else {}
+        composite = float(scores.get("composite") or 0.0)
+        worker_id = str(chosen_candidate.get("worker_id") or chosen_candidate.get("model_id") or chosen_candidate.get("adapter_name") or "unknown")
+        score = {
+            "dispatch_id": dispatch_id,
+            "worker_id": worker_id,
+            "operation_domain": str(task.get("domain_id") or job_class),
+            "validator_name": str(validation.get("validator") or task.get("validator") or "unknown"),
+            "composite_score": composite,
+            "dimensional_scores": scores,
+            "task_id": task.get("task_id"),
+            "proof_kind": "live",
+            "validation": validation,
+            "created_at": iso(),
+        }
+        await self.store.record_operation_quality_score(score)
+        return score

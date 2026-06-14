@@ -98,6 +98,11 @@ CREATE TABLE IF NOT EXISTS receipts (
     job_class TEXT,
     routing_reasoning TEXT,
     budget_state_json TEXT,
+    -- Integrity additions (2026-06-13): behavioral proof, not row-counts.
+    -- proof_kind: 'live' (real adapter call this code path produced),
+    -- 'imported' (hand-imported external proof), 'synthetic' (stub/no real call).
+    raw_output TEXT,
+    proof_kind TEXT,
     created_at TEXT
 );
 
@@ -313,6 +318,20 @@ CREATE TABLE IF NOT EXISTS token_usage (
     quota_probe_type TEXT,
     quota_probe_ok INTEGER,
     raw_usage_json TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS operation_quality_scores (
+    id TEXT PRIMARY KEY,
+    dispatch_id TEXT REFERENCES dispatches(id),
+    worker_id TEXT,
+    operation_domain TEXT,
+    validator_name TEXT,
+    composite_score REAL,
+    dimensional_scores_json TEXT,
+    task_id TEXT,
+    proof_kind TEXT DEFAULT 'live',
+    validation_json TEXT,
     created_at TEXT
 );
 

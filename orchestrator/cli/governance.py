@@ -211,6 +211,7 @@ async def cmd_route(args: argparse.Namespace) -> None:
     subscription_usage_snapshots = await store.list_subscription_usage_snapshots()
     budget_probes = await store.list_budget_probes()
     token_usage_summary = await store.token_usage_summary()
+    operation_quality_scores = await store.load_live_operation_quality_scores()
     intent = parse_intent(args.text)
     decision = route_with_workers(
         intent,
@@ -221,6 +222,7 @@ async def cmd_route(args: argparse.Namespace) -> None:
         subscription_usage_snapshots=subscription_usage_snapshots,
         job_class_spec=job,
         token_usage_summary=token_usage_summary,
+        operation_quality_scores=operation_quality_scores,
     )
 
     if not decision.chosen_adapter:

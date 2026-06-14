@@ -375,6 +375,23 @@ def _token_efficiency_score(worker: dict[str, Any], token_usage_summary: dict[st
     return max(0.0, min(1.0, (efficiency * 0.45) + (success_rate * 0.55)))
 
 
+def _measured_quality_score(
+    worker: dict[str, Any],
+    job_class: str,
+    operation_quality_scores: dict[str, dict[str, dict[str, Any]]],
+) -> tuple[float, str]:
+    worker_id = str(worker.get("worker_id") or "")
+    worker_scores = operation_quality_scores.get(worker_id) or {}
+    domain_score = worker_scores.get(job_class)
+    if domain_score:
+        return max(0.0, min(1.0, float(domain_score.get("composite_score") or 0.0))), f"operation_quality_scores:{job_class}"
+    if worker_scores:
+        values = [float(item.get("composite_score") or 0.0) for item in worker_scores.values()]
+        if values:
+            return max(0.0, min(1.0, sum(values) / len(values))), "operation_quality_scores:overall"
+    return 0.5, "none"
+
+
 def route_with_workers(
     intent: Intent,
     workers: list[dict[str, Any]],
@@ -386,6 +403,7 @@ def route_with_workers(
     subscription_usage_snapshots: list[dict[str, Any]] | None = None,
     job_class_spec: dict[str, Any] | None = None,
     token_usage_summary: dict[str, dict[str, Any]] | None = None,
+    operation_quality_scores: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> RoutingDecision:
     """Route intent to best worker using worker cards.
 
@@ -407,6 +425,7 @@ def route_with_workers(
     quota_state = quota_state or {}
     project_policy = project_policy or {}
     token_usage_summary = token_usage_summary or {}
+    operation_quality_scores = operation_quality_scores or {}
 
     budget_lookup = _budget_lookup_from_sources(subscription_usage_snapshots, budget_probes)
 
@@ -498,16 +517,18 @@ def route_with_workers(
         contract_score = _contract_pressure_score(worker)
         model_fit = _model_fit_score(worker, job_class)
         token_score = _token_efficiency_score(worker, token_usage_summary)
+        measured_quality, quality_source = _measured_quality_score(worker, job_class, operation_quality_scores)
         composite = (
-            (job_score * 0.14)
-            + (cap_score * 0.14)
-            + (stat_score * 0.14)
-            + (speed_score * 0.08)
+            (job_score * 0.12)
+            + (cap_score * 0.12)
+            + (stat_score * 0.10)
+            + (speed_score * 0.07)
             + (budget_fit * 0.10)
-            + (contract_score * 0.22)
+            + (contract_score * 0.18)
             + (model_fit * 0.08)
             + (token_score * 0.06)
-            + (benchmark_score * 0.04)
+            + (measured_quality * 0.14)
+            + (benchmark_score * 0.03)
         )
         composite = max(0.0, min(1.0, composite))
 
@@ -521,6 +542,8 @@ def route_with_workers(
         row["contract_pressure_score"] = contract_score
         row["model_fit_score"] = model_fit
         row["token_efficiency_score"] = token_score
+        row["measured_quality_score"] = measured_quality
+        row["quality_source"] = quality_source
         considered.append(row)
 
     # Sort by composite score, then contract type (cheapest first)
@@ -548,6 +571,7 @@ def route_with_workers(
             f"contract pressure ({chosen_worker.get('contract_pressure_score', 0):.2f}), "
             f"model fit ({chosen_worker.get('model_fit_score', 0):.2f}), "
             f"token efficiency ({chosen_worker.get('token_efficiency_score', 0):.2f}), "
+            f"measured quality ({chosen_worker.get('measured_quality_score', 0):.2f}), "
             f"and benchmark score ({chosen_worker.get('benchmark_score', 0):.2f})."
         )
     else:
@@ -572,6 +596,7 @@ def route_intent_worker_aware(
     budget_probes: list[dict[str, Any]] | None = None,
     subscription_usage_snapshots: list[dict[str, Any]] | None = None,
     token_usage_summary: dict[str, dict[str, Any]] | None = None,
+    operation_quality_scores: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> RoutingDecision:
     """Route intent using worker-aware routing.
 
@@ -604,4 +629,5 @@ def route_intent_worker_aware(
         subscription_usage_snapshots=subscription_usage_snapshots,
         job_class_spec=job_class_spec,
         token_usage_summary=token_usage_summary,
+        operation_quality_scores=operation_quality_scores,
     )
