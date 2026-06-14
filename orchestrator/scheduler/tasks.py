@@ -8,6 +8,7 @@ from typing import Any
 from orchestrator.autopilot.watchers import scan_autopilot_folder_once
 from orchestrator.autopilot.policy_engine import parse_policy_yaml
 from orchestrator.config import Settings
+from orchestrator.evaluation.tournament import run_deterministic_tournament
 from orchestrator.state.store import StateStore, iso
 
 
@@ -111,6 +112,53 @@ def _is_due(task: dict[str, Any]) -> bool:
     return due_at <= datetime.now(timezone.utc)
 
 
+async def _run_operation_tournament_task(
+    settings: Settings,
+    store: StateStore,
+    task: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    operation_task = payload.get("operation_task") if isinstance(payload.get("operation_task"), dict) else None
+    workers = payload.get("workers") if isinstance(payload.get("workers"), list) else []
+    worker_outputs = payload.get("worker_outputs") if isinstance(payload.get("worker_outputs"), dict) else {}
+    if not operation_task or not workers or not worker_outputs:
+        result["state"] = "failed"
+        result["reason"] = "operation_tournament_payload_incomplete"
+        result["completed_at"] = iso()
+        await store.add_repair_item(
+            "scheduler",
+            f"Operation tournament task {task.get('id')} is missing operation_task, workers, or worker_outputs.",
+            "Update the scheduler task payload with a deterministic operation task, workers, and captured outputs.",
+        )
+        await store.audit("scheduler", "scheduler_task_failed", str(task.get("id") or ""), result)
+        return result
+
+    async def output_runner(worker: dict[str, Any], _operation_task: dict[str, Any]) -> str:
+        worker_id = str(worker.get("worker_id") or "")
+        return str(worker_outputs.get(worker_id) or "")
+
+    tournament = await run_deterministic_tournament(
+        store,
+        operation_task,
+        [dict(worker) for worker in workers if isinstance(worker, dict)],
+        output_runner,
+        operation_domain=str(payload.get("operation_domain") or operation_task.get("domain_id") or "unknown"),
+        run_id=str(result["run_id"]),
+    )
+    result.update(
+        {
+            "state": "completed",
+            "queued": 0,
+            "tournament": tournament,
+            "completed_at": iso(),
+        }
+    )
+    await store.mark_scheduler_task_run(str(task.get("id") or ""), int(task.get("interval_seconds") or 0))
+    await store.audit("scheduler", "scheduler_task_run", str(task.get("id") or ""), result)
+    return result
+
+
 async def run_scheduler_task_once(
     settings: Settings,
     store: StateStore,
@@ -174,6 +222,9 @@ async def run_scheduler_task_once(
             await store.mark_scheduler_task_run(task_id, int(task.get("interval_seconds") or 0))
             await store.audit("scheduler", "scheduler_task_run", task_id, result)
         return result
+
+    if task_type == "operation_tournament":
+        return await _run_operation_tournament_task(settings, store, task, result)
 
     result["state"] = "failed"
     result["reason"] = f"unsupported_task_type:{task_type}"
