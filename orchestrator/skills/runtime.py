@@ -91,7 +91,11 @@ def _is_continue_reply(prompt: str) -> bool:
 
 
 def _is_desktop_control_approval_reply(prompt: str) -> bool:
-    return prompt.strip().lower() in {
+    normalized = re.sub(r"[^a-z\s]", " ", prompt.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if normalized.startswith("yes "):
+        return True
+    return normalized in {
         "yes",
         "approve",
         "approved",
@@ -127,6 +131,37 @@ def _selected_skill(name: str, reason: str) -> SelectedSkill:
         primary_group=item.primary_group,
         tool_requirements=item.tool_requirements,
     )
+
+
+def _advisory_context(event_name: str, context: str) -> dict[str, Any]:
+    return {"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}
+
+
+def _append_selected_skill(plan: SkillHookPlan, name: str, reason: str) -> SkillHookPlan:
+    selected = list(plan.selected_skills)
+    candidate = _selected_skill(name, reason)
+    existing = {skill.name for skill in selected}
+    if candidate.name not in existing and name not in existing:
+        selected.append(candidate)
+    return plan.model_copy(update={"selected_skills": selected})
+
+
+def _prompt_requests_chrome_control(prompt: str) -> bool:
+    lowered = prompt.lower()
+    if any(
+        term in lowered
+        for term in (
+            "active chrome",
+            "active tab",
+            "browser extension",
+            "chrome browser",
+            "chrome extension",
+            "codex chrome",
+            "logged-in chrome",
+        )
+    ):
+        return True
+    return "chrome" in lowered and any(term in lowered for term in ("extension", "profile", "tab"))
 
 
 def _mark_confirmed(plan: SkillHookPlan, reason: str) -> SkillHookPlan:
@@ -172,7 +207,14 @@ def _mark_desktop_control_approved(plan: SkillHookPlan, reason: str) -> SkillHoo
                 scope_cwd=scope_cwd,
             )
         )
-    return plan.model_copy(update={"authority_checks": checks, "question": None})
+    updated = plan.model_copy(update={"authority_checks": checks, "question": None})
+    if _prompt_requests_chrome_control(plan.prompt):
+        updated = _append_selected_skill(
+            updated,
+            "control-chrome",
+            "Approved Chrome extension or active-tab lease requires Chrome control skill authority.",
+        )
+    return updated
 
 
 def _apply_skill_override(plan: SkillHookPlan, names: list[str]) -> SkillHookPlan:
@@ -192,7 +234,7 @@ def _resolve_followup_plan(settings: Settings, event: dict[str, Any]) -> tuple[S
 
     requested_id = _route_plan_id(prompt)
     if requested_id and requested_id != pending.id:
-        return None, {"decision": "block", "reason": f"No pending skill route matched {requested_id}. Submit the task again with the intended route."}
+        return None, _advisory_context("UserPromptSubmit", f"No pending skill route matched {requested_id}. Continue with the latest user instruction or submit the task again with the intended route.")
 
     overrides = _override_skill_names(prompt)
     if overrides:
@@ -202,7 +244,7 @@ def _resolve_followup_plan(settings: Settings, event: dict[str, Any]) -> tuple[S
     if _is_confirm_reply(prompt):
         return _mark_confirmed(pending, "User confirmed the pending skill route."), None
     if _is_cancel_reply(prompt):
-        return None, {"decision": "block", "reason": f"Skill route {pending.id} cancelled. Submit a new request with the intended route."}
+        return None, _advisory_context("UserPromptSubmit", f"Skill route {pending.id} cancelled. Continue with the latest user instruction or submit a new request with the intended route.")
     if _is_continue_reply(prompt):
         return pending, None
     return None, None
@@ -288,7 +330,7 @@ def main() -> None:
     try:
         event = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError as exc:
-        print(json.dumps({"decision": "block", "reason": f"Invalid hook JSON: {exc}"}))
+        print(json.dumps(_advisory_context("Unknown", f"Invalid hook JSON: {exc}")))
         return
     decision = asyncio.run(run_hook_event(event))
     print(json.dumps(decision or {}, separators=(",", ":")))

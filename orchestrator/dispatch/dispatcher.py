@@ -332,7 +332,14 @@ class Dispatcher:
         )
         return DispatchResult(dispatch_id=dispatch_id, intent_id=intent.id, adapter_name=str(decision.chosen_adapter), state="failed", error=last_error)
 
-    async def prove_adapter(self, adapter_name: str, prompt: str, capability_id: str | None = None, allow_subscription: bool = False) -> DispatchResult:
+    async def prove_adapter(
+        self,
+        adapter_name: str,
+        prompt: str,
+        capability_id: str | None = None,
+        allow_subscription: bool = False,
+        selections: list[Selection] | None = None,
+    ) -> DispatchResult:
         capabilities = await self.store.list_capabilities()
         matching_caps = [
             dict(cap)
@@ -359,6 +366,7 @@ class Dispatcher:
             source="adapter_proof",
             raw_text=prompt,
             parsed_payload={"verb": "prove", "object": adapter_name, "required_capability": str(candidate.get("capability_id") or "local_chat")},
+            selections=selections or [],
             consequence_tier=ConsequenceTier.LOW,
         )
         await self.store.create_intent(intent)

@@ -142,6 +142,7 @@ async def _latest_receipts(settings: Settings) -> dict[str, dict[str, Any]]:
 async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
     store = StateStore(settings)
     await store.initialize()
+    proof_path_migration = await store.migrate_legacy_adapter_proof_paths()
     status = await evaluate_spec_status(settings, store)
     services = await store.list_services()
     capabilities = await store.list_capabilities()
@@ -259,6 +260,7 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
             "open_repairs": len(repair_queue),
             "cost_classes": dict(cost_counter),
             "token_flowmeters": token_totals,
+            "proof_path_migration": proof_path_migration,
         },
     )
     return {
@@ -269,4 +271,5 @@ async def export_owner_receipt(settings: Settings) -> dict[str, Any]:
         "open_repairs": len(repair_queue),
         "cost_classes": dict(cost_counter),
         "token_flowmeters": token_totals,
+        "proof_path_migration": proof_path_migration,
     }

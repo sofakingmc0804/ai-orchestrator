@@ -1,7 +1,12 @@
-# Final Consolidation Snapshot
+# Final Consolidation Snapshot (HISTORICAL)
+
+> ⚠️ **Superseded by [STATUS.md](STATUS.md).** Historical 2026-06-10 snapshot.
+> "ALL 6 PHASES COMPLETE" was a row-count/file-existence artifact, not behavioral
+> proof. Real status: `python -m orchestrator.cli.main spec-status`.
+
 **Date:** 2026-06-10  
 **Time:** 22:45 CT  
-**Status:** ✅ ALL 6 PHASES COMPLETE
+**Status:** historical snapshot
 
 ---
 

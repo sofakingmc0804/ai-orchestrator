@@ -341,12 +341,16 @@ class OpenClawGatewayAdapter(StaticCliAdapter):
 
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
         prompt = str(envelope.get("intent", {}).get("raw_text") or envelope.get("prompt") or "").strip()
-        model = str(envelope.get("model") or "qwen2.5:0.5b")
+        model = str(envelope.get("model") or "")
         if not prompt:
             return {"ok": False, "error": "No prompt supplied to OpenClaw adapter."}
+        args = ["infer", "model", "run", "--json", "--gateway"]
+        if model:
+            args.extend(["--model", model])
+        args.extend(["--prompt", prompt])
         result = await _run_bounded(
             "openclaw",
-            ["infer", "model", "run", "--json", "--gateway", "--model", model, "--prompt", prompt],
+            args,
             timeout=180,
         )
         if not result.get("ok"):
@@ -364,7 +368,7 @@ class OpenClawGatewayAdapter(StaticCliAdapter):
                 text = str(payload.get("text") or payload.get("output") or payload.get("message") or stdout)
         except json.JSONDecodeError:
             pass
-        return {"ok": True, "model": model, "text": text, "raw": result}
+        return {"ok": True, "model": model or "openclaw-default", "text": text, "raw": result}
 
 
 class ClaudePrintAdapter(StaticCliAdapter):
@@ -399,7 +403,7 @@ class ClaudePrintAdapter(StaticCliAdapter):
                 "--model",
                 model,
                 "--max-budget-usd",
-                "0.05",
+                "0.25",
                 prompt,
             ],
             timeout=120,
@@ -616,6 +620,47 @@ class LmStudioAdapter(StaticCliAdapter):
         return {"ok": True, "model": model, "text": text, "raw": data}
 
 
+class SyntheticTestServiceAdapter(StaticCliAdapter):
+    def __init__(self) -> None:
+        super().__init__(
+            name="synthetic-test-service",
+            service_id="synthetic-test-service",
+            label="Synthetic Test Service",
+            service_group="test",
+            protocol="in-memory",
+            command="python",
+            process_names=["python.exe"],
+            billing_class=BillingClass.LOCAL_RESOURCE,
+            capabilities=["synthetic_echo"],
+            consequence_max=ConsequenceTier.LOW,
+            latency_band="fast",
+        )
+
+    async def health_probe(self) -> ServiceInfo:
+        return ServiceInfo(
+            id=self.service_id,
+            name=self.label,
+            service_group=self.service_group,
+            adapter_name=self.name,
+            protocol=self.protocol,
+            health_state=HealthState.HEALTHY,
+        )
+
+    async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        intent = envelope.get("intent") if isinstance(envelope.get("intent"), dict) else {}
+        prompt = str(intent.get("raw_text") or envelope.get("prompt") or "").strip()
+        return {
+            "ok": True,
+            "model": "synthetic-echo",
+            "text": f"synthetic_echo: {prompt or 'OK'}",
+            "raw": {
+                "adapter": self.name,
+                "proof": "in_memory_dispatch",
+                "dispatch_id": envelope.get("dispatch_id"),
+            },
+        }
+
+
 def build_adapters() -> dict[str, StaticCliAdapter]:
     adapters: list[StaticCliAdapter] = [
         ClaudePrintAdapter("claude-desktop-mcp", "claude-desktop", "Claude Desktop", "mcp"),
@@ -631,6 +676,6 @@ def build_adapters() -> dict[str, StaticCliAdapter]:
         HermesAgentAdapter(),
         OpenClawGatewayAdapter(),
         LmStudioAdapter(),
-        StaticCliAdapter("synthetic-test-service", "synthetic-test-service", "Synthetic Test Service", "test", "in-memory", "python", ["python.exe"], BillingClass.LOCAL_RESOURCE, ["synthetic_echo"], ConsequenceTier.LOW),
+        SyntheticTestServiceAdapter(),
     ]
     return {a.name: a for a in adapters}

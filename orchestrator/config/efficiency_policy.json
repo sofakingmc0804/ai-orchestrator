@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "created": "2026-06-12",
+  "derived_from": [
+    "model-roster-v2-operating-model-2026-06-09.md",
+    "Epistemic Constraint System v1.2 (Matt Couch, spec authority)",
+    "docs/specs/TOKEN_EFFICIENCY_SPEC.md"
+  ],
+  "authority_note": "Vendor-neutral. All AI surface instruction files are generated clients of this repo. See scripts/generate-surface-stubs.ps1.",
+  "context_budgets_tokens": {
+    "routing_triage": 2000,
+    "bulk_extraction": 8000,
+    "simple_coding": 8000,
+    "repo_coding": 60000,
+    "agentic_repair": 60000,
+    "deep_debugging": 80000,
+    "architecture": 120000,
+    "long_context_synthesis": 150000,
+    "default": 30000
+  },
+  "ceremony_tiers": {
+    "full_rigor_when": ["architecture", "security_review", "high-stakes decision", "final critique", "business_sensitive", "public_content", "consequential_factual_claims", "artifact_creation"],
+    "full_rigor_loads": ["epistemic-rules.md", "artifact-rules.md"],
+    "minimal_when": ["routing_triage", "bulk_extraction", "schema_validation", "simple_coding", "lookups", "conversation"]
+  },
+  "always_on_rules": [
+    "Read existing project docs and memory before any external research; research only genuine gaps.",
+    "Locate with search, then read only the needed section; never re-read content already in context.",
+    "Filter all command output; never dump logs, listings, or raw responses.",
+    "Execute the stated directive only; note adjacent opportunities in one line without executing.",
+    "Answer first; no preamble, no recap, no self-summary; never echo written file contents into chat.",
+    "Edit in place with targeted diffs; one canonical document per topic; retire predecessors in the same action that creates successors.",
+    "Deterministic work (count, sort, diff, transform, math) goes to a script; only results enter context.",
+    "A failed approach changes or stops after one retry; no identical retry loops.",
+    "No hard-coded temporal state in durable artifacts; compute dates at runtime; date-stamp volatile facts.",
+    "Cheapest adequate tool: API over DOM over screenshots; small model over large; script over model.",
+    "One session per task; persist durable conclusions to the canonical doc, then end clean.",
+    "Plans exceeding two non-read tool calls require explicit owner approval before execution."
+  ],
+  "stub_targets": {
+    "claude_code": "C:\\Users\\Couch\\.claude\\CLAUDE.md",
+    "codex_agents": "C:\\Users\\Couch\\AGENTS.md",
+    "gemini": "C:\\Users\\Couch\\.gemini\\GEMINI.md",
+    "cowork_global": "UI_MANAGED_OR_DISCOVERED_AT_GENERATION"
+  },
+  "measurement": {
+    "receipt_dir": "C:\\Users\\Couch\\dev\\ai-orchestrator\\.runtime\\orchestrator\\receipts",
+    "snapshot_prefix": "token-baseline-",
+    "cadence": "weekly"
+  }
+}

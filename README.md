@@ -1,6 +1,15 @@
-# AI Orchestrator — Consolidation Complete
+# AI Orchestrator
+
+> **Status:** see **[docs/STATUS.md](docs/STATUS.md)** and run `python -m orchestrator.cli.main spec-status`.
+> The "ALL 6 PHASES COMPLETE / 100%" framing below is a **historical 2026-06-10 migration record**;
+> those completion claims were row-count artifacts, not behavioral proof, and are superseded.
+> Current direction and finished-state: `.claude/plans/make-the-end-to-end-plan-linked-widget.md`.
+
+---
+
+## Historical: Consolidation migration (2026-06-10)
 **Date:** 2026-06-10  
-**Status:** ✅ ALL 6 PHASES COMPLETE  
+**Status:** historical migration log
 **Duration:** ~2 hours
 
 ---

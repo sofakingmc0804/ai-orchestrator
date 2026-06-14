@@ -1,4 +1,10 @@
-# Consolidation Status — COMPLETE
+# Consolidation Status — HISTORICAL (superseded)
+
+> ⚠️ **Superseded by [docs/STATUS.md](docs/STATUS.md).** This is a 2026-06-10
+> migration log. Its "ALL 6 PHASES COMPLETE / 100%" claims were computed by
+> counting database rows and files, not by behavioral proof; they do not reflect
+> working capability. For real status run `python -m orchestrator.cli.main spec-status`.
+
 **Created:** 2026-06-10  
 **Last Updated:** 2026-06-10 22:45 CT (Phase 6 COMPLETE)  
 **Status:** ✅ ALL 6 PHASES COMPLETE

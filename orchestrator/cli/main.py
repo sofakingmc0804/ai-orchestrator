@@ -24,6 +24,7 @@ from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.notifications.subscribers.runner import run_all_subscribers_once
 from orchestrator.process.recovery import repair_core_services
 from orchestrator.process.repair_retry import retry_open_repairs
+from orchestrator.reports.acceptance_battery import run_acceptance_battery
 from orchestrator.reports.owner_receipt import export_owner_receipt
 from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
@@ -84,6 +85,10 @@ async def _prove_adapter(settings: Settings, adapter_name: str, prompt: str, cap
     dispatcher = Dispatcher(settings, store, NotificationSpine(settings.notifications_path, store))
     result = await dispatcher.prove_adapter(adapter_name, prompt, capability_id=capability_id, allow_subscription=allow_subscription)
     return result.model_dump(mode="json")
+
+
+async def _acceptance_battery(settings: Settings) -> dict[str, object]:
+    return await run_acceptance_battery(settings)
 
 
 async def _add_selection(settings: Settings, path: str, kind: str, source: str = "cli") -> dict[str, object]:
@@ -329,6 +334,7 @@ def main() -> None:
     sub.add_parser("status")
     sub.add_parser("spec-status")
     sub.add_parser("owner-receipt")
+    sub.add_parser("acceptance-battery")
     token_flow = sub.add_parser("token-flow")
     token_flow.add_argument("--limit", type=int, default=50)
     token_backfill = sub.add_parser("token-backfill")
@@ -423,6 +429,8 @@ def main() -> None:
         result = asyncio.run(_spec_status(settings))
     elif args.cmd == "owner-receipt":
         result = asyncio.run(_owner_receipt(settings))
+    elif args.cmd == "acceptance-battery":
+        result = asyncio.run(_acceptance_battery(settings))
     elif args.cmd == "token-flow":
         result = asyncio.run(_token_flow(settings, args.limit))
     elif args.cmd == "token-backfill":

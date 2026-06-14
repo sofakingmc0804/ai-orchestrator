@@ -24,6 +24,19 @@ NAMED_ADAPTERS = {
     "lm-studio",
 }
 
+HEALTH_GATED_ADAPTERS = {
+    "lm-studio",
+}
+
+RETIRED_DOWNSTREAM_ADAPTERS = {
+    "hermes-agent",
+}
+
+HEALTH_DRIFT_STATES = {
+    "degraded",
+    "stopped",
+}
+
 
 CAPABILITY_TARGETS: list[dict[str, str]] = [
     {"id": "CT-01", "title": "Service Inventory"},
@@ -65,6 +78,23 @@ def _target(target_id: str, title: str, status: str, evidence: list[str], next_a
 
 def _has_file(settings: Settings, relative: str) -> bool:
     return (settings.repo_root / relative).exists()
+
+
+def _nonempty_selections(value: Any) -> bool:
+    """True when an intent carried at least one queued selection.
+
+    Used to prove a real selection -> dispatch round trip rather than mere
+    file existence of a capture script.
+    """
+    if not value:
+        return False
+    if isinstance(value, (list, tuple)):
+        return len(value) > 0
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(parsed, list) and len(parsed) > 0
 
 
 def _latest_latency_receipt(settings: Settings) -> dict[str, Any] | None:
@@ -110,6 +140,48 @@ def _latest_supervisor_restart_receipt(settings: Settings) -> dict[str, Any] | N
     return candidates[0][1] if candidates else None
 
 
+def _latest_json_receipt(settings: Settings, relative_dir: str, prefix: str) -> dict[str, Any] | None:
+    root = settings.home / relative_dir
+    if not root.exists():
+        return None
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for path in root.glob(f"{prefix}*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("proof_kind") != "live":
+            continue
+        payload["receipt_path"] = payload.get("receipt_path") or str(path)
+        candidates.append((str(payload.get("completed_at") or payload.get("generated_at") or path.stat().st_mtime), payload))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1] if candidates else None
+
+
+def _latest_autopilot_default_disabled_receipt(settings: Settings) -> dict[str, Any] | None:
+    receipt = _latest_json_receipt(settings, "autopilot", "default-disabled-")
+    if not receipt:
+        return None
+    scan_result = receipt.get("scan_result") if isinstance(receipt.get("scan_result"), dict) else {}
+    if receipt.get("default_enabled") is False and scan_result.get("enabled") is False and int(scan_result.get("queued") or 0) == 0:
+        return receipt
+    return None
+
+
+def _latest_platform_bones_receipt(settings: Settings) -> dict[str, Any] | None:
+    receipt = _latest_json_receipt(settings, "platform", "platform-bones-")
+    if not receipt:
+        return None
+    if (
+        receipt.get("windows_adapter") is True
+        and int(receipt.get("windows_process_count") or 0) > 0
+        and receipt.get("macos_stub_not_implemented") is True
+        and receipt.get("linux_stub_not_implemented") is True
+    ):
+        return receipt
+    return None
+
+
 def _jsonl_entries(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -138,6 +210,22 @@ def _subscriber_ok_count(settings: Settings, subscriber: str) -> int:
     return sum(1 for item in _jsonl_entries(settings.home / "subscribers" / f"{subscriber}.jsonl") if item.get("ok") is True)
 
 
+def _adapter_health_drift(services: list[dict[str, Any]]) -> dict[str, str]:
+    drift: dict[str, str] = {}
+    for service in services:
+        adapter_name = str(service.get("adapter_name") or "")
+        if adapter_name not in HEALTH_GATED_ADAPTERS or adapter_name in drift:
+            continue
+        health_state = str(service.get("health_state") or "").lower()
+        if health_state in HEALTH_DRIFT_STATES:
+            drift[adapter_name] = health_state
+    return drift
+
+
+def _dispatch_required_adapters() -> set[str]:
+    return NAMED_ADAPTERS - RETIRED_DOWNSTREAM_ADAPTERS
+
+
 async def evaluate_spec_status(settings: Settings, store: StateStore | None = None) -> dict[str, Any]:
     state = store or StateStore(settings)
     await state.initialize()
@@ -147,6 +235,7 @@ async def evaluate_spec_status(settings: Settings, store: StateStore | None = No
     selections = await state.list_selections()
     activity = await state.list_activity(limit=10)
     dispatches = await state.list_dispatches(limit=50)
+    live_completed = await state.list_live_proven_dispatches()
     attempts = await state.list_dispatch_attempts(limit=100)
     approvals = await state.list_pending_approvals()
     quota_state = await state.latest_quota_state()
@@ -159,12 +248,17 @@ async def evaluate_spec_status(settings: Settings, store: StateStore | None = No
     audit_log = await state.list_audit_log(limit=50)
 
     adapter_names = {str(s.get("adapter_name")) for s in services}
-    matched_adapters = sorted(adapter_names & NAMED_ADAPTERS)
-    missing_adapters = sorted(NAMED_ADAPTERS - adapter_names)
-    completed_dispatches = [d for d in dispatches if d.get("state") == "completed"]
-    dispatch_with_output = [d for d in completed_dispatches if d.get("output_path")]
-    proved_dispatch_adapters = {str(d.get("adapter_name")) for d in completed_dispatches if d.get("adapter_name") in NAMED_ADAPTERS}
-    unproved_dispatch_adapters = sorted(NAMED_ADAPTERS - proved_dispatch_adapters)
+    dispatch_required_adapters = _dispatch_required_adapters()
+    matched_adapters = sorted(adapter_names & dispatch_required_adapters)
+    missing_adapters = sorted(dispatch_required_adapters - adapter_names)
+    health_drift = _adapter_health_drift(services)
+    # Integrity floor: a dispatch is 'proven' only when this run persisted real
+    # adapter evidence (proof_kind='live'). Bare completed rows and hand-imported
+    # external proofs do not count.
+    completed_dispatches = live_completed
+    dispatch_with_output = [d for d in live_completed if d.get("output_path")]
+    proved_dispatch_adapters = {str(d.get("adapter_name")) for d in live_completed if d.get("adapter_name") in dispatch_required_adapters}
+    unproved_dispatch_adapters = sorted(dispatch_required_adapters - proved_dispatch_adapters)
     selection_sources = {str((s.get("payload") or {}).get("source") or "") for s in selections}
     selection_modes = {
         "browser" if selection_sources & {"ui", "browser-drop"} else "",
@@ -173,13 +267,12 @@ async def evaluate_spec_status(settings: Settings, store: StateStore | None = No
         "palette" if "command-palette" in selection_sources else "",
     }
     selection_modes.discard("")
-    selection_mechanisms = {
-        "browser": _has_file(settings, "orchestrator/ui/static/app.js"),
-        "cli": _has_file(settings, "orchestrator/cli/main.py"),
-        "context_menu": _has_file(settings, "scripts/install-context-menu.ps1") and _has_file(settings, "scripts/queue-selection.ps1"),
-        "palette": _has_file(settings, "scripts/queue-command-palette-selection.ps1"),
-    }
-    proved_selection_modes = {mode for mode in selection_modes if selection_mechanisms.get(mode)}
+    # A mode counts only when a real selection row with that source exists AND a
+    # live-proven dispatch actually consumed a queued selection (round trip).
+    # File existence of a capture script is not proof of capture.
+    captured_selection_modes = set(selection_modes)
+    selection_consumed = any(_nonempty_selections(d.get("intent_selections")) for d in live_completed)
+    proved_selection_modes = captured_selection_modes if selection_consumed else set()
     notification_entries = _jsonl_entries(settings.notifications_path)
     approval_requests = [n for n in notification_entries if n.get("severity") == "approval_request"]
     approval_proved = bool(approval_requests) and _has_file(settings, "orchestrator/ui/static/app.js")
@@ -197,23 +290,48 @@ async def evaluate_spec_status(settings: Settings, store: StateStore | None = No
     latest_latency = _latest_latency_receipt(settings)
     latency_passed = bool(latest_latency and latest_latency.get("passed") is True and float(latest_latency.get("elapsed_seconds") or 9999) < 60)
     latest_supervisor_restart = _latest_supervisor_restart_receipt(settings)
+    latest_autopilot_disabled = _latest_autopilot_default_disabled_receipt(settings)
+    latest_platform_bones = _latest_platform_bones_receipt(settings)
     expected_contracts = NAMED_ADAPTERS | {"synthetic-test-service"}
     contract_adapters = existing_contract_adapters()
     missing_contracts = sorted(expected_contracts - contract_adapters)
+    synthetic_dispatch_proven = any(str(d.get("adapter_name") or "") == "synthetic-test-service" for d in live_completed)
+    adapter_next_action = (
+        "Run `python -m orchestrator.cli.main repair-services`, refresh discovery, and re-prove Hermes/LM Studio before trusting adapter coverage."
+        if health_drift
+        else "Implement and prove dispatch for each named adapter without metered API fallback."
+    )
 
     rows: list[dict[str, Any]] = [
         _target("CT-01", "Service Inventory", "passed" if services else "missing", [f"{len(services)} service rows"], "Run discovery refresh."),
         _target("CT-02", "Capability Inventory", "passed" if capabilities and not missing_contracts else "missing", [f"{len(capabilities)} capability rows", f"contract_yaml={len(contract_adapters)}"], "Register adapter capability contracts."),
         _target("CT-03", "Activity Stream", "passed" if activity else "partial", [f"{len(activity)} recent activity rows"], "Continue feeding normalized events from all sources."),
         _target("CT-04", "Auth and Quota State", "passed" if quota_state else "partial", [f"{len(quota_state)} providers with latest quota state", f"{len(quota_ledger)} quota ledger rows sampled"], "Probe providers that do not expose quota yet."),
-        _target("CT-05", "Selection Capture", "passed" if {"browser", "cli", "context_menu", "palette"}.issubset(proved_selection_modes) else "partial", [f"{len(selections)} queued selections", f"proved_modes={', '.join(sorted(proved_selection_modes)) or 'none'}", f"mechanisms={selection_mechanisms}"], "Prove browser/drop, CLI, Windows context-menu, and command-palette capture."),
+        _target("CT-05", "Selection Capture", "passed" if {"browser", "cli", "context_menu", "palette"}.issubset(proved_selection_modes) else "partial", [f"{len(selections)} queued selections", f"captured_modes={', '.join(sorted(captured_selection_modes)) or 'none'}", f"selection_consumed_by_dispatch={selection_consumed}"], "Build the selection->dispatch consumer, then prove browser/drop, CLI, context-menu, and palette capture end to end."),
         _target("CT-06", "Intent Capture", "passed" if _has_file(settings, "orchestrator/intent/interpreter.py") else "missing", ["intent interpreter module present"], "Add one-question clarification flow for ambiguous intents."),
         _target("CT-07", "Dispatch Single Intent", "passed" if completed_dispatches else "partial", [f"{len(completed_dispatches)} completed dispatches"], "Run an end-to-end dispatch if none exist in this state DB."),
         _target("CT-08", "Dispatch Decision Transparency", "passed" if activity else "partial", ["routing decisions are included in activity when present"], "Expose full routing decision detail per dispatch in UI."),
         _target("CT-09", "Output Delivery Convention", "passed" if dispatch_with_output else "partial", [f"{len(dispatch_with_output)} completed dispatches with output_path"], "Prove project-root ORCHESTRATOR_OUTPUT layout for latest dispatch."),
         _target("CT-10", "Approval Gate", "passed" if approval_proved else "partial", [f"{len(approvals)} pending approvals", f"{len(approval_requests)} approval_request notifications recorded"], "Run high-tier approval and approve/reject proof through UI or API."),
         _target("CT-11", "Notification Spine", "passed" if notification_subscribers_proved else "partial", [f"notifications path exists={notifications_file}", f"in_app_receipts={in_app_receipts}/ok={in_app_ok}", f"email_receipts={email_receipts}/ok={email_ok}", f"tray_receipts={tray_receipts}/ok={tray_ok}"], "Run subscribers and prove tray, email, and in-app delivery receipts."),
-        _target("CT-12", "Adapter For Every Discovered Service", "passed" if not missing_adapters and not unproved_dispatch_adapters else "partial", [f"{len(matched_adapters)}/12 named adapters registered", f"dispatch_proven={len(proved_dispatch_adapters)}/12", f"unproved_dispatch={', '.join(unproved_dispatch_adapters) if unproved_dispatch_adapters else 'none'}"], "Implement and prove dispatch for each named adapter without metered API fallback."),
+        _target(
+            "CT-12",
+            "Adapter For Every Discovered Service",
+            "passed" if not missing_adapters and not unproved_dispatch_adapters and not health_drift else "partial",
+            [
+                f"{len(matched_adapters)}/{len(dispatch_required_adapters)} downstream adapters registered",
+                f"dispatch_proven={len(proved_dispatch_adapters)}/{len(dispatch_required_adapters)}",
+                f"unproved_dispatch={', '.join(unproved_dispatch_adapters) if unproved_dispatch_adapters else 'none'}",
+                f"retired_downstream={', '.join(sorted(RETIRED_DOWNSTREAM_ADAPTERS & NAMED_ADAPTERS)) or 'none'}",
+                "health_drift="
+                + (
+                    ", ".join(f"{adapter}:{state}" for adapter, state in sorted(health_drift.items()))
+                    if health_drift
+                    else "none"
+                ),
+            ],
+            adapter_next_action,
+        ),
         _target("CT-13", "Project Discovery", "passed" if projects else "missing", [f"{len(projects)} projects registered"], "Expand scan roots and classify project consequence tiers."),
         _target(
             "CT-14",
@@ -232,18 +350,44 @@ async def evaluate_spec_status(settings: Settings, store: StateStore | None = No
         ),
         _target("CT-17", "Quota Awareness", "passed" if quota_state else "partial", [f"{len(quota_state)} providers in quota state"], "Enforce reserve thresholds in router for every billable provider."),
         _target("CT-18", "Working Memory Per Project", "passed" if working_memory else "partial", [f"{len(working_memory)} working-memory records"], "Refresh memory after every output and approval transition."),
-        _target("CT-19", "Autopilot Infrastructure", "passed" if standing_orders or _has_file(settings, "orchestrator/autopilot/watchers.py") else "missing", [f"{len(standing_orders)} standing orders", "autopilot modules present"], "Keep default disabled and expand sandbox tests."),
-        _target("CT-20", "Cross-OS Bones", "passed" if all(_has_file(settings, f"orchestrator/platform/{name}.py") for name in ["base", "windows", "macos", "linux"]) else "partial", ["platform base/windows/macos/linux files checked"], "Keep macOS/Linux as stable stubs until v2."),
+        _target(
+            "CT-19",
+            "Autopilot Infrastructure",
+            "passed" if latest_autopilot_disabled else "partial",
+            [
+                f"{len(standing_orders)} standing orders",
+                f"default_disabled_receipt={latest_autopilot_disabled.get('receipt_path') if latest_autopilot_disabled else 'none'}",
+                f"default_enabled={latest_autopilot_disabled.get('default_enabled') if latest_autopilot_disabled else 'unproved'}",
+            ],
+            "Run the acceptance battery default-disabled proof; keep autopilot disabled unless a folder policy explicitly enables it.",
+        ),
+        _target(
+            "CT-20",
+            "Cross-OS Bones",
+            "passed" if latest_platform_bones else "partial",
+            [
+                f"platform_bones_receipt={latest_platform_bones.get('receipt_path') if latest_platform_bones else 'none'}",
+                f"windows_process_count={latest_platform_bones.get('windows_process_count') if latest_platform_bones else 'unproved'}",
+                "macos_linux_stubs="
+                + (
+                    "proved"
+                    if latest_platform_bones
+                    else "unproved"
+                ),
+            ],
+            "Run the acceptance battery platform proof; macOS/Linux must remain explicit NotImplemented stubs in v1.",
+        ),
         _target(
             "CT-21",
             "Universal Service Registration",
-            "passed" if _has_file(settings, "orchestrator/adapters/base.py") and _has_file(settings, "orchestrator/registry/contracts.py") and not missing_contracts else "missing",
+            "passed" if _has_file(settings, "orchestrator/adapters/base.py") and _has_file(settings, "orchestrator/registry/contracts.py") and not missing_contracts and synthetic_dispatch_proven else "partial",
             [
                 "adapter protocol and contract loader present",
                 f"contract_yaml={len(contract_adapters)}/{len(expected_contracts)}",
                 f"missing_contracts={', '.join(missing_contracts) if missing_contracts else 'none'}",
+                f"synthetic_dispatch_proven={synthetic_dispatch_proven}",
             ],
-            "Add one adapter plus one capability contract YAML without router or dispatcher changes.",
+            "Run the synthetic-test-service adapter proof through the dispatcher and keep contract registration data-only.",
         ),
         _target(
             "CT-22",

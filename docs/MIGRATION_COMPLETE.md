@@ -1,6 +1,11 @@
-# AI Orchestrator — Consolidation Complete
+# AI Orchestrator — Consolidation Migration (HISTORICAL)
+
+> ⚠️ **Superseded by [STATUS.md](STATUS.md).** Historical 2026-06-10 migration
+> report. The "COMPLETE / 100%" claims were row-count/file-existence artifacts,
+> not behavioral proof. Real status: `python -m orchestrator.cli.main spec-status`.
+
 **Date:** 2026-06-10  
-**Status:** ✅ COMPLETE  
+**Status:** historical migration log
 **Duration:** ~2 hours (6 phases)  
 **Started:** 2026-06-10 20:00 CT  
 **Completed:** 2026-06-10 22:45 CT
