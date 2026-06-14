@@ -16,10 +16,11 @@ Phase: 2 (Routing Integration)
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from orchestrator.models import BillingClass, ConsequenceTier, Intent, RoutingDecision
-from orchestrator.provider_aliases import lookup_by_provider
+from orchestrator.provider_aliases import lookup_by_provider, provider_keys
 from orchestrator.routing.engine import (
     BILLING_ORDER,
     FORBIDDEN,
@@ -36,6 +37,11 @@ from orchestrator.routing.engine import (
 
 CONTRACT_BLOCKLIST = {"metered_extra_cost", "third_party_metered", "unknown_cost"}
 CODING_MODEL_HINTS = ("coder", "code", "codex", "deepseek", "qwen")
+SUBSCRIPTION_SNAPSHOT_MAX_AGE = timedelta(hours=24)
+
+
+def _as_dict(row: Any) -> dict[str, Any]:
+    return row if isinstance(row, dict) else dict(row)
 
 
 def _json_list(row: dict[str, Any], key: str) -> list[Any]:
@@ -62,6 +68,120 @@ def _json_dict(row: dict[str, Any], key: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _snapshot_is_stale(snapshot: dict[str, Any]) -> bool:
+    checked_at = _parse_time(snapshot.get("checked_at") or snapshot.get("probed_at"))
+    if checked_at is None:
+        return False
+    return datetime.now(UTC) - checked_at > SUBSCRIPTION_SNAPSHOT_MAX_AGE
+
+
+def _latest_subscription_snapshots(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    for item in rows or []:
+        row = _as_dict(item)
+        service_id = str(row.get("service_id") or "")
+        if not service_id:
+            continue
+        current = latest.get(service_id)
+        if current is None:
+            latest[service_id] = row
+            continue
+        row_time = _parse_time(row.get("checked_at")) or datetime.min.replace(tzinfo=UTC)
+        current_time = _parse_time(current.get("checked_at")) or datetime.min.replace(tzinfo=UTC)
+        if row_time >= current_time:
+            latest[service_id] = row
+    return list(latest.values())
+
+
+def _budget_row_from_probe(probe: dict[str, Any], source: str = "budget_probes") -> dict[str, Any]:
+    provider_id = str(probe.get("provider_id") or "")
+    return {
+        "provider_id": provider_id,
+        "remaining": int(probe.get("remaining") or 0),
+        "limit": int(probe.get("limit") or probe.get("units_limit") or 0),
+        "units_limit": int(probe.get("limit") or probe.get("units_limit") or 0),
+        "ok": bool(probe.get("ok")) if probe.get("ok") is not None else None,
+        "probed_at": probe.get("probed_at"),
+        "error": probe.get("error"),
+        "source": source,
+    }
+
+
+def _budget_row_from_subscription_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    service_id = str(snapshot.get("service_id") or "")
+    stale = _snapshot_is_stale(snapshot)
+    ok = bool(snapshot.get("ok")) and not stale
+    error = snapshot.get("error")
+    if stale:
+        error = "subscription usage snapshot is stale"
+    return {
+        "provider_id": service_id,
+        "service_id": service_id,
+        "remaining": int(snapshot.get("tokens_remaining") or 0),
+        "limit": int(snapshot.get("tokens_limit") or 0),
+        "units_limit": int(snapshot.get("tokens_limit") or 0),
+        "ok": ok,
+        "probed_at": snapshot.get("checked_at"),
+        "checked_at": snapshot.get("checked_at"),
+        "error": error,
+        "source": "subscription_usage_snapshots" if ok else "subscription_usage_snapshots:unusable",
+        "status": snapshot.get("status"),
+    }
+
+
+def _budget_lookup_from_sources(
+    subscription_usage_snapshots: list[dict[str, Any]] | None,
+    budget_probes: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for probe in budget_probes or []:
+        row = _budget_row_from_probe(_as_dict(probe))
+        provider_id = str(row.get("provider_id") or "")
+        if not provider_id:
+            continue
+        for key in provider_keys(provider_id):
+            lookup.setdefault(key, row)
+
+    unusable_snapshots: dict[str, dict[str, Any]] = {}
+    live_snapshots: dict[str, dict[str, Any]] = {}
+    for snapshot in _latest_subscription_snapshots(subscription_usage_snapshots):
+        row = _budget_row_from_subscription_snapshot(snapshot)
+        service_id = str(row.get("service_id") or "")
+        if not service_id:
+            continue
+        target = live_snapshots if row.get("ok") else unusable_snapshots
+        for key in provider_keys(service_id):
+            target[key] = row
+
+    for key, row in unusable_snapshots.items():
+        if key in lookup:
+            fallback = dict(lookup[key])
+            fallback["source"] = "budget_probes:fallback"
+            fallback["fallback_reason"] = row.get("error") or row.get("status") or "subscription snapshot unusable"
+            lookup[key] = fallback
+        else:
+            lookup[key] = row
+    lookup.update(live_snapshots)
+    return lookup
 
 
 def _job_required_capabilities(job_class_spec: dict[str, Any] | None) -> set[str]:
@@ -263,6 +383,7 @@ def route_with_workers(
     project_policy: dict[str, Any] | None = None,
     score_contract: dict[str, Any] | None = None,
     budget_probes: list[dict[str, Any]] | None = None,
+    subscription_usage_snapshots: list[dict[str, Any]] | None = None,
     job_class_spec: dict[str, Any] | None = None,
     token_usage_summary: dict[str, dict[str, Any]] | None = None,
 ) -> RoutingDecision:
@@ -277,7 +398,8 @@ def route_with_workers(
         quota_state: Budget/quota state per provider
         project_policy: Project-specific routing policy
         score_contract: Benchmark score contract
-        budget_probes: Fresh budget probe results from DB
+        budget_probes: Legacy budget probe fallback rows from DB
+        subscription_usage_snapshots: Live subscription usage snapshots from DB
 
     Returns:
         RoutingDecision with chosen worker_id and reasoning
@@ -286,16 +408,7 @@ def route_with_workers(
     project_policy = project_policy or {}
     token_usage_summary = token_usage_summary or {}
 
-    # Build budget probe lookup
-    budget_lookup: dict[str, dict[str, Any]] = {}
-    if budget_probes:
-        for probe in budget_probes:
-            budget_lookup[probe['provider_id']] = {
-                'remaining': probe['remaining'] or 0,
-                'limit': probe['limit'] or 0,
-                'ok': probe['ok'],
-                'probed_at': probe['probed_at'],
-            }
+    budget_lookup = _budget_lookup_from_sources(subscription_usage_snapshots, budget_probes)
 
     required_caps = _job_required_capabilities(job_class_spec)
     preferred_stats = _job_preferred_stats(job_class_spec)
@@ -381,6 +494,7 @@ def route_with_workers(
         stat_score = _preferred_stat_score(worker, preferred_stats)
         speed_score = _speed_score(worker)
         budget_fit = _budget_score(worker, budget_lookup)
+        budget_source = lookup_by_provider(str(worker.get("provider_id") or worker.get("surface") or ""), budget_lookup)
         contract_score = _contract_pressure_score(worker)
         model_fit = _model_fit_score(worker, job_class)
         token_score = _token_efficiency_score(worker, token_usage_summary)
@@ -403,6 +517,7 @@ def route_with_workers(
         row["preferred_stat_score"] = stat_score
         row["speed_score"] = speed_score
         row["budget_score"] = budget_fit
+        row["budget_source"] = str((budget_source or {}).get("source") or "none")
         row["contract_pressure_score"] = contract_score
         row["model_fit_score"] = model_fit
         row["token_efficiency_score"] = token_score
@@ -455,6 +570,7 @@ def route_intent_worker_aware(
     project_policy: dict[str, Any] | None = None,
     job_class_spec: dict[str, Any] | None = None,
     budget_probes: list[dict[str, Any]] | None = None,
+    subscription_usage_snapshots: list[dict[str, Any]] | None = None,
     token_usage_summary: dict[str, dict[str, Any]] | None = None,
 ) -> RoutingDecision:
     """Route intent using worker-aware routing.
@@ -468,6 +584,7 @@ def route_intent_worker_aware(
         job_class: Classified job class
         quota_state: Budget state
         project_policy: Project policy
+        subscription_usage_snapshots: Live subscription usage snapshots
 
     Returns:
         RoutingDecision with chosen worker
@@ -484,6 +601,7 @@ def route_intent_worker_aware(
         quota_state,
         project_policy,
         budget_probes=budget_probes,
+        subscription_usage_snapshots=subscription_usage_snapshots,
         job_class_spec=job_class_spec,
         token_usage_summary=token_usage_summary,
     )

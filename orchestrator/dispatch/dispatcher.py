@@ -122,7 +122,8 @@ class Dispatcher:
         # Phase 2: Load workers from DB
         workers = await self.store.db.fetch("SELECT * FROM worker_cards")
         job_class_spec = await self.store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", job_class)
-        budget_probes = await self.store.db.fetch("SELECT * FROM budget_probes")
+        subscription_usage_snapshots = await self.store.list_subscription_usage_snapshots()
+        budget_probes = await self.store.list_budget_probes()
         token_usage_summary = await self.store.token_usage_summary()
 
         quota_state = await self.store.latest_quota_state()
@@ -136,6 +137,7 @@ class Dispatcher:
                 project_policy,
                 job_class_spec=job_class_spec,
                 budget_probes=budget_probes,
+                subscription_usage_snapshots=subscription_usage_snapshots,
                 token_usage_summary=token_usage_summary,
             )
         else:
@@ -243,7 +245,19 @@ class Dispatcher:
                         attempts.append(attempt)
                         await self.store.record_token_usage(token_usage)
                         await self.store.record_dispatch_attempt(attempt)
-                        return await self._complete_dispatch(dispatch_id, intent, adapter_name, attempt_envelope, out_root, result, decision, attempts, job_class, budget_probes)
+                        return await self._complete_dispatch(
+                            dispatch_id,
+                            intent,
+                            adapter_name,
+                            attempt_envelope,
+                            out_root,
+                            result,
+                            decision,
+                            attempts,
+                            job_class,
+                            budget_probes,
+                            subscription_usage_snapshots,
+                        )
                     last_error = str(result.get("error") or "adapter returned ok=false").strip() or "adapter returned ok=false"
                     repair_action = str(result.get("repair_action") or "Inspect adapter logs and provider configuration.")
                 except Exception as exc:
@@ -493,6 +507,7 @@ class Dispatcher:
         attempts: list[dict[str, Any]],
         job_class: str,
         budget_probes: list[dict[str, Any]],
+        subscription_usage_snapshots: list[dict[str, Any]] | None = None,
     ) -> DispatchResult:
         result_path = out_root / "result.txt"
         receipt_path = out_root / "receipt.json"
@@ -520,7 +535,18 @@ class Dispatcher:
             "worker_id": chosen_candidate.get("worker_id"),
             "job_class": job_class,
             "routing_reasoning": decision.reasoning,
-            "budget_state_json": json.dumps({str(row.get("provider_id")): row for row in budget_probes}, default=str),
+            "budget_state_json": json.dumps(
+                {
+                    "subscription_usage_snapshots": subscription_usage_snapshots or [],
+                    "budget_probes_fallback": budget_probes,
+                },
+                default=str,
+            ),
+            # Integrity: this code path only runs after a real adapter.dispatch()
+            # returned ok=True, so persist the raw provider evidence and stamp it
+            # 'live'. spec-status counts a dispatch as proven only on this stamp.
+            "raw_output": (json.dumps(result.get("raw"), default=str)[:20000] if result.get("raw") is not None else text[:20000]),
+            "proof_kind": "live",
         }
         skill_hook_plan = envelope.get("skill_hook_plan") if isinstance(envelope.get("skill_hook_plan"), dict) else {}
         receipt.update(

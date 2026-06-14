@@ -208,7 +208,8 @@ async def cmd_route(args: argparse.Namespace) -> None:
 
     workers = await store.db.fetch("SELECT * FROM worker_cards")
     quota_state = await store.latest_quota_state()
-    budget_probes = await store.db.fetch("SELECT * FROM budget_probes")
+    subscription_usage_snapshots = await store.list_subscription_usage_snapshots()
+    budget_probes = await store.list_budget_probes()
     token_usage_summary = await store.token_usage_summary()
     intent = parse_intent(args.text)
     decision = route_with_workers(
@@ -217,6 +218,7 @@ async def cmd_route(args: argparse.Namespace) -> None:
         args.job_class,
         quota_state=quota_state,
         budget_probes=budget_probes,
+        subscription_usage_snapshots=subscription_usage_snapshots,
         job_class_spec=job,
         token_usage_summary=token_usage_summary,
     )

@@ -11,6 +11,12 @@ PROVIDER_DISPLAY_ALIASES = {
 }
 
 PROVIDER_ROOT_ALIASES = {
+    "openai_chatgpt": "codex",
+    "anthropic_claude": "claude",
+    "github_copilot": "github_copilot",
+    "google_gemini": "gemini",
+    "nous_hermes": "nous",
+    "ollama_cloud": "ollama",
     "ollama-local": "ollama",
     "ollama-http": "ollama",
     "ollama-cli": "ollama",
@@ -25,6 +31,15 @@ PROVIDER_ROOT_ALIASES = {
     "codex-cli": "codex",
     "hermes-nous": "nous",
     "hermes-agent": "nous",
+}
+
+SUBSCRIPTION_SERVICE_PROVIDER_ALIASES = {
+    "openai_chatgpt": ("codex", "codex-chatgpt", "codex-cli", "openai", "chatgpt"),
+    "anthropic_claude": ("claude", "claude-max", "claude-code-cli", "anthropic"),
+    "github_copilot": ("github_copilot", "github-copilot", "copilot-gh", "copilot-vscode"),
+    "google_gemini": ("gemini", "gemini-cli", "gemini-oauth", "google-gemini"),
+    "nous_hermes": ("nous", "hermes-nous", "hermes-agent", "nous-portal"),
+    "ollama_cloud": ("ollama", "ollama-cloud"),
 }
 
 
@@ -47,6 +62,12 @@ def provider_keys(provider: str) -> tuple[str, ...]:
     root = PROVIDER_ROOT_ALIASES.get(canonical) or PROVIDER_ROOT_ALIASES.get(canonical.replace("_", "-"))
     if root:
         candidates.extend([root, root.replace("-", "_"), root.replace("_", "-")])
+    service_aliases = SUBSCRIPTION_SERVICE_PROVIDER_ALIASES.get(canonical) or SUBSCRIPTION_SERVICE_PROVIDER_ALIASES.get(
+        canonical.replace("-", "_")
+    )
+    if service_aliases:
+        for alias in service_aliases:
+            candidates.extend([alias, alias.replace("-", "_"), alias.replace("_", "-")])
     return tuple(dict.fromkeys(item for item in candidates if item))
 
 
