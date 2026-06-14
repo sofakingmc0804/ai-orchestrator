@@ -2,7 +2,7 @@
 ## Context
 This machine (DESKTOP-LOOCRQ2) is the SOLE execution, authority, and state
 surface for Example's operating system (ADR-028, 2026-04-16). There is no MSI and
-no second machine. Authority is the local repo at `C:\Users\Couch\example-rebuild`;
+no second machine. The workspace you are working in is the authority for its own work (this ai-orchestrator repo included); `example-rebuild` is dormant and is not the authority;
 `D:\SharedRoot\Workspace\` is OUT of the control plane â€” never read
 or write it as part of a runtime contract.
 
