@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import threading
+import argparse
+import asyncio
+import json
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from orchestrator.models import DispatchResult
 from orchestrator.config import Settings
+from orchestrator.cli.governance import cmd_route
 import orchestrator.ui.simple_server as simple_server
 import orchestrator.ui.server as fastapi_server
 from orchestrator.ui.simple_server import make_handler
@@ -310,3 +314,77 @@ def test_main_does_not_silently_fallback_to_simple_server(monkeypatch: pytest.Mo
 
     with pytest.raises(TypeError, match="on_startup"):
         main_module.main()
+
+
+def test_cli_and_api_route_return_identical_brain_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def fake_services() -> tuple[list[Any], list[Any]]:
+        return [], []
+
+    monkeypatch.setattr(fastapi_server, "discover_services_and_capabilities", fake_services)
+    monkeypatch.setattr(fastapi_server, "discover_projects", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(fastapi_server, "start_due_scheduler_thread", lambda _settings: object())
+    settings = Settings(
+        home=tmp_path,
+        state_path=tmp_path / "state.sqlite",
+        notifications_path=tmp_path / "notifications.jsonl",
+        log_dir=tmp_path / "logs",
+        repo_root=tmp_path,
+    )
+    app = fastapi_server.create_app(settings)
+
+    with TestClient(app) as client:
+        store = StateStore(settings)
+
+        async def seed() -> None:
+            await store.db.execute(
+                "INSERT INTO job_classes(job_class, required_capabilities_json, preferred_stats_json, local_first, approval_floor) VALUES(?,?,?,?,?)",
+                "repo_coding",
+                '["coding", "tools"]',
+                "{}",
+                0,
+                "local_resource",
+            )
+            await store.db.execute(
+                """
+                INSERT INTO worker_cards(worker_id, model_id, base_model, surface, provider_id, contract_type,
+                  capabilities_json, tools_json, modalities_json, stats_json, best_jobs_json, avoid_jobs_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                "qwen@ollama-local",
+                "qwen",
+                "qwen",
+                "ollama-local",
+                "ollama-local",
+                "local_resource",
+                '["coding"]',
+                '["tools"]',
+                '["text"]',
+                '{"coding": 8, "speed": 7, "stability": 7}',
+                '["repo_coding"]',
+                "[]",
+            )
+
+        asyncio.run(seed())
+        api_payload = client.post("/api/route", json={"text": "fix this repo bug", "job_class": "repo_coding"}).json()
+
+        asyncio.run(
+            cmd_route(
+                argparse.Namespace(
+                    settings=settings,
+                    job_class="repo_coding",
+                    text="fix this repo bug",
+                    dry_run=True,
+                    execute=False,
+                    approve=False,
+                )
+            )
+        )
+        cli_payload = json.loads(capsys.readouterr().out)
+
+    assert cli_payload == api_payload
+    assert cli_payload["decision"]["chosen_adapter"] == "ollama-http"
+    assert cli_payload["ranked_ladder"][0]["worker_id"] == "qwen@ollama-local"

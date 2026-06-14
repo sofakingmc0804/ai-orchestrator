@@ -10,9 +10,8 @@ from typing import Any
 
 from orchestrator.config import Settings
 from orchestrator.dispatch.dispatcher import Dispatcher
-from orchestrator.intent.interpreter import parse_intent
 from orchestrator.notifications.spine import NotificationSpine
-from orchestrator.routing.worker_routing import route_with_workers
+from orchestrator.routing.brain import route_brain
 from orchestrator.state.store import StateStore
 
 
@@ -197,89 +196,12 @@ async def cmd_route(args: argparse.Namespace) -> None:
     store = StateStore(settings)
     await store.initialize()
 
-    # Load job class requirements
-    job = await store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", args.job_class)
-    if not job:
-        print(f"Job class not found: {args.job_class}")
-        known = await store.db.fetch("SELECT job_class FROM job_classes ORDER BY job_class")
-        print(f"Known job classes: {', '.join(r['job_class'] for r in known)}")
-        await store.close()
-        return
-
-    workers = await store.db.fetch("SELECT * FROM worker_cards")
-    quota_state = await store.latest_quota_state()
-    subscription_usage_snapshots = await store.list_subscription_usage_snapshots()
-    budget_probes = await store.list_budget_probes()
-    token_usage_summary = await store.token_usage_summary()
-    operation_quality_scores = await store.load_live_operation_quality_scores()
-    intent = parse_intent(args.text)
-    decision = route_with_workers(
-        intent,
-        workers,
-        args.job_class,
-        quota_state=quota_state,
-        budget_probes=budget_probes,
-        subscription_usage_snapshots=subscription_usage_snapshots,
-        job_class_spec=job,
-        token_usage_summary=token_usage_summary,
-        operation_quality_scores=operation_quality_scores,
-    )
-
-    if not decision.chosen_adapter:
-        print(f"\nNo suitable workers found for job class: {args.job_class}")
-        if decision.candidates_rejected:
-            print(f"Rejected: {len(decision.candidates_rejected)}")
-            for row in decision.candidates_rejected[:5]:
-                print(f"  - {row.get('worker_id')}: {row.get('rejected_reason')}")
-        await store.close()
-        return
-
-    chosen = decision.candidates_considered[0]
-    required_caps = set(json.loads(job['required_capabilities_json']))
-    worker_caps = set()
-    for key in ("capabilities_json", "tools_json", "modalities_json"):
-        worker_caps.update(json.loads(chosen.get(key) or "[]"))
-
-    print(f"\n{'='*80}")
-    print(f"Routing Decision")
-    print(f"{'='*80}")
-    print(f"Job Class:      {args.job_class}")
-    print(f"Intent Text:    {args.text}")
-    print(f"Mode:           {'DRY RUN' if args.dry_run else 'EXECUTE'}")
-    print(f"\nChosen Worker:  {chosen['worker_id']}")
-    print(f"Adapter:        {chosen['adapter_name']}")
-    print(f"Base Model:     {chosen['base_model']}")
-    print(f"Surface:        {chosen['surface']}")
-    print(f"Contract:       {chosen['contract_type']}")
-    print(f"Score:          {chosen.get('composite_score', 0):.2f}")
-
-    print(f"\nRequired Capabilities: {', '.join(required_caps)}")
-    caps_matched = required_caps & worker_caps
-    print(f"Matched:               {', '.join(caps_matched)}")
-
-    if len(decision.candidates_considered) > 1:
-        print(f"\nAlternatives Considered ({len(decision.candidates_considered)-1}):")
-        for i, candidate in enumerate(decision.candidates_considered[1:4], 1):
-            print(f"  {i}. {candidate['worker_id']} (score: {candidate.get('composite_score', 0):.2f})")
-
-    print(f"\nReasoning:")
-    print(f"  {decision.reasoning}")
-
-    if args.dry_run:
-        print("\nDry run complete. Use --execute to dispatch.")
-    else:
+    payload = await route_brain(store, text=args.text, job_class=args.job_class)
+    if getattr(args, "execute", False) and payload.get("state") == "produced":
         dispatcher = Dispatcher(settings, store, NotificationSpine(settings.notifications_path, store))
         result = await dispatcher.dispatch_text(args.text, job_class_override=args.job_class)
-        print("\nExecute result:")
-        print(f"  State:        {result.state}")
-        print(f"  Dispatch ID:  {result.dispatch_id}")
-        print(f"  Adapter:      {result.adapter_name}")
-        print(f"  Output Path:  {result.output_path}")
-        if result.error:
-            print(f"  Error:        {result.error}")
-
-    print(f"{'='*80}\n")
-
+        payload["execute_result"] = result.model_dump(mode="json")
+    print(json.dumps(payload, indent=2))
     await store.close()
 
 

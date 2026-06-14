@@ -17,13 +17,11 @@ from orchestrator.discovery.budget_probes import probe_to_dict, run_all_probes
 from orchestrator.discovery.projects import discover_projects
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.dispatch.dispatcher import Dispatcher
-from orchestrator.governance.job_classifier import classify_with_fallback
-from orchestrator.intent.interpreter import parse_intent
 from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.notifications.subscribers.runner import run_all_subscribers_once
 from orchestrator.process.recovery import repair_core_services
 from orchestrator.process.repair_retry import retry_open_repairs
-from orchestrator.routing.worker_routing import route_intent_worker_aware
+from orchestrator.routing.brain import route_brain
 from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
 from orchestrator.scheduler.cron import start_due_scheduler_thread
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
@@ -226,29 +224,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/route")
     async def route(req: RouteRequest) -> dict[str, object]:
-        classification = classify_with_fallback(req.text, req.job_class)
-        job_class = str(classification["job_class"])
-        intent = parse_intent(req.text, source="ui-route")
-        job_spec = await store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", job_class)
-        workers = await store.db.fetch("SELECT * FROM worker_cards")
-        decision = route_intent_worker_aware(
-            intent,
-            workers,
-            job_class,
-            quota_state=await store.latest_quota_state(),
-            project_policy={},
-            job_class_spec=job_spec,
-            budget_probes=await store.list_budget_probes(),
-            subscription_usage_snapshots=await store.list_subscription_usage_snapshots(),
-            token_usage_summary=await store.token_usage_summary(),
-            operation_quality_scores=await store.load_live_operation_quality_scores(),
-        )
-        return {
-            "state": "produced",
-            "job_class": job_class,
-            "classification": classification,
-            "decision": decision.model_dump(mode="json"),
-        }
+        return await route_brain(store, text=req.text, job_class=req.job_class)
 
     @app.post("/api/prove-adapter")
     async def prove_adapter(req: AdapterProofRequest) -> dict[str, object]:
