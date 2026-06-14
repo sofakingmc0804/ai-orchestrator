@@ -63,7 +63,7 @@ def backup_db(src: Path, dst: Path) -> None:
     """Copy DB file to backup location."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
-    print(f"  Backed up: {src} → {dst}")
+    print(f"  Backed up: {src} -> {dst}")
 
 
 def get_table_count(con: sqlite3.Connection, table: str) -> int:
@@ -260,7 +260,7 @@ def create_symlinks(governor_root: Path, orchestrator_runtime: Path, dry_run: bo
         link_path = governor_root / link_name
 
         if dry_run:
-            print(f"  Would create symlink: {link_name} → {target}")
+            print(f"  Would create symlink: {link_name} -> {target}")
             continue
 
         # Remove existing file/dir
@@ -273,14 +273,14 @@ def create_symlinks(governor_root: Path, orchestrator_runtime: Path, dry_run: bo
         # Create symlink
         try:
             link_path.symlink_to(target)
-            print(f"  Created symlink: {link_name} → {target}")
+            print(f"  Created symlink: {link_name} -> {target}")
         except OSError as e:
             print(f"  Failed to create symlink {link_name}: {e}")
 
 
 def print_summary(orch_con: sqlite3.Connection) -> None:
     """Print migration summary."""
-    print("\n📊 Migration Summary:")
+    print("\nMigration Summary:")
 
     tables = list_tables(orch_con)
     for table in ["worker_cards", "job_classes", "budget_probes", "services", "capabilities", "dispatches"]:
@@ -311,21 +311,21 @@ def main():
 
     # Verify source DBs exist
     if not GOVERNOR_DB.exists():
-        print(f"\n❌ Governor DB not found: {GOVERNOR_DB}")
+        print(f"\n[FAIL] Governor DB not found: {GOVERNOR_DB}")
         sys.exit(1)
 
     if not ORCHESTRATOR_DB.exists():
-        print(f"\n❌ Orchestrator DB not found: {ORCHESTRATOR_DB}")
+        print(f"\n[FAIL] Orchestrator DB not found: {ORCHESTRATOR_DB}")
         print("   Run orchestrator first to create the DB, or create it manually")
         sys.exit(1)
 
     # Create backup directory
     if not dry_run:
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        print(f"\n💾 Backup directory: {BACKUP_DIR}")
+    print(f"\nBackup directory: {BACKUP_DIR}")
 
     # Open connections
-    print("\n🔌 Connecting to databases...")
+    print("\nConnecting to databases...")
     gov_con = connect_ro(GOVERNOR_DB)
     orch_con = connect_rw(ORCHESTRATOR_DB)
 
@@ -334,7 +334,7 @@ def main():
 
     # Backup DBs
     if not dry_run:
-        print("\n💾 Creating backups...")
+        print("\nCreating backups...")
         backup_db(GOVERNOR_DB, BACKUP_DIR / "governor_inventory.sqlite")
         backup_db(ORCHESTRATOR_DB, BACKUP_DIR / "orchestrator_state.sqlite")
 

@@ -431,6 +431,38 @@ def test_primary_fastapi_route_api_and_app_js_are_live(monkeypatch: pytest.Monke
     assert payload["decision"]["candidates_considered"][0]["worker_id"] == "qwen@ollama-local"
 
 
+def test_primary_fastapi_status_api_uses_cached_quota_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def fake_services() -> tuple[list[Any], list[Any]]:
+        return [], []
+
+    def fail_live_probe() -> dict[str, object]:
+        raise AssertionError("dashboard status must not run live quota probes")
+
+    async def fake_supervisor_tick(_settings: Settings, _store: StateStore, **_kwargs: object) -> dict[str, object]:
+        return {"state": "produced", "proof_kind": "live"}
+
+    monkeypatch.setattr(fastapi_server, "discover_services_and_capabilities", fake_services)
+    monkeypatch.setattr(fastapi_server, "discover_projects", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(fastapi_server, "probe_auth_and_quota", fail_live_probe)
+    monkeypatch.setattr(fastapi_server, "run_supervisor_tick", fake_supervisor_tick)
+    monkeypatch.setattr(fastapi_server, "start_supervisor_thread", lambda _settings: object())
+    settings = Settings(
+        home=tmp_path,
+        state_path=tmp_path / "state.sqlite",
+        notifications_path=tmp_path / "notifications.jsonl",
+        log_dir=tmp_path / "logs",
+        repo_root=tmp_path,
+    )
+    app = fastapi_server.create_app(settings)
+
+    with TestClient(app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["auth_quota"]["source"] == "cached_quota_state"
+
+
 def test_main_does_not_silently_fallback_to_simple_server(monkeypatch: pytest.MonkeyPatch) -> None:
     import orchestrator.main as main_module
 

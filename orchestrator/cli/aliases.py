@@ -23,10 +23,10 @@ def get_shell_type() -> str:
         return 'bash'
     if 'zsh' in shell:
         return 'zsh'
-    if os.environ.get('COMSPEC', '').endswith('cmd.exe'):
-        return 'cmd'
     if os.environ.get('PSMODULEPATH'):
         return 'powershell'
+    if os.environ.get('COMSPEC', '').endswith('cmd.exe'):
+        return 'cmd'
     return 'unknown'
 
 
@@ -86,7 +86,7 @@ def install_aliases() -> None:
         with open(config_file, 'a') as f:
             f.write(f"\n{aliases}\n")
         
-        print(f"✅ Aliases installed to {config_file}")
+        print(f"[OK] Aliases installed to {config_file}")
         print(f"   Run 'source {config_file}' or restart your shell to use them")
     
     elif shell == 'powershell':
@@ -122,11 +122,11 @@ def install_aliases() -> None:
         with open(profile_file, 'a') as f:
             f.write(f"\n{aliases}\n")
         
-        print(f"✅ Aliases installed to {profile_file}")
+        print(f"[OK] Aliases installed to {profile_file}")
         print(f"   Restart PowerShell or run '. {profile_file}' to use them")
     
     else:
-        print(f"⚠ Unsupported shell: {shell}")
+        print(f"[WARN] Unsupported shell: {shell}")
         print("Manual installation:")
         print(generate_bash_aliases())
 

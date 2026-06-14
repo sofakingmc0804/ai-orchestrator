@@ -99,22 +99,11 @@ python tests/test_consolidation.py
 
 ---
 
-## Next Steps
+## Operational Readiness
 
-### Day 1
-- [ ] Run end-to-end tests
-- [ ] Start server, verify all 4 UIs
-- [ ] Test dispatch flow
-
-### Week 1
-- [ ] Install CLI aliases
-- [ ] Install Windows context menu
-- [ ] Migrate custom scripts to orchestrator CLI
-
-### Month 1
-- [ ] Add new providers/adapters
-- [ ] Expand benchmark suite
-- [ ] Consider deprecating `.ai-resource-governor/` entirely
+This historical status file no longer owns follow-up work. The Day 1, Week 1,
+and Month 1 items are tracked with proof, consumers, and owner-gated boundaries
+in `docs/OPERATIONAL_READINESS.md`.
 
 ---
 

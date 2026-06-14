@@ -99,13 +99,10 @@ None — all phases completed successfully.
 
 ---
 
-## Recommendations
+## Operational Readiness
 
-1. **Run end-to-end tests** before relying on the system
-2. **Install CLI aliases** for daily use
-3. **Bookmark UI dashboards** for monitoring
-4. **Keep `.ai-resource-governor/` runtime data** until confident in migration
-5. **Review AGENTS.md** for updated architecture
+This historical snapshot no longer owns recommendations or follow-up work. The
+old readiness items are tracked with live proof in `docs/OPERATIONAL_READINESS.md`.
 
 ---
 

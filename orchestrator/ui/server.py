@@ -105,11 +105,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/status")
     async def dashboard_status() -> dict[str, object]:
-        auth_state = probe_auth_and_quota()
-        await store.record_quota_snapshots(quota_snapshots(auth_state))
+        quota_state = await store.latest_quota_state()
         return {
             "dispatches": await store.list_dispatches(limit=100),
-            "auth_quota": auth_state,
+            "auth_quota": {
+                "source": "cached_quota_state",
+                "providers": quota_state,
+            },
             "state_path": str(settings.state_path),
             "notifications_path": str(settings.notifications_path),
         }

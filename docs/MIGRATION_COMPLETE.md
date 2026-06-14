@@ -212,25 +212,11 @@ orch dispatch "fix this bug"
 
 ---
 
-## Next Steps
+## Operational Readiness
 
-### Immediate (Day 1)
-1. ✅ Review this migration report
-2. ⏳ Run end-to-end tests
-3. ⏳ Start server, verify UIs
-4. ⏳ Test dispatch flow end-to-end
-
-### Short-term (Week 1)
-1. Install CLI aliases
-2. Install Windows context menu
-3. Migrate any custom governor scripts to orchestrator CLI
-4. Update cron jobs to use new paths
-
-### Long-term (Month 1)
-1. Deprecate `.ai-resource-governor/` entirely (after verifying no external dependencies)
-2. Add new providers/adapters as needed
-3. Expand benchmark suite
-4. Add more job classes
+The old Day 1 / Week 1 / Month 1 checklist is no longer tracked here. This file
+is a historical migration log. See `docs/OPERATIONAL_READINESS.md` for the live
+readiness table, proof commands, consumers, and owner-gated follow-up work.
 
 ---
 
