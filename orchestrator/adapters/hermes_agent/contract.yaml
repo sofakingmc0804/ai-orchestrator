@@ -5,6 +5,4 @@ provider: hermes
 latency_band: medium
 consequence_max: medium
 capabilities:
-  - id: agentic_work
-  - id: tool_dispatch
-  - id: local_chat
+  - id: brain_entrypoint

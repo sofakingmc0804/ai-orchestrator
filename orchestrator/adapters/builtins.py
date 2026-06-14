@@ -303,24 +303,14 @@ class HermesAgentAdapter(StaticCliAdapter):
 
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
         prompt = str(envelope.get("intent", {}).get("raw_text") or envelope.get("prompt") or "").strip()
-        model = str(envelope.get("model") or "qwen2.5:0.5b")
-        provider = str(envelope.get("provider") or "custom")
         if not prompt:
             return {"ok": False, "error": "No prompt supplied to Hermes adapter."}
-        provider_arg = "nous" if provider in {"nous", "hermes-nous"} else "custom"
-        result = await _run_bounded(
-            "hermes",
-            ["-z", prompt, "--provider", provider_arg, "-m", model, "--ignore-rules"],
-            timeout=90,
-        )
-        if not result.get("ok"):
-            return {
-                "ok": False,
-                "error": str(result.get("error") or result.get("stderr") or "Hermes dispatch failed."),
-                "repair_action": "Run `hermes status` and verify the custom Ollama endpoint returns one-shot responses without timing out.",
-                "raw": result,
-            }
-        return {"ok": True, "model": model, "text": _clean_terminal_text(str(result.get("stdout") or "")), "raw": result}
+        return {
+            "ok": False,
+            "terminal_state": "blocked_after_repair_attempt",
+            "error": "Hermes is upstream of the orchestrator brain and is retired as a downstream dispatch target.",
+            "repair_action": "Call `python -m orchestrator.cli.main route` or POST /api/route, then let the Hermes shim execute the selected worker.",
+        }
 
 
 class OpenClawGatewayAdapter(StaticCliAdapter):

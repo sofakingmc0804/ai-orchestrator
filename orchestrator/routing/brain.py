@@ -24,6 +24,16 @@ async def route_brain(
     classification = classify_with_fallback(text, job_class)
     resolved_job_class = str(classification["job_class"])
     job_spec = await store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", resolved_job_class)
+    if not job_spec and not classification.get("overridden"):
+        fallback_spec = await store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", "routing_triage")
+        if fallback_spec:
+            classification = {
+                **classification,
+                "fallback_from_job_class": resolved_job_class,
+                "reasoning": f"{classification.get('reasoning', '')}; unknown class fell back to routing_triage",
+            }
+            resolved_job_class = "routing_triage"
+            job_spec = fallback_spec
     if not job_spec:
         known = await store.db.fetch("SELECT job_class FROM job_classes ORDER BY job_class")
         return {

@@ -2,7 +2,40 @@ $ErrorActionPreference = "Stop"
 $root = "C:\Users\Couch\.ai-resource-governor"
 $python = "C:\Python313\python.exe"
 $actual = "C:\Users\Couch\AppData\Roaming\Python\Python313\Scripts\hermes.exe"
-$env:PYTHONPATH = $root
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+$orchestratorHome = Join-Path $repoRoot ".runtime\orchestrator"
+$env:PYTHONPATH = "$repoRoot;$root"
+$env:ORCHESTRATOR_HOME = $orchestratorHome
+
+function Get-HermesPromptText {
+  param([object[]]$Argv)
+  if (-not $Argv -or $Argv.Count -eq 0) { return "" }
+  for ($i = 0; $i -lt $Argv.Count; $i++) {
+    $arg = [string]$Argv[$i]
+    if (@("-z", "--oneshot", "--prompt", "-p") -contains $arg -and ($i + 1) -lt $Argv.Count) {
+      return [string]$Argv[$i + 1]
+    }
+    if ($arg.StartsWith("--prompt=")) {
+      return $arg.Substring("--prompt=".Length)
+    }
+  }
+  if (@("ask", "chat", "run", "prompt", "complete") -contains [string]$Argv[0]) {
+    if ($Argv.Count -le 1) { return "" }
+    return (($Argv | Select-Object -Skip 1) -join " ")
+  }
+  return ""
+}
+
+function Test-HermesArg {
+  param([object[]]$Argv, [string[]]$Names)
+  foreach ($arg in $Argv) {
+    $text = [string]$arg
+    foreach ($name in $Names) {
+      if ($text -eq $name -or $text.StartsWith("$name=")) { return $true }
+    }
+  }
+  return $false
+}
 
 $receipt = @{
   created_at = (Get-Date).ToUniversalTime().ToString("o")
@@ -75,8 +108,40 @@ if ($explicitProvider) {
 }
 
 if ($args.Count -gt 0 -and (@("ask","chat","run","prompt","complete") -contains [string]$args[0] -or @($args) -contains "-z" -or @($args) -contains "--oneshot")) {
-  & $python (Join-Path $root "ai_governor.py") route --task-type "hermes_cli_model_call" --context-tokens 0 | Out-Null
+  $promptText = Get-HermesPromptText -Argv @($args)
+  if (-not $promptText) {
+    Write-Error "Hermes prompt command could not be routed because no prompt text was found."
+    exit 43
+  }
+  $argvJson = @($args) | ConvertTo-Json -Compress
+  $argvB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($argvJson))
+  $brainJson = & $python -m orchestrator.cli.main hermes-route --text $promptText --argv-b64 $argvB64
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  $brainRoute = $brainJson | ConvertFrom-Json
+  if ($brainRoute.state -ne "produced") {
+    Write-Error "Hermes prompt blocked because the orchestrator brain did not produce a route. Receipt: $($brainRoute.receipt_path)"
+    exit 43
+  }
+  $routeReceipt = @{
+    created_at = (Get-Date).ToUniversalTime().ToString("o")
+    shim = "hermes"
+    route_receipt_path = $brainRoute.receipt_path
+    route_state = $brainRoute.state
+    selected = $brainRoute.selected
+  } | ConvertTo-Json -Compress
+  Add-Content -Path (Join-Path $root "receipts\brain-route-invocations.jsonl") -Value $routeReceipt -Encoding UTF8
+  if (-not (Test-HermesArg -Argv @($args) -Names @("--provider"))) {
+    $chosenProvider = [string]$brainRoute.selected.hermes_provider
+    if ($chosenProvider) {
+      $args = @($args) + @("--provider", $chosenProvider)
+    }
+  }
+  if (-not (Test-HermesArg -Argv @($args) -Names @("-m", "--model"))) {
+    $chosenModel = [string]$brainRoute.selected.model_id
+    if ($chosenModel) {
+      $args = @($args) + @("-m", $chosenModel)
+    }
+  }
 }
 
 & $actual @args

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from orchestrator.discovery.projects import discover_projects
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.dispatch.dispatcher import Dispatcher
 from orchestrator.governance.job_classifier import classify_with_fallback
+from orchestrator.hermes.brain_bridge import route_for_hermes_prompt
 from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.notifications.subscribers.runner import run_all_subscribers_once
 from orchestrator.process.recovery import repair_core_services
@@ -272,6 +274,17 @@ async def _skill_route(settings: Settings, text: str, cwd: str | None = None) ->
     return {"state": "produced", "skill_hook_plan": plan.receipt_payload()}
 
 
+async def _hermes_route(settings: Settings, text: str, job_class: str | None, argv_json: str | None, argv_b64: str | None = None) -> dict[str, object]:
+    argv: list[str] = []
+    if argv_b64:
+        argv_json = base64.b64decode(argv_b64.encode("ascii")).decode("utf-8")
+    if argv_json:
+        parsed = json.loads(argv_json)
+        if isinstance(parsed, list):
+            argv = [str(item) for item in parsed]
+    return await route_for_hermes_prompt(settings, text=text, job_class=job_class, argv=argv)
+
+
 async def _hook_gate(settings: Settings) -> dict[str, object]:
     raw = sys.stdin.read()
     event = json.loads(raw) if raw.strip() else {}
@@ -323,6 +336,11 @@ def main() -> None:
     skill_route = sub.add_parser("skill-route")
     skill_route.add_argument("--text", required=True)
     skill_route.add_argument("--cwd", default=None)
+    hermes_route = sub.add_parser("hermes-route")
+    hermes_route.add_argument("--text", required=True)
+    hermes_route.add_argument("--job-class", default=None)
+    hermes_route.add_argument("--argv-json", default=None)
+    hermes_route.add_argument("--argv-b64", default=None)
     sub.add_parser("hook-gate")
     skill_hook_receipts = sub.add_parser("skill-hook-receipts")
     skill_hook_receipts.add_argument("--last", type=int, default=20)
@@ -411,6 +429,8 @@ def main() -> None:
         result = asyncio.run(_token_backfill(settings, args.limit))
     elif args.cmd == "skill-route":
         result = asyncio.run(_skill_route(settings, args.text, args.cwd))
+    elif args.cmd == "hermes-route":
+        result = asyncio.run(_hermes_route(settings, args.text, args.job_class, args.argv_json, args.argv_b64))
     elif args.cmd == "hook-gate":
         result = asyncio.run(_hook_gate(settings))
     elif args.cmd == "skill-hook-receipts":

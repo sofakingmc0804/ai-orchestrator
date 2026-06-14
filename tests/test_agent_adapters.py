@@ -14,7 +14,7 @@ from orchestrator.state.store import StateStore
 
 
 @pytest.mark.asyncio
-async def test_hermes_adapter_dispatch_uses_custom_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_hermes_adapter_dispatch_is_retired_as_downstream_target(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, list[str], float]] = []
 
     async def fake_run(command: str, args: list[str], timeout: float = 30) -> dict[str, Any]:
@@ -23,11 +23,11 @@ async def test_hermes_adapter_dispatch_uses_custom_provider(monkeypatch: pytest.
 
     monkeypatch.setattr(builtins, "_run_bounded", fake_run)
     result = await HermesAgentAdapter().dispatch({"intent": {"raw_text": "smoke"}})
-    assert result["ok"] is True
-    assert result["text"] == "HERMES_OK"
-    assert calls[0][0] == "hermes"
-    assert "--provider" in calls[0][1]
-    assert "custom" in calls[0][1]
+    assert result["ok"] is False
+    assert result["terminal_state"] == "blocked_after_repair_attempt"
+    assert "upstream" in result["error"].lower()
+    assert "route" in result["repair_action"].lower()
+    assert calls == []
 
 
 def test_governed_command_resolution_prefers_resource_governor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

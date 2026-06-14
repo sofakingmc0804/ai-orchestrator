@@ -29,9 +29,10 @@ async def test_gateway_intent_routes_to_openclaw() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_dispatch_intent_routes_to_hermes() -> None:
+async def test_tool_dispatch_intent_is_not_dispatched_downstream_to_hermes() -> None:
     decision = route_intent(parse_intent("use Hermes tool dispatch for this local task"), await _caps())
-    assert decision.chosen_adapter == "hermes-agent"
+    assert decision.chosen_adapter is None
+    assert "No allowed adapter satisfied tool_dispatch" in decision.reasoning
 
 
 @pytest.mark.asyncio

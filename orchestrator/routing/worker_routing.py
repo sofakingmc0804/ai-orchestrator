@@ -8,7 +8,6 @@ Selects the best worker for a job based on:
 4. Budget state (quota remaining, reserve protection)
 5. Benchmark scores (if available)
 
-Author: Hermes Agent
 Date: 2026-06-10
 Phase: 2 (Routing Integration)
 """
@@ -33,6 +32,7 @@ from orchestrator.routing.engine import (
     _project_policy_rejection,
     _quota_rejection_reason,
 )
+from orchestrator.surface_adapters import dispatch_adapter_for_worker
 
 
 CONTRACT_BLOCKLIST = {"metered_extra_cost", "third_party_metered", "unknown_cost"}
@@ -460,27 +460,8 @@ def route_with_workers(
             rejected.append(row)
             continue
 
-        # Check project policy (map worker surface to adapter)
-        surface_to_adapter = {
-            "claude-desktop-mcp": "claude-desktop-mcp",
-            "claude-max": "claude-code-cli",
-            "claude-code-cli": "claude-code-cli",
-            "codex-chatgpt": "codex-desktop",
-            "codex-cli": "codex-cli",
-            "copilot-gh": "copilot-gh",
-            "github-copilot": "copilot-gh",
-            "copilot-vscode": "copilot-vscode",
-            "gemini-cli": "gemini-cli",
-            "nous": "hermes-agent",
-            "hermes-nous": "hermes-agent",
-            "ollama-cloud": "ollama-cloud",
-            "ollama-local": "ollama-http",
-            "ollama-cli": "ollama-cli",
-            "ollama-http": "ollama-http",
-            "lm-studio": "lm-studio",
-            "hermes-agent": "hermes-agent",
-        }
-        adapter_name = surface_to_adapter.get(worker.get("surface", ""))
+        # Dispatch is a fact on the worker card or in the surface registry.
+        adapter_name = dispatch_adapter_for_worker(worker)
         if not adapter_name:
             row["rejected_reason"] = f"no dispatch adapter mapped for surface {worker.get('surface')}"
             rejected.append(row)
