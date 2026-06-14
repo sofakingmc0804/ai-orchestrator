@@ -17,6 +17,7 @@ MUTATING_TERMS = (
     "create",
     "delete",
     "edit",
+    "fill",
     "fix",
     "implement",
     "install",
@@ -104,6 +105,45 @@ CONNECTED_APP_TOOL_PROOF_TERMS = (
     "mcp sources",
     "tool discovery",
 )
+CHROME_CONTROL_TERMS = (
+    "active chrome",
+    "active tab",
+    "browser extension",
+    "chrome browser",
+    "chrome extension",
+    "codex chrome",
+    "logged-in chrome",
+)
+HARD_DENY_CHECK_NAMES = {
+    "forbidden_metered_route",
+    "unapproved_external_send",
+    "fp_009_non_read_tool_limit",
+    "gate_0_read_before_write",
+    "gate_6_predecessor_retirement",
+}
+FORBIDDEN_METERED_ROUTE_PATTERNS = (
+    r"\bmetered\b.*\b(api|provider|route|model)\b",
+    r"\b(openai|anthropic|gemini)\s+api\b.*\b(dispatch|route|call|use)\b",
+    r"\b--provider\s+(openai|anthropic|gemini|claude|gpt)\b",
+    r"\bapi[_-]?key\b.*\b(openai|anthropic|gemini)\b",
+)
+UNAPPROVED_EXTERNAL_SEND_PATTERNS = (
+    r"\bgmail_send\b",
+    r"\bgmail\.send\b",
+    r"\b(send|submit|post)\b.*\bexternal\b.*\b(email|address|recipient|customer)\b",
+)
+FP_009_PATTERNS = (
+    r"\bfp-?009\b.*\b(three|3|more than two|>2)\b",
+    r"\bmore than two\b.*\bnon[- ]read\b.*\b(tool|call|step)s?\b",
+)
+GATE_0_PATTERNS = (
+    r"\bgate[- ]?0\b.*\b(skip|without|violate)\b.*\bread\b",
+    r"\bwrite\b.*\bwithout\b.*\bread(?:ing)?\b",
+)
+GATE_6_PATTERNS = (
+    r"\bgate[- ]?6\b.*\b(skip|without|violate)\b.*\b(retire|predecessor)\b",
+    r"\bnew canonical\b.*\bwithout\b.*\b(retiring|retire)\b",
+)
 
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
@@ -126,6 +166,18 @@ def _is_read_only_discovery_prompt(text: str) -> bool:
 
 def _requires_connected_app_tool_proof(text: str) -> bool:
     return _contains_any(text, CONNECTED_APP_TOOL_PROOF_TERMS)
+
+
+def _requests_chrome_control(text: str) -> bool:
+    if _contains_any(text, CHROME_CONTROL_TERMS):
+        return True
+    return "chrome" in text and any(term in text for term in ("extension", "profile", "tab"))
+
+
+def _requests_visible_desktop_or_chrome_authority(text: str) -> bool:
+    if _requests_chrome_control(text):
+        return True
+    return any(term in text for term in ("visible chrome", "desktop", "mouse", "keyboard"))
 
 
 def _verb_for_text(text: str) -> str:
@@ -163,11 +215,13 @@ def _selected(name: str, inventory: SkillInventory, reason: str) -> SelectedSkil
 def _domain_for_text(lowered: str, read_only_discovery: bool = False) -> str:
     if read_only_discovery:
         return "discovery"
-    if _contains_any(lowered, OPENAI_TERMS):
-        return "codex"
     if any(term in lowered for term in ("gmail", "email", "calendar", "drive", "docs", "sheet", "canva", "github")):
         return "connected_app"
-    if any(term in lowered for term in ("chrome", "browser", "localhost", "website", "tab")):
+    if _requests_chrome_control(lowered):
+        return "browser"
+    if _contains_any(lowered, OPENAI_TERMS):
+        return "codex"
+    if any(term in lowered for term in ("browser", "localhost", "website", "tab")):
         return "browser"
     if _contains_any(lowered, CODE_TERMS):
         return "code"
@@ -236,7 +290,8 @@ def _confirmation_state(lowered: str, domain: str, mutates: bool, confidence: fl
 
 def _authority_checks(lowered: str, inventory: SkillInventory, mutates: bool, confirmation_state: str) -> list[AuthorityCheck]:
     checks = [_inventory_check(inventory)]
-    if any(term in lowered for term in ("visible chrome", "logged-in chrome", "active tab", "desktop", "mouse", "keyboard")):
+    checks.extend(_hard_deny_authority_checks(lowered))
+    if _requests_visible_desktop_or_chrome_authority(lowered):
         checks.append(
             AuthorityCheck(
                 name="desktop_control_lease",
@@ -265,6 +320,51 @@ def _authority_checks(lowered: str, inventory: SkillInventory, mutates: bool, co
     return checks
 
 
+def _hard_deny_authority_checks(lowered: str) -> list[AuthorityCheck]:
+    checks: list[AuthorityCheck] = []
+    if any(re.search(pattern, lowered) for pattern in FORBIDDEN_METERED_ROUTE_PATTERNS):
+        checks.append(
+            AuthorityCheck(
+                name="forbidden_metered_route",
+                status="blocked",
+                reason="Owner ruleset blocks metered API/provider routes; use subscription, flat-rate, local, or owner-approved budget lanes.",
+            )
+        )
+    if any(re.search(pattern, lowered) for pattern in UNAPPROVED_EXTERNAL_SEND_PATTERNS):
+        checks.append(
+            AuthorityCheck(
+                name="unapproved_external_send",
+                status="blocked",
+                reason="Owner ruleset blocks unapproved external sends; produce an owner-facing packet or draft-only artifact instead.",
+            )
+        )
+    if any(re.search(pattern, lowered) for pattern in FP_009_PATTERNS):
+        checks.append(
+            AuthorityCheck(
+                name="fp_009_non_read_tool_limit",
+                status="blocked",
+                reason="Owner ruleset blocks FP-009 plans with more than two non-read tool calls before approval.",
+            )
+        )
+    if any(re.search(pattern, lowered) for pattern in GATE_0_PATTERNS):
+        checks.append(
+            AuthorityCheck(
+                name="gate_0_read_before_write",
+                status="blocked",
+                reason="Owner ruleset blocks Gate 0 violations: read the live authority before mutating.",
+            )
+        )
+    if any(re.search(pattern, lowered) for pattern in GATE_6_PATTERNS):
+        checks.append(
+            AuthorityCheck(
+                name="gate_6_predecessor_retirement",
+                status="blocked",
+                reason="Owner ruleset blocks Gate 6 violations: retire predecessors in the same change.",
+            )
+        )
+    return checks
+
+
 def _append_if_missing(selected: list[SelectedSkill], name: str, inventory: SkillInventory, reason: str) -> None:
     if name not in {skill.name for skill in selected}:
         selected.append(_selected(name, inventory, reason))
@@ -276,6 +376,8 @@ def _select_domain_skills(lowered: str, domain: str, selected: list[SelectedSkil
             _append_if_missing(selected, "playwright", inventory, "Browser regression or screenshot proof requires terminal-driven Playwright authority.")
         elif "localhost" in lowered or "page renders" in lowered or "render" in lowered:
             _append_if_missing(selected, "control-in-app-browser", inventory, "Localhost render checks should use the in-app browser surface, not a shell URL open.")
+        elif _requests_chrome_control(lowered):
+            _append_if_missing(selected, "control-chrome", inventory, "Credential-bearing Chrome extension or active-tab work requires the Chrome control skill.")
 
     if domain == "connected_app":
         if "gmail" in lowered:
@@ -306,7 +408,7 @@ def detect_skill_route(
     if domain == "codex" and not read_only_discovery:
         selected.append(_selected("openai-docs", inventory, "Codex/OpenAI behavior must be checked against official docs."))
     _select_domain_skills(lowered, domain, selected, inventory)
-    if domain == "code" and mutates:
+    if domain in {"code", "codex"} and mutates:
         selected.append(_selected("superpowers:test-driven-development", inventory, "Implementation or repair requires failing tests before production code."))
         selected.append(_selected("superpowers:verification-before-completion", inventory, "Completion claims require verification output."))
     if not read_only_discovery and any(term in lowered for term in ("debug", "diagnose", "root cause", "test fail", "failing test")):
@@ -323,6 +425,7 @@ def detect_skill_route(
     if any(check.status == "blocked" for check in checks):
         confirmation_state = "blocked"
         question = question or "Repair the blocked authority surface before proceeding?"
+    enforcement_mode = "hard_deny" if any(check.status == "blocked" and check.name in HARD_DENY_CHECK_NAMES for check in checks) else "advisory"
 
     return SkillHookPlan(
         prompt=prompt,
@@ -338,4 +441,5 @@ def detect_skill_route(
         confirmation_state=confirmation_state,  # type: ignore[arg-type]
         question=question,
         terminal_state_requirement=terminal_state,
+        enforcement_mode=enforcement_mode,
     )

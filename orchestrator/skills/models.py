@@ -14,6 +14,7 @@ def utc_iso() -> str:
 
 ConfirmationState = Literal["not_required", "required", "confirmed", "blocked"]
 AuthorityStatus = Literal["passed", "required", "blocked", "unknown"]
+EnforcementMode = Literal["advisory", "hard_deny"]
 
 
 class SelectedSkill(BaseModel):
@@ -56,6 +57,7 @@ class SkillHookPlan(BaseModel):
     confirmation_state: ConfirmationState = "not_required"
     question: str | None = None
     terminal_state_requirement: str = "investigated_and_routed"
+    enforcement_mode: EnforcementMode = "advisory"
     requires_receipt: bool = True
     created_at: str = Field(default_factory=utc_iso)
 
@@ -83,6 +85,7 @@ class SkillHookPlan(BaseModel):
             "confirmation_state": self.confirmation_state,
             "question": self.question,
             "terminal_state_requirement": self.terminal_state_requirement,
+            "enforcement_mode": self.enforcement_mode,
             "requires_receipt": self.requires_receipt,
             "created_at": self.created_at,
         }

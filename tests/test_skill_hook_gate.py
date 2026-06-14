@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import json
 import sqlite3
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -91,6 +94,18 @@ def test_codex_hook_prompt_selects_openai_docs() -> None:
     assert "openai-docs" in _skill_names(plan)
     assert "codex-capability-router" in _skill_names(plan)
     assert plan.domain == "codex"
+
+
+def test_codex_hook_repair_prompt_selects_development_gates() -> None:
+    plan = detect_skill_route(
+        "Execute road 2 and repair the Codex hooks so future browser abilities are not blocked.",
+        cwd=Path.cwd(),
+    )
+
+    assert "openai-docs" in _skill_names(plan)
+    assert "superpowers:test-driven-development" in _skill_names(plan)
+    assert "superpowers:verification-before-completion" in _skill_names(plan)
+    assert plan.interpreted_actions[0].mutates is True
 
 
 def test_ambient_suggestion_prompt_is_read_only_discovery_without_confirmation() -> None:
@@ -191,6 +206,70 @@ def test_external_mutation_still_requires_confirmation() -> None:
     assert "gmail:gmail" in context
 
 
+def test_forbidden_metered_route_prompt_is_hard_denied() -> None:
+    plan = detect_skill_route("Route this through a metered OpenAI API provider for dispatch.", cwd=Path.cwd())
+    decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
+
+    output = decision["hookSpecificOutput"]
+    assert plan.enforcement_mode == "hard_deny"
+    assert decision["systemMessage"].startswith("Hard deny by owner ruleset")
+    assert output["hookEventName"] == "UserPromptSubmit"
+    assert output["decision"]["behavior"] == "deny"
+    assert output["permissionDecision"] == "deny"
+    assert "metered" in output["permissionDecisionReason"].lower()
+
+
+def test_repo_hook_entrypoint_emits_hard_deny(tmp_path: Path) -> None:
+    event = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "hard-deny-subprocess",
+        "turn_id": "turn-1",
+        "cwd": str(Path.cwd()),
+        "prompt": "Route this through a metered OpenAI API provider for dispatch.",
+    }
+    env = {**os.environ, "ORCHESTRATOR_HOME": str(tmp_path / ".orchestrator")}
+    result = subprocess.run(
+        [sys.executable, ".codex/hooks/skill_gate_repo.py"],
+        input=json.dumps(event),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["hookSpecificOutput"]["decision"]["behavior"] == "deny"
+    assert payload["systemMessage"].startswith("Hard deny by owner ruleset")
+
+
+def test_efficiency_only_violation_is_advisory_not_blocked() -> None:
+    plan = detect_skill_route("fix this repo bug and add tests", cwd=Path.cwd())
+    plan = plan.model_copy(
+        update={
+            "selected_skills": [
+                skill
+                for skill in plan.selected_skills
+                if skill.name not in {"superpowers:test-driven-development", "superpowers:verification-before-completion"}
+            ]
+        }
+    )
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "apply_patch",
+            "tool_input": {"command": "*** Begin Patch\n*** End Patch\n"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert plan.enforcement_mode == "advisory"
+    assert "systemMessage" not in decision
+    assert "permissionDecision" not in output
+    assert "missing test-driven-development" in output["additionalContext"].lower()
+
+
 def test_local_repo_cleanup_does_not_require_route_confirmation() -> None:
     plan = detect_skill_route("delete generated files in this repo", cwd=Path.cwd())
     decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
@@ -271,7 +350,7 @@ def test_user_prompt_submit_emits_valid_additional_context() -> None:
     assert "terminal state" in decision["hookSpecificOutput"]["additionalContext"].lower()
 
 
-def test_pre_tool_use_rewrites_visible_desktop_command_without_stopping_turn() -> None:
+def test_pre_tool_use_advises_visible_desktop_command_without_rewriting() -> None:
     plan = detect_skill_route("inspect my logged-in Chrome tab", cwd=Path.cwd())
     decision = handle_pre_tool_use(
         {
@@ -283,11 +362,10 @@ def test_pre_tool_use_rewrites_visible_desktop_command_without_stopping_turn() -
     )
 
     output = decision["hookSpecificOutput"]
-    assert output["permissionDecision"] == "allow"
-    assert "updatedInput" in output
-    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
-    assert "yes/no" in output["updatedInput"]["command"].lower()
-    assert "confirm route" not in output["updatedInput"]["command"].lower()
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "updatedInput" not in output
+    assert "visible desktop" in output["additionalContext"].lower()
 
 
 def test_pre_tool_use_does_not_rewrite_text_search_that_mentions_chrome() -> None:
@@ -306,7 +384,23 @@ def test_pre_tool_use_does_not_rewrite_text_search_that_mentions_chrome() -> Non
     assert "permissionDecision" not in output
 
 
-def test_pre_tool_use_rewrites_unplanned_visible_desktop_command() -> None:
+def test_pre_tool_use_does_not_rewrite_text_search_that_mentions_chrome_skill() -> None:
+    plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": 'rg -n "control-chrome" AGENTS.md'},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+
+
+def test_pre_tool_use_advises_unplanned_visible_desktop_command_without_rewriting() -> None:
     plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
     decision = handle_pre_tool_use(
         {
@@ -318,11 +412,13 @@ def test_pre_tool_use_rewrites_unplanned_visible_desktop_command() -> None:
     )
 
     output = decision["hookSpecificOutput"]
-    assert output["permissionDecision"] == "allow"
-    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "updatedInput" not in output
+    assert "visible desktop" in output["additionalContext"].lower()
 
 
-def test_pre_tool_use_rewrites_expired_desktop_control_lease() -> None:
+def test_pre_tool_use_advises_expired_desktop_control_lease_without_rewriting() -> None:
     plan = _approved_desktop_plan(Path.cwd(), expires_delta=timedelta(minutes=-1))
     decision = handle_pre_tool_use(
         {
@@ -335,11 +431,13 @@ def test_pre_tool_use_rewrites_expired_desktop_control_lease() -> None:
     )
 
     output = decision["hookSpecificOutput"]
-    assert output["permissionDecision"] == "allow"
-    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "updatedInput" not in output
+    assert "visible desktop" in output["additionalContext"].lower()
 
 
-def test_pre_tool_use_rewrites_desktop_control_lease_for_wrong_cwd(tmp_path: Path) -> None:
+def test_pre_tool_use_advises_desktop_control_lease_for_wrong_cwd_without_rewriting(tmp_path: Path) -> None:
     approved_cwd = tmp_path / "approved"
     other_cwd = tmp_path / "other"
     approved_cwd.mkdir()
@@ -356,8 +454,10 @@ def test_pre_tool_use_rewrites_desktop_control_lease_for_wrong_cwd(tmp_path: Pat
     )
 
     output = decision["hookSpecificOutput"]
-    assert output["permissionDecision"] == "allow"
-    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "updatedInput" not in output
+    assert "visible desktop" in output["additionalContext"].lower()
 
 
 def test_permission_request_allows_valid_desktop_control_lease() -> None:
@@ -377,6 +477,103 @@ def test_permission_request_allows_valid_desktop_control_lease() -> None:
     assert output["decision"]["behavior"] == "allow"
 
 
+def test_pre_tool_use_allows_browser_bridge_with_approved_desktop_control_lease() -> None:
+    plan = _approved_desktop_plan(Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(Path.cwd()),
+            "tool_name": "mcp__node_repl.js",
+            "tool_input": {"code": "return 1"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "mcp__browser_use.navigate",
+        "mcp__browser.navigate",
+        "mcp__chrome_session.call",
+        "browser_use.navigate",
+        "chrome.session",
+    ],
+)
+def test_pre_tool_use_allows_future_browser_bridge_aliases_with_approved_desktop_control_lease(tool_name: str) -> None:
+    plan = _approved_desktop_plan(Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(Path.cwd()),
+            "tool_name": tool_name,
+            "tool_input": {"code": "return 1"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+
+
+def test_pre_tool_use_allows_in_app_browser_bridge_without_desktop_lease() -> None:
+    plan = detect_skill_route("Open localhost:3000 and tell me whether the page renders correctly.", cwd=Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(Path.cwd()),
+            "tool_name": "mcp__browser_use.navigate",
+            "tool_input": {"url": "http://localhost:3000"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+
+
+def test_pre_tool_use_warns_for_browser_bridge_when_route_did_not_select_browser_authority() -> None:
+    plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(Path.cwd()),
+            "tool_name": "mcp__browser_use.navigate",
+            "tool_input": {"url": "http://localhost:3000"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "outside the selected skill authority" in output["additionalContext"]
+
+
+def test_pre_tool_use_warns_for_chrome_bridge_until_desktop_control_lease_is_approved() -> None:
+    plan = detect_skill_route("use my logged-in Chrome tab to inspect the page", cwd=Path.cwd())
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(Path.cwd()),
+            "tool_name": "mcp__chrome_session.call",
+            "tool_input": {"code": "return 1"},
+        },
+        plan,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "desktop control lease" in output["additionalContext"].lower()
+
+
 def test_permission_request_without_desktop_control_lease_falls_through_to_native_prompt() -> None:
     plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
     decision = handle_permission_request(
@@ -394,7 +591,7 @@ def test_permission_request_without_desktop_control_lease_falls_through_to_nativ
     assert "one-click" in decision["systemMessage"]
 
 
-def test_pre_tool_use_denies_apply_patch_without_skill_plan() -> None:
+def test_pre_tool_use_warns_apply_patch_without_skill_plan() -> None:
     decision = handle_pre_tool_use(
         {
             "hook_event_name": "PreToolUse",
@@ -404,8 +601,10 @@ def test_pre_tool_use_denies_apply_patch_without_skill_plan() -> None:
         None,
     )
 
-    assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "skill hook plan" in decision["hookSpecificOutput"]["permissionDecisionReason"].lower()
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "skill hook plan" in output["additionalContext"].lower()
 
 
 @pytest.mark.asyncio
@@ -508,13 +707,14 @@ async def test_yes_reply_approves_pending_desktop_control_lease(tmp_path: Path) 
             "session_id": "session-desktop",
             "turn_id": "turn-2",
             "cwd": str(Path.cwd()),
-            "prompt": "yes",
+            "prompt": "YES!!! THAT'S WHY I SET IT UP",
         },
         settings=settings,
         record=False,
     )
     context = approved["hookSpecificOutput"]["additionalContext"]
     assert "desktop_control_lease: passed" in context
+    assert "chrome:Chrome" in context
     assert "confirm route" not in context.lower()
 
     pre_tool = await run_hook_event(
@@ -532,6 +732,17 @@ async def test_yes_reply_approves_pending_desktop_control_lease(tmp_path: Path) 
     output = pre_tool["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
     assert "permissionDecision" not in output
+
+
+def test_codex_chrome_extension_prompt_selects_chrome_skill_and_lease() -> None:
+    plan = detect_skill_route(
+        "I opened the Codex Chrome browser extension on the active Bonfire page; fill the supplier profile from the packet.",
+        cwd=Path.cwd(),
+    )
+
+    checks = {check.name: check for check in plan.authority_checks}
+    assert "chrome:Chrome" in _skill_names(plan)
+    assert checks["desktop_control_lease"].status == "required"
 
 
 @pytest.mark.asyncio
@@ -578,8 +789,10 @@ async def test_yes_approved_desktop_lease_is_cwd_scoped(tmp_path: Path) -> None:
     )
 
     output = pre_tool["hookSpecificOutput"]
-    assert output["permissionDecision"] == "allow"
-    assert "DESKTOP_CONTROL_APPROVAL_REQUIRED" in output["updatedInput"]["command"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "updatedInput" not in output
+    assert "visible desktop" in output["additionalContext"].lower()
 
 
 @pytest.mark.asyncio
@@ -643,7 +856,7 @@ async def test_confirmation_reply_uses_pending_plan_and_allows_risky_mutation(tm
     first_context = first["hookSpecificOutput"]["additionalContext"]
     plan_id = first_context.split("Plan: ", maxsplit=1)[1].splitlines()[0]
 
-    denied = await run_hook_event(
+    warned = await run_hook_event(
         {
             "hook_event_name": "PreToolUse",
             "session_id": "session-1",
@@ -655,7 +868,8 @@ async def test_confirmation_reply_uses_pending_plan_and_allows_risky_mutation(tm
         settings=settings,
         record=False,
     )
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "permissionDecision" not in warned["hookSpecificOutput"]
+    assert "confirmation is requested" in warned["hookSpecificOutput"]["additionalContext"].lower()
 
     confirmed = await run_hook_event(
         {
@@ -775,6 +989,69 @@ async def test_override_reply_uses_named_skills_from_pending_plan(tmp_path: Path
     assert "Confirmation state: confirmed" in context
 
 
+@pytest.mark.asyncio
+async def test_mismatched_route_reply_is_advisory_not_blocking(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-mismatch",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": "work on the thing",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    decision = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-mismatch",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "prompt": "confirm route shp_deadbeef",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    assert "decision" not in decision
+    assert "No pending skill route matched" in decision["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_route_reply_is_advisory_not_blocking(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
+    first = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-cancel",
+            "turn_id": "turn-1",
+            "cwd": str(Path.cwd()),
+            "prompt": "work on the thing",
+        },
+        settings=settings,
+        record=False,
+    )
+    plan_id = first["hookSpecificOutput"]["additionalContext"].split("Plan: ", maxsplit=1)[1].splitlines()[0]
+
+    decision = await run_hook_event(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-cancel",
+            "turn_id": "turn-2",
+            "cwd": str(Path.cwd()),
+            "prompt": f"cancel route {plan_id}",
+        },
+        settings=settings,
+        record=False,
+    )
+
+    assert "decision" not in decision
+    assert "cancelled" in decision["hookSpecificOutput"]["additionalContext"].lower()
+
+
 def test_stop_continues_when_terminal_receipt_is_missing() -> None:
     plan = detect_skill_route("fix this repo bug and add tests", cwd=Path.cwd())
     decision = handle_stop(
@@ -786,8 +1063,7 @@ def test_stop_continues_when_terminal_receipt_is_missing() -> None:
         plan,
     )
 
-    assert decision["decision"] == "block"
-    assert "terminal state" in decision["reason"].lower()
+    assert decision == {}
 
 
 def test_stop_does_not_continue_low_risk_standard_prompt_without_receipt() -> None:

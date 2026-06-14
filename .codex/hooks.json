@@ -8,7 +8,7 @@
             "command": "python \"C:/Users/Couch/dev/ai-orchestrator/.codex/hooks/skill_gate_repo.py\"",
             "commandWindows": "python \"C:\\Users\\Couch\\dev\\ai-orchestrator\\.codex\\hooks\\skill_gate_repo.py\"",
             "timeout": 30,
-            "statusMessage": "Selecting skill route"
+            "statusMessage": "Selecting skill route; owner hard-deny rules active"
           }
         ]
       }
@@ -22,7 +22,7 @@
             "command": "python \"C:/Users/Couch/dev/ai-orchestrator/.codex/hooks/skill_gate_repo.py\"",
             "commandWindows": "python \"C:\\Users\\Couch\\dev\\ai-orchestrator\\.codex\\hooks\\skill_gate_repo.py\"",
             "timeout": 30,
-            "statusMessage": "Checking skill gate"
+            "statusMessage": "Checking skill gate; owner hard-deny rules active"
           }
         ]
       }
@@ -36,7 +36,7 @@
             "command": "python \"C:/Users/Couch/dev/ai-orchestrator/.codex/hooks/skill_gate_repo.py\"",
             "commandWindows": "python \"C:\\Users\\Couch\\dev\\ai-orchestrator\\.codex\\hooks\\skill_gate_repo.py\"",
             "timeout": 30,
-            "statusMessage": "Checking permission route"
+            "statusMessage": "Checking permission route; owner hard-deny rules active"
           }
         ]
       }
