@@ -1,6 +1,7 @@
 # AI Orchestrator
 
-> **Status:** see **[docs/STATUS.md](docs/STATUS.md)** and run `python -m orchestrator.cli.main spec-status`.
+> **Status:** AI Operating System Phases 1-7 complete as of 2026-06-14. See
+> **[docs/STATUS.md](docs/STATUS.md)** and run `python -m orchestrator.cli.main spec-status`.
 > The "ALL 6 PHASES COMPLETE / 100%" framing below is a **historical 2026-06-10 migration record**;
 > those completion claims were row-count artifacts, not behavioral proof, and are superseded.
 > Current direction and finished-state: `.claude/plans/make-the-end-to-end-plan-linked-widget.md`.

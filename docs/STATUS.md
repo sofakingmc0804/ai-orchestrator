@@ -27,34 +27,48 @@ on disk:
 Run `spec-status` for the current numbers. Do not quote a fixed percentage here —
 it would go stale and re-introduce the exact dishonesty this file exists to end.
 
-## What is actually real today (verified by audit, 2026-06-13)
+## Current build state (verified 2026-06-14)
 
-- **Dispatch is genuine.** `orchestrator/adapters/builtins.py` makes real
-  HTTP/subprocess calls (Ollama `127.0.0.1:11434`, `claude -p`, `codex exec`,
-  `hermes -z`, etc.). Local Ollama produces real model output end to end.
-- **Routing intelligence is real and wired:** dynamic 96-worker roster, job
-  classifier, worker-aware scoring (`orchestrator/routing/worker_routing.py`).
-- **Live quota probing is real** (`orchestrator/discovery/subscription_usage.py`:
-  authentic OAuth usage windows for ChatGPT/Claude/Gemini) — but see gaps.
-- **159 tests pass**, exercising internal logic against tmp SQLite. They mock
-  every external model boundary; no test proves a real provider call.
+Phases 1-7 in `docs/BUILD_PLAN.md` are complete on this machine. The finished
+state is proved by live repo commands and persisted receipts, not by a static
+percentage.
 
-## Known gaps (tracked in the build plan)
+- **Phase 1:** routing reads live `subscription_usage_snapshots` before legacy
+  budget probes; measured operation quality feeds the router; FastAPI serves the
+  primary dashboard and `POST /api/route`.
+- **Phase 2:** comparative evaluation uses deterministic referees where possible
+  and blind, multi-vendor, no-self-judge consensus for open-ended tasks.
+- **Phase 3:** Hermes consults this repo's brain through the `route` surface;
+  Hermes is retired as a downstream dispatch adapter, not counted as missing.
+- **Phase 4:** routing uses a failover ladder ordered by health, live quota,
+  measured quality, and marginal cost, with a flat-rate/local floor and
+  supervised restart proof.
+- **Phase 5:** premium-agent governance is hard-deny only for the narrow owner
+  rule set and advisory elsewhere; tokens per completed directive are measured.
+- **Phase 6:** the living dashboard renders quota, quality, failover,
+  governance, token accounting, and route recommendations from live endpoints.
+- **Phase 7:** the F1-F8 acceptance battery passes and emits a signed owner
+  receipt.
 
-- **Live quota is bypassed by routing** — the router still reads the placeholder
-  `budget_probes` table (`999999` sentinels), not the real snapshots. (Plan P1.1)
-- **The primary FastAPI UI does not run** — `on_event` is removed in the
-  installed FastAPI/Starlette; `main.py` falls back to a read-only server. The
-  interactive `app.js` is orphaned. (Plan P1.3)
-- **Quality is inferred, not measured** — worker stats come from model
-  reputation, not head-to-head comparative accuracy. (Plan P2)
-- **No always-on process; the skill-hook gate is advisory only.** (Plan P4/P5)
-- **`spec-status` still has soft passes** (some targets pass on module/file
-  existence — CT-19/CT-20/etc.). Honesty-hardening is Plan P7.
+Latest verification:
+
+```
+python -m pytest -q
+# 194 passed
+
+python -m orchestrator.cli.main spec-status
+# 24 passed, 0 partial, 0 missing
+
+python -m orchestrator.cli.main acceptance-battery
+# state: passed; F1-F8 passed
+```
+
+Latest acceptance receipt:
+`.runtime/orchestrator/owner-receipts/acceptance-battery-20260614T144804Z.json`
 
 ## Direction
 
-This project is being built into an **AI operating system**: Hermes Agent is the
-kernel/shell; this repo is the vendor-neutral brain it consults (capability +
-measured quality, live quota, failover, governance). Full plan and finished-state
-definition: `C:\Users\Couch\.claude\plans\make-the-end-to-end-plan-linked-widget.md`.
+This project is now the local **AI operating system** brain for this machine:
+vendor-neutral routing, measured quality, live quota, failover, governance, and
+dashboard proof live in this repo. Future work should extend the same proof
+chain instead of reopening the retired migration claims.
