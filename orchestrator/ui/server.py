@@ -28,6 +28,7 @@ from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_t
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
 from orchestrator.discovery.subscription_usage import build_api_budget_payload, build_subscription_usage_payload
+from orchestrator.usage.accounting import build_token_accounting_payload
 from orchestrator.usage.flow import build_token_flow_payload
 
 
@@ -217,6 +218,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/token-flow")
     async def token_flow(limit: int = 50) -> dict[str, object]:
         return await build_token_flow_payload(store, limit=limit)
+
+    @app.get("/api/token-accounting")
+    async def token_accounting(limit: int = 50) -> dict[str, object]:
+        return await build_token_accounting_payload(store, limit=limit)
 
     @app.get("/api/spec-status")
     async def spec_status() -> dict[str, object]:

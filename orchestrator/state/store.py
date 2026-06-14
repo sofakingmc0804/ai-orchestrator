@@ -896,6 +896,51 @@ class StateStore:
             item["success_rate"] = int(item.get("successes") or 0) / attempts
         return grouped
 
+    async def token_usage_by_directive(self, limit: int = 200) -> list[dict[str, Any]]:
+        query = """
+            SELECT
+              COALESCE(intent_id, dispatch_id, id) AS directive_id,
+              intent_id,
+              COUNT(*) AS attempts,
+              COUNT(DISTINCT dispatch_id) AS dispatches,
+              SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful_attempts,
+              SUM(COALESCE(tokens_in, 0)) AS tokens_in,
+              SUM(COALESCE(tokens_out, 0)) AS tokens_out,
+              SUM(COALESCE(tokens_total, 0)) AS tokens_total,
+              MIN(created_at) AS first_seen_at,
+              MAX(created_at) AS last_seen_at,
+              GROUP_CONCAT(DISTINCT adapter_name) AS adapters_csv,
+              GROUP_CONCAT(DISTINCT provider) AS providers_csv,
+              GROUP_CONCAT(DISTINCT model) AS models_csv,
+              GROUP_CONCAT(DISTINCT token_source) AS token_sources_csv,
+              GROUP_CONCAT(DISTINCT confidence) AS confidences_csv
+            FROM token_usage
+            GROUP BY COALESCE(intent_id, dispatch_id, id), intent_id
+            ORDER BY last_seen_at DESC
+            LIMIT ?
+        """
+
+        def split_csv(value: Any) -> list[str]:
+            return sorted({part for part in str(value or "").split(",") if part})
+
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(query, (limit,))).fetchall()
+
+        directives: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            completed = int(item.get("successful_attempts") or 0) > 0
+            item["completed"] = completed
+            item["tokens_per_completed_directive"] = int(item.get("tokens_total") or 0) if completed else None
+            item["adapters"] = split_csv(item.pop("adapters_csv", ""))
+            item["providers"] = split_csv(item.pop("providers_csv", ""))
+            item["models"] = split_csv(item.pop("models_csv", ""))
+            item["token_sources"] = split_csv(item.pop("token_sources_csv", ""))
+            item["confidences"] = split_csv(item.pop("confidences_csv", ""))
+            directives.append(item)
+        return directives
+
     async def list_worker_cards(self, limit: int = 500) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row

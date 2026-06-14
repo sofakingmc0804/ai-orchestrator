@@ -25,6 +25,7 @@ from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_t
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
 from orchestrator.discovery.subscription_usage import build_api_budget_payload, build_subscription_usage_payload
+from orchestrator.usage.accounting import build_token_accounting_payload
 from orchestrator.usage.flow import build_token_flow_payload
 
 
@@ -221,6 +222,14 @@ def make_handler(runtime: OrchestratorRuntime):
                 except ValueError:
                     limit = 50
                 self._send(200, _json_bytes(asyncio.run(build_token_flow_payload(runtime.store, limit=limit))))
+                return
+            if path == "/api/token-accounting":
+                raw_limit = (query.get("limit") or ["50"])[0]
+                try:
+                    limit = max(1, min(int(raw_limit), 1000))
+                except ValueError:
+                    limit = 50
+                self._send(200, _json_bytes(asyncio.run(build_token_accounting_payload(runtime.store, limit=limit))))
                 return
             self._send(404, b"not found", "text/plain")
 
