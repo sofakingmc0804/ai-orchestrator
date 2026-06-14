@@ -128,6 +128,11 @@ class Dispatcher:
         budget_probes = await self.store.list_budget_probes()
         token_usage_summary = await self.store.token_usage_summary()
         operation_quality_scores = await self.store.load_live_operation_quality_scores()
+        service_health = {
+            str(row.get("adapter_name")): str(row.get("health_state") or "unknown")
+            for row in await self.store.list_services()
+            if row.get("adapter_name")
+        }
 
         quota_state = await self.store.latest_quota_state()
         project_policy = project_policy or await self._project_policy(intent.project_id)
@@ -143,6 +148,7 @@ class Dispatcher:
                 subscription_usage_snapshots=subscription_usage_snapshots,
                 token_usage_summary=token_usage_summary,
                 operation_quality_scores=operation_quality_scores,
+                service_health=service_health,
             )
         else:
             capabilities = await self.store.list_capabilities()
@@ -536,6 +542,7 @@ class Dispatcher:
             "success": True,
             "output_summary": text[:500],
             "routing_decision": decision.model_dump(mode="json"),
+            "failover_ladder": decision.candidates_considered,
             "attempts": attempts,
             "output_path": str(result_path),
             "receipt_path": str(receipt_path),

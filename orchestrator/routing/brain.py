@@ -14,6 +14,14 @@ def _stable_route_intent_id(job_class: str, text: str) -> str:
     return f"route_{digest}"
 
 
+def _service_health_lookup(services: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        str(row.get("adapter_name")): str(row.get("health_state") or "unknown")
+        for row in services
+        if row.get("adapter_name")
+    }
+
+
 async def route_brain(
     store: StateStore,
     *,
@@ -60,6 +68,7 @@ async def route_brain(
         subscription_usage_snapshots=await store.list_subscription_usage_snapshots(),
         token_usage_summary=await store.token_usage_summary(),
         operation_quality_scores=await store.load_live_operation_quality_scores(),
+        service_health=_service_health_lookup(await store.list_services()),
     )
     decision_payload = decision.model_dump(mode="json")
     decision_payload.pop("decided_at", None)

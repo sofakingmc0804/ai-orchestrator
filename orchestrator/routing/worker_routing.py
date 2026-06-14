@@ -38,6 +38,12 @@ from orchestrator.surface_adapters import dispatch_adapter_for_worker
 CONTRACT_BLOCKLIST = {"metered_extra_cost", "third_party_metered", "unknown_cost"}
 CODING_MODEL_HINTS = ("coder", "code", "codex", "deepseek", "qwen")
 SUBSCRIPTION_SNAPSHOT_MAX_AGE = timedelta(hours=24)
+HEALTH_SCORES = {
+    "healthy": 1.0,
+    "degraded": 0.35,
+    "unknown": 0.5,
+    "stopped": 0.0,
+}
 
 
 def _as_dict(row: Any) -> dict[str, Any]:
@@ -327,6 +333,41 @@ def _contract_pressure_score(worker: dict[str, Any]) -> float:
     return max(0.0, min(1.0, base))
 
 
+def _health_state_for_adapter(adapter_name: str, service_health: dict[str, str]) -> str:
+    if not service_health:
+        return "healthy"
+    return str(service_health.get(adapter_name) or "unknown").lower()
+
+
+def _health_score(health_state: str) -> float:
+    return HEALTH_SCORES.get(health_state, 0.5)
+
+
+def _marginal_cost_class(worker: dict[str, Any]) -> str:
+    contract = str(worker.get("contract_type") or "")
+    surface = str(worker.get("surface") or "")
+    if surface == "ollama-cloud" and contract == BillingClass.SUBSCRIPTION_USAGE.value:
+        return "flat_rate"
+    if contract in {BillingClass.LOCAL_RESOURCE.value, BillingClass.SUBSCRIPTION_UNLIMITED.value}:
+        return "flat_rate"
+    if contract in {BillingClass.SUBSCRIPTION_QUOTA.value, BillingClass.SUBSCRIPTION_USAGE.value}:
+        return "quota_limited_flat_rate"
+    return "metered_or_unknown"
+
+
+def _marginal_cost_score(worker: dict[str, Any]) -> float:
+    cost_class = _marginal_cost_class(worker)
+    if cost_class == "flat_rate":
+        return 1.0
+    if cost_class == "quota_limited_flat_rate":
+        return 0.6
+    return 0.0
+
+
+def _failover_floor(worker: dict[str, Any]) -> bool:
+    return _marginal_cost_class(worker) == "flat_rate" and str(worker.get("surface") or "") == "ollama-cloud"
+
+
 def _preferred_stat_score(worker: dict[str, Any], preferred_stats: dict[str, int]) -> float:
     stats = _json_dict(worker, "stats_json")
     if not preferred_stats:
@@ -404,6 +445,7 @@ def route_with_workers(
     job_class_spec: dict[str, Any] | None = None,
     token_usage_summary: dict[str, dict[str, Any]] | None = None,
     operation_quality_scores: dict[str, dict[str, dict[str, Any]]] | None = None,
+    service_health: dict[str, str] | None = None,
 ) -> RoutingDecision:
     """Route intent to best worker using worker cards.
 
@@ -426,6 +468,7 @@ def route_with_workers(
     project_policy = project_policy or {}
     token_usage_summary = token_usage_summary or {}
     operation_quality_scores = operation_quality_scores or {}
+    service_health = service_health or {}
 
     budget_lookup = _budget_lookup_from_sources(subscription_usage_snapshots, budget_probes)
 
@@ -468,6 +511,9 @@ def route_with_workers(
             continue
         row["adapter_name"] = adapter_name
         row["provider"] = worker.get("provider_id") or worker.get("surface")
+        health_state = _health_state_for_adapter(adapter_name, service_health)
+        row["health_state"] = health_state
+        row["health_score"] = _health_score(health_state)
         reason = _project_policy_rejection(row, project_policy)
         if reason:
             row["rejected_reason"] = reason
@@ -499,6 +545,7 @@ def route_with_workers(
         model_fit = _model_fit_score(worker, job_class)
         token_score = _token_efficiency_score(worker, token_usage_summary)
         measured_quality, quality_source = _measured_quality_score(worker, job_class, operation_quality_scores)
+        marginal_cost = _marginal_cost_score(worker)
         composite = (
             (job_score * 0.12)
             + (cap_score * 0.12)
@@ -525,11 +572,18 @@ def route_with_workers(
         row["token_efficiency_score"] = token_score
         row["measured_quality_score"] = measured_quality
         row["quality_source"] = quality_source
+        row["marginal_cost_score"] = marginal_cost
+        row["marginal_cost_class"] = _marginal_cost_class(worker)
+        row["failover_floor"] = _failover_floor(worker)
         considered.append(row)
 
-    # Sort by composite score, then contract type (cheapest first)
+    # Ordered ladder: health, live quota, measured quality, marginal cost, then fit.
     considered.sort(
         key=lambda w: (
+            -float(w.get("health_score", 0)),
+            -float(w.get("budget_score", 0)),
+            -float(w.get("measured_quality_score", 0)),
+            -float(w.get("marginal_cost_score", 0)),
             -w.get("composite_score", 0),
             BILLING_ORDER.get(w.get("contract_type"), 99),
         )
@@ -578,6 +632,7 @@ def route_intent_worker_aware(
     subscription_usage_snapshots: list[dict[str, Any]] | None = None,
     token_usage_summary: dict[str, dict[str, Any]] | None = None,
     operation_quality_scores: dict[str, dict[str, dict[str, Any]]] | None = None,
+    service_health: dict[str, str] | None = None,
 ) -> RoutingDecision:
     """Route intent using worker-aware routing.
 
@@ -611,4 +666,5 @@ def route_intent_worker_aware(
         job_class_spec=job_class_spec,
         token_usage_summary=token_usage_summary,
         operation_quality_scores=operation_quality_scores,
+        service_health=service_health,
     )
