@@ -229,10 +229,135 @@ def test_simple_server_dashboard_routes_and_api_contract(monkeypatch: pytest.Mon
 
 def test_dashboard_contains_token_flow_surface() -> None:
     html = (Path(__file__).resolve().parents[1] / "orchestrator" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (Path(__file__).resolve().parents[1] / "orchestrator" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
 
     assert "tokenFlowTotal" in html
     assert "tokenFlowList" in html
     assert "fetch('/api/token-flow?limit=10')" in html
+    for panel_id in [
+        "quotaTrafficList",
+        "qualityLeaderboardList",
+        "routeLadderList",
+        "failoverLadderList",
+        "failoverEventsList",
+        "governanceReceiptList",
+        "tokenAccountingList",
+    ]:
+        assert panel_id in html
+    for endpoint in [
+        "/api/budget",
+        "/api/quality-leaderboard",
+        "/api/failover-events",
+        "/api/governance-receipts",
+        "/api/route",
+    ]:
+        assert endpoint in app_js
+
+
+def test_primary_fastapi_living_dashboard_endpoints(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def fake_services() -> tuple[list[Any], list[Any]]:
+        return [], []
+
+    monkeypatch.setattr(fastapi_server, "discover_services_and_capabilities", fake_services)
+    monkeypatch.setattr(fastapi_server, "discover_projects", lambda *_args, **_kwargs: [])
+
+    async def fake_supervisor_tick(_settings: Settings, _store: StateStore, **_kwargs: object) -> dict[str, object]:
+        return {"state": "produced", "proof_kind": "live"}
+
+    monkeypatch.setattr(fastapi_server, "run_supervisor_tick", fake_supervisor_tick)
+    monkeypatch.setattr(fastapi_server, "start_supervisor_thread", lambda _settings: object())
+
+    settings = Settings(
+        home=tmp_path,
+        state_path=tmp_path / "state.sqlite",
+        notifications_path=tmp_path / "notifications.jsonl",
+        log_dir=tmp_path / "logs",
+        repo_root=tmp_path,
+    )
+    app = fastapi_server.create_app(settings)
+
+    with TestClient(app) as client:
+        store = StateStore(settings)
+
+        async def seed() -> None:
+            await store.record_operation_quality_score(
+                {
+                    "id": "oqs_dashboard",
+                    "dispatch_id": "dsp_dashboard",
+                    "worker_id": "qwen@ollama-local",
+                    "operation_domain": "repo_coding",
+                    "validator_name": "deterministic_referee",
+                    "composite_score": 0.91,
+                    "dimensional_scores": {"relative_accuracy": 0.91},
+                    "task_id": "BENCH-DASHBOARD",
+                    "proof_kind": "live",
+                    "validation": {"rank": 1},
+                    "created_at": "2026-06-14T01:00:00+00:00",
+                }
+            )
+            await store.record_dispatch_attempt(
+                {
+                    "id": "att_dashboard_failed",
+                    "dispatch_id": "dsp_dashboard_failover",
+                    "intent_id": "int_dashboard",
+                    "adapter_name": "primary-worker",
+                    "attempt_number": 1,
+                    "state": "failed",
+                    "started_at": "2026-06-14T01:01:00+00:00",
+                    "completed_at": "2026-06-14T01:01:05+00:00",
+                    "error": "health probe failed",
+                    "detail": {"repair_action": "try next rung"},
+                }
+            )
+            await store.record_dispatch_attempt(
+                {
+                    "id": "att_dashboard_completed",
+                    "dispatch_id": "dsp_dashboard_failover",
+                    "intent_id": "int_dashboard",
+                    "adapter_name": "floor-worker",
+                    "attempt_number": 2,
+                    "state": "completed",
+                    "started_at": "2026-06-14T01:01:06+00:00",
+                    "completed_at": "2026-06-14T01:01:08+00:00",
+                    "detail": {"model": "qwen"},
+                }
+            )
+            await store.record_skill_hook_receipt(
+                {
+                    "id": "shr_dashboard",
+                    "plan_id": "shp_dashboard",
+                    "session_id": "ses_dashboard",
+                    "turn_id": "turn_dashboard",
+                    "hook_event_name": "PreToolUse",
+                    "cwd": str(tmp_path),
+                    "prompt": "python -m pytest",
+                    "tool_name": "shell_command",
+                    "decision": "allow",
+                    "confidence": 0.9,
+                    "selected_skills": ["codex-capability-router"],
+                    "interpreted_actions": [{"type": "test"}],
+                    "authority_checks": [{"id": "repo_local", "status": "passed"}],
+                    "confirmation_state": "not_required",
+                    "terminal_state_requirement": "produced",
+                    "reason": "local verification",
+                    "raw_event": {"event": "PreToolUse"},
+                    "created_at": "2026-06-14T01:02:00+00:00",
+                }
+            )
+
+        asyncio.run(seed())
+        quality = client.get("/api/quality-leaderboard").json()
+        failover = client.get("/api/failover-events").json()
+        governance = client.get("/api/governance-receipts").json()
+
+    assert quality["proof_table"] == "operation_quality_scores"
+    assert quality["leaderboards"][0]["operation_domain"] == "repo_coding"
+    assert quality["leaderboards"][0]["workers"][0]["worker_id"] == "qwen@ollama-local"
+    assert failover["proof_table"] == "dispatch_attempts"
+    assert failover["recent_failover_events"][0]["failed_attempts"] == 1
+    assert failover["ladder_order"] == ["health", "live_quota", "measured_quality", "marginal_cost", "flat_rate_floor"]
+    assert governance["proof_table"] == "skill_hook_receipts"
+    assert governance["summary"]["by_decision"]["allow"] == 1
 
 
 def test_primary_fastapi_route_api_and_app_js_are_live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

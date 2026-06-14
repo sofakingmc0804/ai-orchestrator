@@ -247,6 +247,9 @@
         .meter-name { font-weight: 500; }
         .meter-detail { color: var(--text-muted); font-size: 0.75rem; }
         .meter-value { color: var(--primary); font-weight: 700; }
+        .meter-value.good { color: var(--success); }
+        .meter-value.warn { color: var(--warning); }
+        .meter-value.bad { color: var(--danger); }
 
         .route-form {
             display: grid;
@@ -394,6 +397,35 @@
                     </li>
                 </ul>
             </div>
+
+            <!-- Live Quota -->
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="card-title">Quota Flowmeters</div>
+                    <a href="/budget" class="card-link">Budget →</a>
+                </div>
+                <ul class="meter-list" id="quotaTrafficList">
+                    <li class="meter-item">
+                        <div>
+                            <div class="meter-name">Loading quota flowmeters...</div>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Operation Quality -->
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="card-title">Operation Leaderboards</div>
+                </div>
+                <ul class="meter-list" id="qualityLeaderboardList">
+                    <li class="meter-item">
+                        <div>
+                            <div class="meter-name">Loading live quality scores...</div>
+                        </div>
+                    </li>
+                </ul>
+            </div>
             
             <!-- Route Recommendation -->
             <div class="card full-width">
@@ -419,6 +451,34 @@
                     <button class="route-submit" id="routeSubmit" type="button">Route</button>
                 </div>
                 <pre class="route-result" id="routeResult">Waiting for directive.</pre>
+                <ul class="meter-list" id="routeLadderList">
+                    <li class="meter-item">
+                        <div>
+                            <div class="meter-name">No route ladder loaded</div>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Failover -->
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="card-title">Failover Ladder</div>
+                </div>
+                <ul class="meter-list" id="failoverLadderList">
+                    <li class="meter-item">
+                        <div>
+                            <div class="meter-name">Loading failover ladder...</div>
+                        </div>
+                    </li>
+                </ul>
+                <ul class="meter-list" id="failoverEventsList">
+                    <li class="meter-item">
+                        <div>
+                            <div class="meter-name">Loading failover events...</div>
+                        </div>
+                    </li>
+                </ul>
             </div>
 
             <!-- Token Accounting -->
@@ -445,6 +505,20 @@
                     <li class="meter-item">
                         <div>
                             <div class="meter-name">Loading token accounting...</div>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Governance -->
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="card-title">Governance Receipts</div>
+                </div>
+                <ul class="meter-list" id="governanceReceiptList">
+                    <li class="meter-item">
+                        <div>
+                            <div class="meter-name">Loading governance receipts...</div>
                         </div>
                     </li>
                 </ul>

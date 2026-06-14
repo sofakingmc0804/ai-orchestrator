@@ -25,6 +25,7 @@ from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_t
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
 from orchestrator.discovery.subscription_usage import build_api_budget_payload, build_subscription_usage_payload
+from orchestrator.ui.dashboard import build_failover_events_payload, build_governance_receipts_payload, build_quality_leaderboard_payload
 from orchestrator.usage.accounting import build_token_accounting_payload
 from orchestrator.usage.flow import build_token_flow_payload
 
@@ -230,6 +231,15 @@ def make_handler(runtime: OrchestratorRuntime):
                 except ValueError:
                     limit = 50
                 self._send(200, _json_bytes(asyncio.run(build_token_accounting_payload(runtime.store, limit=limit))))
+                return
+            if path == "/api/quality-leaderboard":
+                self._send(200, _json_bytes(asyncio.run(build_quality_leaderboard_payload(runtime.store))))
+                return
+            if path == "/api/failover-events":
+                self._send(200, _json_bytes(asyncio.run(build_failover_events_payload(runtime.store))))
+                return
+            if path == "/api/governance-receipts":
+                self._send(200, _json_bytes(asyncio.run(build_governance_receipts_payload(runtime.store))))
                 return
             self._send(404, b"not found", "text/plain")
 
