@@ -85,6 +85,31 @@ def _latest_latency_receipt(settings: Settings) -> dict[str, Any] | None:
     return None
 
 
+def _latest_supervisor_restart_receipt(settings: Settings) -> dict[str, Any] | None:
+    supervisor_root = settings.home / "supervisor"
+    if not supervisor_root.exists():
+        return None
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for path in supervisor_root.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("proof_kind") != "live":
+            continue
+        try:
+            recovered = int(payload.get("recovered_dispatches_count") or 0)
+        except (TypeError, ValueError):
+            recovered = 0
+        restart_event = payload.get("event") == "watchdog_restart"
+        if not restart_event and recovered <= 0 and payload.get("restart_recovery_proved") is not True:
+            continue
+        payload["receipt_path"] = payload.get("receipt_path") or str(path)
+        candidates.append((str(payload.get("completed_at") or path.stat().st_mtime), payload))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1] if candidates else None
+
+
 def _jsonl_entries(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -171,6 +196,7 @@ async def evaluate_spec_status(settings: Settings, store: StateStore | None = No
     legacy_tasks = [t for t in scheduler_tasks if t.get("task_type") == "legacy_claude_scheduled_task"]
     latest_latency = _latest_latency_receipt(settings)
     latency_passed = bool(latest_latency and latest_latency.get("passed") is True and float(latest_latency.get("elapsed_seconds") or 9999) < 60)
+    latest_supervisor_restart = _latest_supervisor_restart_receipt(settings)
     expected_contracts = NAMED_ADAPTERS | {"synthetic-test-service"}
     contract_adapters = existing_contract_adapters()
     missing_contracts = sorted(expected_contracts - contract_adapters)
@@ -230,7 +256,18 @@ async def evaluate_spec_status(settings: Settings, store: StateStore | None = No
             ],
             "Run benchmark and record a passed receipt under 60 seconds.",
         ),
-        _target("CT-23", "Crash Survival", "passed" if any("restart" in str(item.get("failure_detail") or "").lower() for item in all_repair_items) else "partial", ["recovery module present", "restart interruption repair history checked"], "Prove interrupted dispatch recovery after process restart."),
+        _target(
+            "CT-23",
+            "Crash Survival",
+            "passed" if latest_supervisor_restart else "partial",
+            [
+                "supervisor module present",
+                f"latest_restart_receipt={latest_supervisor_restart.get('receipt_path') if latest_supervisor_restart else 'none'}",
+                f"restart_event={latest_supervisor_restart.get('event') if latest_supervisor_restart else 'none'}",
+                f"recovered_dispatches={latest_supervisor_restart.get('recovered_dispatches_count') if latest_supervisor_restart else 0}",
+            ],
+            "Prove interrupted dispatch recovery after process restart with a live supervisor receipt.",
+        ),
         _target("CT-24", "Audit Trail", "passed" if audit_log else "partial", [f"{len(audit_log)} audit rows sampled"], "Audit every remaining adapter action and policy transition."),
     ]
 

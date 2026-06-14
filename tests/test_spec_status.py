@@ -70,3 +70,46 @@ async def test_spec_status_marks_latency_target_passed_from_receipt(tmp_path: Pa
 
     assert latency_target["status"] == "passed"
     assert any("latest_elapsed=1.5" in evidence for evidence in latency_target["evidence"])
+
+@pytest.mark.asyncio
+async def test_spec_status_crash_survival_requires_live_supervisor_restart_receipt(tmp_path: Path) -> None:
+    settings = Settings(
+        home=tmp_path / ".orchestrator",
+        state_path=tmp_path / ".orchestrator" / "state.sqlite",
+        notifications_path=tmp_path / ".orchestrator" / "notifications.jsonl",
+        log_dir=tmp_path / ".orchestrator" / "logs",
+        repo_root=Path.cwd(),
+    )
+    store = StateStore(settings)
+    await store.initialize()
+    await store.add_repair_item(
+        "ollama-http",
+        "Dispatch dsp_old was running when the Orchestrator restarted.",
+        "Review dispatch.",
+    )
+
+    stale_status = await evaluate_spec_status(settings, store)
+    stale_target = next(row for row in stale_status["targets"] if row["id"] == "CT-23")
+    assert stale_target["status"] == "partial"
+
+    supervisor_dir = settings.home / "supervisor"
+    supervisor_dir.mkdir(parents=True)
+    receipt = supervisor_dir / "restart.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "event": "supervisor_tick",
+                "state": "produced",
+                "proof_kind": "live",
+                "completed_at": "2026-06-14T00:00:00+00:00",
+                "recovered_dispatches_count": 1,
+                "restart_recovery_proved": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proved_status = await evaluate_spec_status(settings, store)
+    proved_target = next(row for row in proved_status["targets"] if row["id"] == "CT-23")
+    assert proved_target["status"] == "passed"
+    assert any("restart.json" in evidence for evidence in proved_target["evidence"])

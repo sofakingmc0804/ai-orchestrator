@@ -21,9 +21,9 @@ from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.notifications.subscribers.runner import run_all_subscribers_once
 from orchestrator.process.recovery import repair_core_services
 from orchestrator.process.repair_retry import retry_open_repairs
+from orchestrator.process.supervisor import run_supervisor_tick, start_supervisor_thread
 from orchestrator.routing.brain import route_brain
 from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
-from orchestrator.scheduler.cron import start_due_scheduler_thread
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
@@ -59,14 +59,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await store.initialize()
-        await store.recover_interrupted_dispatches()
         services, caps = await discover_services_and_capabilities()
         await store.upsert_services(services)
         await store.upsert_capabilities(caps)
         projects = discover_projects(project_roots, max_depth=3)
         await store.upsert_projects(projects)
-        app.state.scheduler_thread = start_due_scheduler_thread(settings)
-        yield
+
+        async def defer_startup_repair(_store: StateStore) -> dict[str, object]:
+            return {"state": "skipped", "reason": "deferred_to_supervisor_thread"}
+
+        app.state.supervisor_startup_receipt = await run_supervisor_tick(settings, store, repair_core=defer_startup_repair)
+        app.state.supervisor_thread = start_supervisor_thread(settings)
+        try:
+            yield
+        finally:
+            thread = getattr(app.state, "supervisor_thread", None)
+            stop_event = getattr(thread, "stop_event", None)
+            if stop_event is not None:
+                stop_event.set()
+            join = getattr(thread, "join", None)
+            if callable(join):
+                join(timeout=5)
 
     app = FastAPI(title="AI Orchestrator", version="0.1.0", lifespan=lifespan)
     static_dir = Path(__file__).with_suffix("").parent / "static"

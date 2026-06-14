@@ -241,7 +241,12 @@ def test_primary_fastapi_route_api_and_app_js_are_live(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(fastapi_server, "discover_services_and_capabilities", fake_services)
     monkeypatch.setattr(fastapi_server, "discover_projects", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(fastapi_server, "start_due_scheduler_thread", lambda _settings: object())
+
+    async def fake_supervisor_tick(_settings: Settings, _store: StateStore, **_kwargs: object) -> dict[str, object]:
+        return {"state": "produced", "proof_kind": "live"}
+
+    monkeypatch.setattr(fastapi_server, "run_supervisor_tick", fake_supervisor_tick)
+    monkeypatch.setattr(fastapi_server, "start_supervisor_thread", lambda _settings: object())
 
     settings = Settings(
         home=tmp_path,
@@ -326,7 +331,12 @@ def test_cli_and_api_route_return_identical_brain_payload(
 
     monkeypatch.setattr(fastapi_server, "discover_services_and_capabilities", fake_services)
     monkeypatch.setattr(fastapi_server, "discover_projects", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(fastapi_server, "start_due_scheduler_thread", lambda _settings: object())
+
+    async def fake_supervisor_tick(_settings: Settings, _store: StateStore, **_kwargs: object) -> dict[str, object]:
+        return {"state": "produced", "proof_kind": "live"}
+
+    monkeypatch.setattr(fastapi_server, "run_supervisor_tick", fake_supervisor_tick)
+    monkeypatch.setattr(fastapi_server, "start_supervisor_thread", lambda _settings: object())
     settings = Settings(
         home=tmp_path,
         state_path=tmp_path / "state.sqlite",

@@ -106,11 +106,9 @@ def register_budget_probe_scheduler(scheduler_tasks: list) -> list:
     Returns:
         Updated task list with budget probe task
     """
-    from orchestrator.scheduler.tasks import SchedulerTask
-
     budget_probe_task = {
         "name": "subscription-and-api-budget-refresh",
-        "task_type": "budget_probe",
+        "task_type": "budget_probes_cron",
         "schedule_kind": "interval",
         "interval_seconds": 900,  # 15 minutes
         "enabled": True,

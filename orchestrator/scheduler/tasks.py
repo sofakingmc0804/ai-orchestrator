@@ -9,6 +9,7 @@ from orchestrator.autopilot.watchers import scan_autopilot_folder_once
 from orchestrator.autopilot.policy_engine import parse_policy_yaml
 from orchestrator.config import Settings
 from orchestrator.evaluation.tournament import run_deterministic_tournament
+from orchestrator.scheduler.budget_probes_cron import run_budget_probes_once
 from orchestrator.state.store import StateStore, iso
 
 
@@ -159,6 +160,40 @@ async def _run_operation_tournament_task(
     return result
 
 
+async def _run_budget_probes_task(
+    settings: Settings,
+    store: StateStore,
+    task: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        budget_result = await run_budget_probes_once(store)
+    except Exception as exc:
+        result["state"] = "failed"
+        result["reason"] = "budget_probes_cron_failed"
+        result["error"] = str(exc)
+        result["completed_at"] = iso()
+        await store.add_repair_item(
+            "scheduler:budget_probes_cron",
+            f"Budget probe scheduler task {task.get('id')} failed: {exc}",
+            "Repair the subscription/API probe path, then trigger task_budget_probes_cron.",
+        )
+        await store.audit("scheduler", "scheduler_task_failed", str(task.get("id") or ""), result)
+        return result
+
+    result.update(
+        {
+            "state": "completed",
+            "queued": 0,
+            "budget_probes": budget_result,
+            "completed_at": iso(),
+        }
+    )
+    await store.mark_scheduler_task_run(str(task.get("id") or ""), int(task.get("interval_seconds") or 0))
+    await store.audit("scheduler", "scheduler_task_run", str(task.get("id") or ""), result)
+    return result
+
+
 async def run_scheduler_task_once(
     settings: Settings,
     store: StateStore,
@@ -225,6 +260,9 @@ async def run_scheduler_task_once(
 
     if task_type == "operation_tournament":
         return await _run_operation_tournament_task(settings, store, task, result)
+
+    if task_type == "budget_probes_cron":
+        return await _run_budget_probes_task(settings, store, task, result)
 
     result["state"] = "failed"
     result["reason"] = f"unsupported_task_type:{task_type}"
