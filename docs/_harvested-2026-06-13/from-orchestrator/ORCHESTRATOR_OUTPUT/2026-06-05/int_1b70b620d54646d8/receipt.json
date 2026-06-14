@@ -1,0 +1,30 @@
+{
+  "dispatch_id": "dsp_b961ead7e9274fab",
+  "service": "ollama-http",
+  "capability": "classify_text",
+  "model": "qwen2.5:0.5b",
+  "cost_class": "local_resource",
+  "success": true,
+  "output_summary": "Bounded Local Adapter Smoke",
+  "routing_decision": {
+    "intent_id": "int_1b70b620d54646d8",
+    "chosen_adapter": "ollama-http",
+    "candidates_considered": [
+      {
+        "id": "ollama-http:classify_text",
+        "adapter_name": "ollama-http",
+        "capability_id": "classify_text",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1
+      }
+    ],
+    "candidates_rejected": [],
+    "reasoning": "Selected ollama-http for classify_text: cheapest allowed capability match under consequence and cost policy.",
+    "decided_at": "2026-06-05T18:38:24.603651Z"
+  },
+  "output_path": "C:\\Users\\Couch\\.orchestrator\\ORCHESTRATOR_OUTPUT\\2026-06-05\\int_1b70b620d54646d8\\result.txt"
+}

@@ -1,0 +1,30 @@
+{
+  "dispatch_id": "dsp_3a78ca42fce74e9c",
+  "service": "ollama-http",
+  "capability": "classify_text",
+  "model": "qwen2.5:0.5b",
+  "cost_class": "local_resource",
+  "success": true,
+  "output_summary": "Orchestrator Smoke Test",
+  "routing_decision": {
+    "intent_id": "int_384b826980814e39",
+    "chosen_adapter": "ollama-http",
+    "candidates_considered": [
+      {
+        "id": "ollama-http:classify_text",
+        "adapter_name": "ollama-http",
+        "capability_id": "classify_text",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1
+      }
+    ],
+    "candidates_rejected": [],
+    "reasoning": "Selected ollama-http for classify_text: cheapest allowed capability match under consequence and cost policy.",
+    "decided_at": "2026-06-05T17:43:27.739393Z"
+  },
+  "output_path": "C:\\Users\\Couch\\.orchestrator\\ORCHESTRATOR_OUTPUT\\2026-06-05\\int_384b826980814e39\\result.txt"
+}

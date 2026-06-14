@@ -1,0 +1,106 @@
+{
+  "dispatch_id": "dsp_484a087056e64885",
+  "service": "claude-desktop-mcp",
+  "capability": "code_repair",
+  "model": "sonnet",
+  "cost_class": "subscription_quota",
+  "success": true,
+  "output_summary": "claude desktop adapter proof",
+  "routing_decision": {
+    "intent_id": "int_2d76b32bc66f442c",
+    "chosen_adapter": "claude-desktop-mcp",
+    "candidates_considered": [
+      {
+        "id": "claude-desktop-mcp:code_repair",
+        "adapter_name": "claude-desktop-mcp",
+        "capability_id": "code_repair",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "high",
+        "billing_class": "subscription_quota",
+        "enabled": 1
+      }
+    ],
+    "candidates_rejected": [
+      {
+        "id": "claude-code-cli:code_repair",
+        "adapter_name": "claude-code-cli",
+        "capability_id": "code_repair",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "high",
+        "billing_class": "subscription_quota",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      },
+      {
+        "id": "codex-cli:code_repair",
+        "adapter_name": "codex-cli",
+        "capability_id": "code_repair",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "high",
+        "billing_class": "subscription_quota",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      },
+      {
+        "id": "codex-desktop:code_repair",
+        "adapter_name": "codex-desktop",
+        "capability_id": "code_repair",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "high",
+        "billing_class": "subscription_quota",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      },
+      {
+        "id": "copilot-gh:code_repair",
+        "adapter_name": "copilot-gh",
+        "capability_id": "code_repair",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "subscription_quota",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      },
+      {
+        "id": "copilot-vscode:code_repair",
+        "adapter_name": "copilot-vscode",
+        "capability_id": "code_repair",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "subscription_quota",
+        "enabled": 1,
+        "rejected_reason": "adapter not in project allowed_adapters"
+      }
+    ],
+    "reasoning": "Selected claude-desktop-mcp for code_repair: cheapest allowed capability match under consequence, cost, quota, and project policy.",
+    "decided_at": "2026-06-05T22:24:38.532186Z"
+  },
+  "attempts": [
+    {
+      "id": "att_a2c51da81e254ed0",
+      "dispatch_id": "dsp_484a087056e64885",
+      "intent_id": "int_2d76b32bc66f442c",
+      "adapter_name": "claude-desktop-mcp",
+      "attempt_number": 1,
+      "state": "completed",
+      "started_at": "2026-06-05T22:24:38.557758+00:00",
+      "completed_at": "2026-06-05T22:24:48.076584+00:00",
+      "detail": {
+        "model": "sonnet"
+      }
+    }
+  ],
+  "output_path": "C:\\Users\\Couch\\.orchestrator\\adapter-proof\\claude-desktop-mcp\\ORCHESTRATOR_OUTPUT\\2026-06-05\\int_2d76b32bc66f442c\\result.txt"
+}

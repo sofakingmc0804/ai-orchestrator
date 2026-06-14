@@ -1,0 +1,45 @@
+{
+  "dispatch_id": "dsp_457ca23b9192414b",
+  "service": "ollama-http",
+  "capability": "classify_text",
+  "model": "qwen2.5:0.5b",
+  "cost_class": "local_resource",
+  "success": true,
+  "output_summary": "local repair resolution check",
+  "routing_decision": {
+    "intent_id": "int_f923bf98e3a44ce0",
+    "chosen_adapter": "ollama-http",
+    "candidates_considered": [
+      {
+        "id": "ollama-http:classify_text",
+        "adapter_name": "ollama-http",
+        "capability_id": "classify_text",
+        "rating_instruction": 3,
+        "rating_quality": 3,
+        "latency_band": "medium",
+        "consequence_max": "medium",
+        "billing_class": "local_resource",
+        "enabled": 1
+      }
+    ],
+    "candidates_rejected": [],
+    "reasoning": "Selected ollama-http for classify_text: cheapest allowed capability match under consequence, cost, quota, and project policy.",
+    "decided_at": "2026-06-05T21:34:43.313918Z"
+  },
+  "attempts": [
+    {
+      "id": "att_91ad09d6543f4cf2",
+      "dispatch_id": "dsp_457ca23b9192414b",
+      "intent_id": "int_f923bf98e3a44ce0",
+      "adapter_name": "ollama-http",
+      "attempt_number": 1,
+      "state": "completed",
+      "started_at": "2026-06-05T21:34:43.329995+00:00",
+      "completed_at": "2026-06-05T21:34:44.154815+00:00",
+      "detail": {
+        "model": "qwen2.5:0.5b"
+      }
+    }
+  ],
+  "output_path": "C:\\Users\\Couch\\.orchestrator\\ORCHESTRATOR_OUTPUT\\2026-06-05\\int_f923bf98e3a44ce0\\result.txt"
+}
