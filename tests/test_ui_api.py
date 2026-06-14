@@ -7,10 +7,14 @@ from typing import Any
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from orchestrator.models import DispatchResult
+from orchestrator.config import Settings
 import orchestrator.ui.simple_server as simple_server
+import orchestrator.ui.server as fastapi_server
 from orchestrator.ui.simple_server import make_handler
+from orchestrator.state.store import StateStore
 
 
 def test_simple_server_prove_adapter_api_passes_governed_request() -> None:
@@ -225,3 +229,84 @@ def test_dashboard_contains_token_flow_surface() -> None:
     assert "tokenFlowTotal" in html
     assert "tokenFlowList" in html
     assert "fetch('/api/token-flow?limit=10')" in html
+
+
+def test_primary_fastapi_route_api_and_app_js_are_live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def fake_services() -> tuple[list[Any], list[Any]]:
+        return [], []
+
+    monkeypatch.setattr(fastapi_server, "discover_services_and_capabilities", fake_services)
+    monkeypatch.setattr(fastapi_server, "discover_projects", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(fastapi_server, "start_due_scheduler_thread", lambda _settings: object())
+
+    settings = Settings(
+        home=tmp_path,
+        state_path=tmp_path / "state.sqlite",
+        notifications_path=tmp_path / "notifications.jsonl",
+        log_dir=tmp_path / "logs",
+        repo_root=tmp_path,
+    )
+    app = fastapi_server.create_app(settings)
+    assert app.router.on_startup == []
+
+    with TestClient(app) as client:
+        store = StateStore(settings)
+        client.get("/api/status")
+        import anyio
+
+        async def seed() -> None:
+            await store.db.execute(
+                "INSERT INTO job_classes(job_class, required_capabilities_json, preferred_stats_json, local_first, approval_floor) VALUES(?,?,?,?,?)",
+                "repo_coding",
+                '["coding", "tools"]',
+                "{}",
+                0,
+                "local_resource",
+            )
+            await store.db.execute(
+                """
+                INSERT INTO worker_cards(worker_id, model_id, base_model, surface, provider_id, contract_type,
+                  capabilities_json, tools_json, modalities_json, stats_json, best_jobs_json, avoid_jobs_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                "qwen@ollama-local",
+                "qwen",
+                "qwen",
+                "ollama-local",
+                "ollama-local",
+                "local_resource",
+                '["coding"]',
+                '["tools"]',
+                '["text"]',
+                '{"coding": 8, "speed": 7, "stability": 7}',
+                '["repo_coding"]',
+                "[]",
+            )
+
+        anyio.run(seed)
+        index = client.get("/")
+        route = client.post("/api/route", json={"text": "fix this repo bug", "job_class": "repo_coding"})
+
+    assert index.status_code == 200
+    assert '<script src="/static/app.js" defer></script>' in index.text
+    assert 'id="routeText"' in index.text
+    assert route.status_code == 200
+    payload = route.json()
+    assert payload["job_class"] == "repo_coding"
+    assert payload["decision"]["chosen_adapter"] == "ollama-http"
+    assert payload["decision"]["candidates_considered"][0]["worker_id"] == "qwen@ollama-local"
+
+
+def test_main_does_not_silently_fallback_to_simple_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    import orchestrator.main as main_module
+
+    monkeypatch.setattr(main_module.Settings, "load", lambda: object())
+
+    def broken_create_app(_settings: object) -> object:
+        raise TypeError("on_startup is not supported")
+
+    monkeypatch.setattr(main_module, "create_app", broken_create_app)
+    assert not hasattr(main_module, "run_simple_server")
+
+    with pytest.raises(TypeError, match="on_startup"):
+        main_module.main()

@@ -247,6 +247,70 @@
         .meter-name { font-weight: 500; }
         .meter-detail { color: var(--text-muted); font-size: 0.75rem; }
         .meter-value { color: var(--primary); font-weight: 700; }
+
+        .route-form {
+            display: grid;
+            grid-template-columns: 1fr 180px auto;
+            gap: 0.75rem;
+            align-items: end;
+        }
+
+        .route-field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+
+        .route-field label {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .route-field textarea,
+        .route-field select {
+            width: 100%;
+            min-height: 42px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font: inherit;
+            padding: 0.65rem 0.75rem;
+        }
+
+        .route-field textarea {
+            resize: vertical;
+        }
+
+        .route-submit {
+            min-height: 42px;
+            background: var(--primary);
+            border: 1px solid var(--primary);
+            border-radius: 6px;
+            color: var(--text);
+            cursor: pointer;
+            font-weight: 600;
+            padding: 0.65rem 1rem;
+        }
+
+        .route-result {
+            margin-top: 1rem;
+            min-height: 78px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            background: rgba(15, 23, 42, 0.65);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-muted);
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+            font-size: 0.78rem;
+            padding: 0.85rem;
+        }
+
+        @media (max-width: 840px) {
+            .grid { grid-template-columns: 1fr; }
+            .route-form { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -331,6 +395,32 @@
                 </ul>
             </div>
             
+            <!-- Route Recommendation -->
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="card-title">Route Recommendation</div>
+                </div>
+                <div class="route-form">
+                    <div class="route-field">
+                        <label for="routeText">Directive</label>
+                        <textarea id="routeText" rows="2">fix this repo bug</textarea>
+                    </div>
+                    <div class="route-field">
+                        <label for="routeJobClass">Job class</label>
+                        <select id="routeJobClass">
+                            <option value="">Auto</option>
+                            <option value="repo_coding">repo_coding</option>
+                            <option value="agentic_repair">agentic_repair</option>
+                            <option value="classification">classification</option>
+                            <option value="summarization">summarization</option>
+                            <option value="technical_analysis">technical_analysis</option>
+                        </select>
+                    </div>
+                    <button class="route-submit" id="routeSubmit" type="button">Route</button>
+                </div>
+                <pre class="route-result" id="routeResult">Waiting for directive.</pre>
+            </div>
+
             <!-- Recent Activity -->
             <div class="card full-width">
                 <div class="card-header">
@@ -541,7 +631,7 @@
         
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
-            if (e.target.tagName === 'INPUT') return;
+            if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
             
             switch(e.key.toLowerCase()) {
                 case 'w': window.location.href = '/workers'; break;
@@ -554,5 +644,6 @@
         loadDashboard();
         setInterval(loadDashboard, 60000); // Refresh every minute
     </script>
+    <script src="/static/app.js" defer></script>
 </body>
 </html>

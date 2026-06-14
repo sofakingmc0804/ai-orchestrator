@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
@@ -15,13 +17,17 @@ from orchestrator.discovery.budget_probes import probe_to_dict, run_all_probes
 from orchestrator.discovery.projects import discover_projects
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.dispatch.dispatcher import Dispatcher
+from orchestrator.governance.job_classifier import classify_with_fallback
+from orchestrator.intent.interpreter import parse_intent
 from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.notifications.subscribers.runner import run_all_subscribers_once
 from orchestrator.process.recovery import repair_core_services
 from orchestrator.process.repair_retry import retry_open_repairs
+from orchestrator.routing.worker_routing import route_intent_worker_aware
 from orchestrator.scheduler.migration import migrate_legacy_scheduled_tasks
 from orchestrator.scheduler.cron import start_due_scheduler_thread
 from orchestrator.scheduler.tasks import run_scheduler_once, trigger_scheduler_task
+from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
 from orchestrator.discovery.subscription_usage import build_api_budget_payload, build_subscription_usage_payload
 from orchestrator.usage.flow import build_token_flow_payload
@@ -29,6 +35,12 @@ from orchestrator.usage.flow import build_token_flow_payload
 
 class IntentRequest(BaseModel):
     text: str
+    project_root: str | None = None
+
+
+class RouteRequest(BaseModel):
+    text: str
+    job_class: str | None = None
     project_root: str | None = None
 
 
@@ -44,20 +56,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = StateStore(settings)
     notifications = NotificationSpine(settings.notifications_path, store)
     dispatcher = Dispatcher(settings, store, notifications)
-    app = FastAPI(title="AI Orchestrator", version="0.1.0")
-    static_dir = Path(__file__).with_suffix("").parent / "static"
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    project_roots = [settings.repo_root]
 
-    @app.on_event("startup")
-    async def startup() -> None:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await store.initialize()
         await store.recover_interrupted_dispatches()
         services, caps = await discover_services_and_capabilities()
         await store.upsert_services(services)
         await store.upsert_capabilities(caps)
-        projects = discover_projects([Path.home(), Path.home() / "Documents", Path("D:/SharedRoot")], max_depth=3)
+        projects = discover_projects(project_roots, max_depth=3)
         await store.upsert_projects(projects)
         app.state.scheduler_thread = start_due_scheduler_thread(settings)
+        yield
+
+    app = FastAPI(title="AI Orchestrator", version="0.1.0", lifespan=lifespan)
+    static_dir = Path(__file__).with_suffix("").parent / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
@@ -192,6 +207,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def token_flow(limit: int = 50) -> dict[str, object]:
         return await build_token_flow_payload(store, limit=limit)
 
+    @app.get("/api/spec-status")
+    async def spec_status() -> dict[str, object]:
+        return await evaluate_spec_status(settings, store)
+
     @app.post("/api/selections")
     async def add_selection(payload: dict[str, object]) -> dict[str, object]:
         raw_payload = payload.get("payload")
@@ -204,6 +223,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project = Path(req.project_root) if req.project_root else None
         result = await dispatcher.dispatch_text(req.text, project)
         return result.model_dump(mode="json")
+
+    @app.post("/api/route")
+    async def route(req: RouteRequest) -> dict[str, object]:
+        classification = classify_with_fallback(req.text, req.job_class)
+        job_class = str(classification["job_class"])
+        intent = parse_intent(req.text, source="ui-route")
+        job_spec = await store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", job_class)
+        workers = await store.db.fetch("SELECT * FROM worker_cards")
+        decision = route_intent_worker_aware(
+            intent,
+            workers,
+            job_class,
+            quota_state=await store.latest_quota_state(),
+            project_policy={},
+            job_class_spec=job_spec,
+            budget_probes=await store.list_budget_probes(),
+            subscription_usage_snapshots=await store.list_subscription_usage_snapshots(),
+            token_usage_summary=await store.token_usage_summary(),
+            operation_quality_scores=await store.load_live_operation_quality_scores(),
+        )
+        return {
+            "state": "produced",
+            "job_class": job_class,
+            "classification": classification,
+            "decision": decision.model_dump(mode="json"),
+        }
 
     @app.post("/api/prove-adapter")
     async def prove_adapter(req: AdapterProofRequest) -> dict[str, object]:
@@ -227,7 +272,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         services, caps = await discover_services_and_capabilities()
         await store.upsert_services(services)
         await store.upsert_capabilities(caps)
-        projects = discover_projects([Path.home(), Path.home() / "Documents", Path("D:/SharedRoot")], max_depth=3)
+        projects = discover_projects(project_roots, max_depth=3)
         await store.upsert_projects(projects)
         await store.record_discovery("refresh", {"services": len(services), "capabilities": len(caps), "projects": len(projects)}, "Manual API refresh completed.")
         return {"services": len(services), "capabilities": len(caps), "projects": len(projects)}

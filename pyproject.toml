@@ -5,11 +5,12 @@ description = "Standalone AI operating layer and orchestrator for local and subs
 requires-python = ">=3.13"
 dependencies = [
   "aiosqlite",
-  "fastapi",
+  "fastapi>=0.115,<0.116",
   "httpx",
   "psutil",
   "pydantic",
   "PyYAML",
+  "starlette>=0.40,<0.47",
   "uvicorn",
   "watchdog",
 ]
