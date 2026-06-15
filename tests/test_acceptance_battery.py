@@ -70,4 +70,5 @@ async def test_acceptance_battery_writes_signed_owner_receipt(tmp_path: Path) ->
     assert payload["signature_sha256"] == result["signature_sha256"]
     assert Path(str(payload["proofs"]["autopilot"])).exists()
     assert Path(str(payload["proofs"]["platform"])).exists()
+    assert Path(str(payload["proofs"]["consequence_enforcement"])).exists()
     assert payload["proofs"]["synthetic_dispatch_id"]

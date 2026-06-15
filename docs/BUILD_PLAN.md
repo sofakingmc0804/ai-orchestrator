@@ -33,14 +33,14 @@ A skeptical multi-agent audit established the real state (evidence in repo, not 
 
 The build is **done** when every line below passes its acceptance test on this machine:
 
-- **F1 — Truthful self-knowledge.** No capability, score, quota number, or "proven" claim exists without persisted, re-runnable **behavioral evidence** (raw proof artifact). `spec-status` reports *missing* on a clean DB; a target flips to *passed* only after a real run writes real proof. No row-count or file-existence "passes" remain.
+- **F1 — Truthful self-knowledge.** No capability, score, quota number, or "proven" claim exists without persisted, re-runnable **behavioral evidence** (raw proof artifact). `spec-status` reports *missing* on a clean DB; a target flips to *passed* only after a real run writes real proof. No row-count, file-existence, or self-reported verification "passes" remain. Consequential completion proof is part of F1: a deliberately failing Ralph verification command and an old hand-typed `ralph-verify` pass must both block completion; only `ralph-verify-exec` with a zero exit code may allow.
 - **F2 — Unbiased comparative capability model.** For every operation-domain, the system holds a **relative ranking of models by measured accuracy against each other**, produced by a deterministic, bias-controlled tournament (ground-truth referees + blind multi-judge consensus). "Which model for X?" returns an evidence-backed answer with the comparison behind it.
 - **F3 — Live resource truth.** Routing decisions consume the **real** subscription/quota signal (`subscription_usage_snapshots`), with a 20% reserve enforced per provider; the placeholder lane is gone or demoted to explicit fallback.
 - **F4 — Never stops / never runs out.** An **N-deep failover ladder** (ranked by health → live quota → measured quality-for-task → marginal cost) degrades gracefully to a **flat-rate floor** (Ollama Cloud open-weights) before work ever halts. Killing the top provider mid-run continues the work on the next rung without losing the task.
 - **F5 — Hermes is the kernel; orchestrator is the brain.** Hermes' router calls the orchestrator brain (`route` API) for every nontrivial decision; the orchestrator no longer shells `hermes -z` as a worker-of-last-resort. The brain runs as a **supervised always-on service** that restarts on crash.
-- **F6 — Premium agents governed.** Claude/Codex/Cowork execute the standard of steps (a small hard-enforced ruleset), their **tokens-per-completed-directive** is measured (not just instruction bytes), and the eval surfaces whether their cost is justified.
+- **F6 — Premium agents governed.** Claude/Codex/Cowork execute the standard of steps (a small hard-enforced ruleset), their **tokens-per-completed-directive** is measured (not just instruction bytes), and the eval surfaces whether their cost is justified. High-stakes ungrounded claims also use the bounded independent critic path: source-specific objection, no self-judge chain-of-thought, at most three revision cycles, then `UNCERTAIN`.
 - **F7 — Always-visualized.** A working dashboard shows, in real time: what to use for what (comparative leaderboards), live quota/flowmeters, the failover ladder and recent failover events, and governance/efficiency receipts. The broken FastAPI path is fixed or retired — no silent fallback.
-- **F8 — One honest source of record.** `efficiency_policy.json` remains the vendor-neutral source compiled into each agent's config; AGENTS.md/CLAUDE.md carry no un-retired contradictory (pre-ADR-028) content; the "100% complete" docs are retired.
+- **F8 — One honest source of record.** `efficiency_policy.json` remains the vendor-neutral source compiled into each agent's config; AGENTS.md/CLAUDE.md carry no un-retired contradictory (pre-ADR-028) content; the "100% complete" docs are retired. Prose-format `EPISTEMIC_BLOCK` gates are retired from live Claude/Codex/Gemini configs; the retained engine is audit-only and must return `allow`.
 
 ---
 
@@ -195,6 +195,7 @@ The build is **done** when every line below passes its acceptance test on this m
 - Cross-OS bones honest (CT-20): macOS/Linux stay stable stubs but `spec-status` stops counting stub-file-existence as "passed."
 - Autopilot (CT-19) confirmed gated-off with a real default-disabled assertion, not file-existence.
 - Full audit trail + new-service registration proof (add the synthetic adapter end-to-end with real proof, not a contract-count).
+- Consequential reasoning enforcement proof: the acceptance battery runs the Ralph execution gate checks, verifies prose gates are retired, verifies Codex's in-path reasoning floor is honest (`xhigh` with no fake universal proxy claim), records the conditional Action 4 reality-check tool status, and proves the bounded critic returns a specific objection then `UNCERTAIN` by the third unresolved cycle.
 - **Acceptance battery:** one script runs the F1–F8 checks and emits a signed owner receipt. The OS is "done" when it passes.
 - **Verify:** `python -m orchestrator.cli.main spec-status` is all-honest-passed **with live proofs**, and the F1–F8 acceptance battery is green.
 

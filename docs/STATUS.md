@@ -27,7 +27,7 @@ on disk:
 Run `spec-status` for the current numbers. Do not quote a fixed percentage here —
 it would go stale and re-introduce the exact dishonesty this file exists to end.
 
-## Current build state (verified 2026-06-14)
+## Current build state (verified 2026-06-15)
 
 Phases 1-7 in `docs/BUILD_PLAN.md` are complete on this machine. The finished
 state is proved by live repo commands and persisted receipts, not by a static
@@ -48,13 +48,16 @@ percentage.
 - **Phase 6:** the living dashboard renders quota, quality, failover,
   governance, token accounting, and route recommendations from live endpoints.
 - **Phase 7:** the F1-F8 acceptance battery passes and emits a signed owner
-  receipt.
+  receipt. The consequential reasoning enforcement plan is folded into that
+  battery: Ralph completion requires executed proof, retired prose gates stay
+  retired, Codex's reasoning floor is explicit, and high-stakes claims use the
+  bounded source critic path.
 
 Latest verification:
 
 ```
 python -m pytest -q
-# 194 passed
+# 202 passed
 
 python -m orchestrator.cli.main spec-status
 # 24 passed, 0 partial, 0 missing
@@ -64,7 +67,10 @@ python -m orchestrator.cli.main acceptance-battery
 ```
 
 Latest acceptance receipt:
-`.runtime/orchestrator/owner-receipts/acceptance-battery-20260614T144804Z.json`
+`.runtime/orchestrator/owner-receipts/acceptance-battery-20260615T053418Z.json`
+
+Latest consequence enforcement proof:
+`.runtime/orchestrator/acceptance/consequence-enforcement/consequence-enforcement-20260615T053415Z.json`
 
 ## Direction
 
