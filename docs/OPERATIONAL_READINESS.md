@@ -4,16 +4,16 @@ This file tracks the old migration follow-up checklist as live operating work.
 The migration report is historical; this file is the consumer-facing readiness
 surface for install, proof, and remaining owner-gated work.
 
-Verified on 2026-06-14 from `C:\Users\Couch\dev\ai-orchestrator`.
+Verified on 2026-06-15 from `C:\Users\Couch\dev\ai-orchestrator`.
 
 ## Immediate (Day 1)
 
 | Item | Status | Proof | Consumer |
 | --- | --- | --- | --- |
 | Review this migration report | Complete | Historical report retired by `docs/STATUS.md`; `docs/MIGRATION_COMPLETE.md` now points here for readiness. | Owner / maintainer |
-| Run end-to-end tests | Complete | `python -m pytest tests/test_consolidation.py -q` -> `8 passed`. | Maintainer |
-| Start server, verify UIs | Complete | Hidden `python -m orchestrator.main --host 127.0.0.1 --port 18767`; `/`, `/workers`, `/budget`, `/receipts`, `/api/status`, `/api/spec-status`, `/api/quality-leaderboard`, `/api/token-accounting`, and `POST /api/route` all returned 200 with expected content; server stopped. | Owner / operator |
-| Test dispatch flow end-to-end | Complete | `python -m orchestrator.cli.main dispatch --full "operational readiness dispatch proof"` -> dispatch `dsp_d579b8132ce0428c`, `state=completed`, `proof_kind=live`, output under `.runtime/orchestrator/ORCHESTRATOR_OUTPUT/2026-06-14/int_31cb4d27c4674d26/`. | Owner / operator |
+| Run end-to-end tests | Complete | `python -m pytest -q` -> `202 passed`; `python -m orchestrator.cli.main spec-status` -> `24 passed, 0 partial, 0 missing`. | Maintainer |
+| Start server, verify UIs | Complete | Hidden `python -m orchestrator.main --host 127.0.0.1 --port 18767`; `/`, `/workers`, `/budget`, `/receipts`, `/api/status`, `/api/spec-status`, `/api/quality-leaderboard`, `/api/token-accounting`, and `POST /api/route` returned 200. A second hidden route probe on port 18768 returned `job_class=repo_coding`, `chosen_adapter=ollama-http`, `candidates_considered=20`; both servers were stopped. | Owner / operator |
+| Test dispatch flow end-to-end | Complete | `python -m orchestrator.cli.main dispatch --full "operational readiness dispatch proof 2026-06-15"` -> dispatch `dsp_fc44d6de9c704ad1`, `state=completed`, `proof_kind=live`, output under `.runtime/orchestrator/ORCHESTRATOR_OUTPUT/2026-06-15/int_220c108e8f7e4859/`. | Owner / operator |
 
 ## Short-Term (Week 1)
 
