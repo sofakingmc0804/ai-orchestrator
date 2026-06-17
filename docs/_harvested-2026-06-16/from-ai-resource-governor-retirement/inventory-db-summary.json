@@ -1,0 +1,186 @@
+{
+  "source": "C:\\Users\\Couch\\dev\\ai-orchestrator\\.runtime\\archives\\ai-resource-governor-retirement-20260617T035028Z\\home-dot-ai-resource-governor\\inventory.sqlite",
+  "tables": [
+    {
+      "table": "approval_rules",
+      "rows": 7,
+      "columns": [
+        "rule_id",
+        "contract_type",
+        "provider_id",
+        "worker_id",
+        "approval_required",
+        "condition",
+        "action",
+        "updated_at"
+      ]
+    },
+    {
+      "table": "budget_sources",
+      "rows": 5,
+      "columns": [
+        "source_id",
+        "provider_id",
+        "method",
+        "endpoint",
+        "refresh_status",
+        "remaining",
+        "entitlement",
+        "percent_remaining",
+        "reset_at",
+        "current_cost_usd",
+        "current_usage_json",
+        "last_receipt_path",
+        "last_verified",
+        "updated_at"
+      ]
+    },
+    {
+      "table": "hermes_config_state",
+      "rows": 1,
+      "columns": [
+        "state_id",
+        "cli_config_path",
+        "desktop_config_path",
+        "cli_model_json",
+        "desktop_model_json",
+        "resolution_action",
+        "receipt_path",
+        "updated_at"
+      ]
+    },
+    {
+      "table": "job_classes",
+      "rows": 14,
+      "columns": [
+        "job_class",
+        "required_capabilities_json",
+        "preferred_stats_json",
+        "local_first",
+        "approval_floor",
+        "updated_at"
+      ]
+    },
+    {
+      "table": "models",
+      "rows": 22,
+      "columns": [
+        "model_id",
+        "provider_id",
+        "runtime",
+        "context_tokens",
+        "capabilities_json",
+        "task_fit_json",
+        "attributes_json",
+        "updated_at"
+      ]
+    },
+    {
+      "table": "projects",
+      "rows": 424,
+      "columns": [
+        "project_id",
+        "root",
+        "domain",
+        "consequence",
+        "allowed_providers_json",
+        "forbidden_billing_classes_json",
+        "default_local_model",
+        "premium_escalation_rule",
+        "quota_budget_json",
+        "receipt_path",
+        "repair_path",
+        "updated_at"
+      ]
+    },
+    {
+      "table": "providers",
+      "rows": 10,
+      "columns": [
+        "provider_id",
+        "billing_class",
+        "allowed_by_default",
+        "authority",
+        "updated_at"
+      ]
+    },
+    {
+      "table": "quotas",
+      "rows": 1,
+      "columns": [
+        "provider_id",
+        "remaining",
+        "entitlement",
+        "percent_remaining",
+        "reset_at",
+        "source",
+        "updated_at"
+      ]
+    },
+    {
+      "table": "receipts",
+      "rows": 41,
+      "columns": [
+        "receipt_id",
+        "kind",
+        "path",
+        "summary",
+        "created_at"
+      ]
+    },
+    {
+      "table": "repairs",
+      "rows": 4,
+      "columns": [
+        "repair_id",
+        "surface",
+        "failure",
+        "next_action",
+        "status",
+        "created_at"
+      ]
+    },
+    {
+      "table": "usage_snapshots",
+      "rows": 30,
+      "columns": [
+        "snapshot_id",
+        "provider_id",
+        "source_id",
+        "metrics_json",
+        "receipt_path",
+        "created_at"
+      ]
+    },
+    {
+      "table": "worker_cards",
+      "rows": 96,
+      "columns": [
+        "worker_id",
+        "model_id",
+        "base_model",
+        "surface",
+        "provider_id",
+        "contract_type",
+        "salary_bucket",
+        "overtime_rule",
+        "budget_source_id",
+        "hardware_fit",
+        "context_window",
+        "modalities_json",
+        "tools_json",
+        "stats_json",
+        "best_jobs_json",
+        "avoid_jobs_json",
+        "badges_json",
+        "approval_required",
+        "marginal_cost_json",
+        "source_evidence_json",
+        "dynamic_state_json",
+        "last_verified",
+        "updated_at",
+        "capabilities_json"
+      ]
+    }
+  ]
+}

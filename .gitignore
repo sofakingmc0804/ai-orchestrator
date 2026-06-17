@@ -11,6 +11,8 @@ __pycache__/
 .runtime/**/*.sqlite-wal
 .runtime/**/*.sqlite-shm
 .runtime/**/*.log
+.runtime/archives/
+.runtime/backups/
 
 # Transient benchmark run outputs (kept locally, not committed).
 benchmark_results/

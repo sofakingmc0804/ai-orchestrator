@@ -1,0 +1,15 @@
+{
+  "timestamp_utc": "2026-06-17T03:52:26.7547104Z",
+  "operation": "ai-resource-governor-retirement-continuation",
+  "legacy_path": "C:\\Users\\Couch\\.ai-resource-governor",
+  "retired_path": "C:\\Users\\Couch\\.ai-resource-governor.retired-20260617T035028Z",
+  "archive_root": "C:\\Users\\Couch\\dev\\ai-orchestrator\\.runtime\\archives\\ai-resource-governor-retirement-20260617T035028Z",
+  "harvested_root": "C:\\Users\\Couch\\dev\\ai-orchestrator\\docs\\_harvested-2026-06-16\\from-ai-resource-governor-retirement",
+  "migration_note": "migrate-governor-to-orchestrator.py migrated worker/job/probe rows, then failed only at compatibility symlink creation because inventory.sqlite was still locked by the script process; retirement moved the legacy home instead of relying on symlinks.",
+  "task_removed": true,
+  "task_remove_error": null,
+  "task_after_exists": false,
+  "path_removed_from_user_path": true,
+  "legacy_path_exists_after": false,
+  "retired_path_exists_after": true
+}
