@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from orchestrator.config import Settings
+from orchestrator.connectors import build_config_preview, build_connectors_payload, connector_templates, validate_connector_config
 from orchestrator.autopilot.watchers import scan_autopilot_roots_once
 from orchestrator.benchmarks.latency import run_selection_latency_benchmark
 from orchestrator.discovery.auth import probe_auth_and_quota, quota_snapshots
@@ -101,6 +102,7 @@ def make_handler(runtime: OrchestratorRuntime):
             pages = {
                 "/workers": "workers.html",
                 "/budget": "budget.html",
+                "/connectors": "connectors.html",
                 "/receipts": "receipts.html",
             }
             if path in pages:
@@ -168,6 +170,21 @@ def make_handler(runtime: OrchestratorRuntime):
                 return
             if path == "/api/capabilities":
                 self._send(200, _json_bytes(asyncio.run(runtime.store.list_capabilities())))
+                return
+            if path == "/api/connectors":
+                self._send(
+                    200,
+                    _json_bytes(
+                        build_connectors_payload(
+                            runtime.settings.repo_root,
+                            asyncio.run(runtime.store.list_services()),
+                            asyncio.run(runtime.store.list_capabilities()),
+                        )
+                    ),
+                )
+                return
+            if path == "/api/connectors/templates":
+                self._send(200, _json_bytes({"state": "produced", "templates": connector_templates()}))
                 return
             if path == "/api/auth-quota":
                 auth_state = probe_auth_and_quota()
@@ -256,6 +273,16 @@ def make_handler(runtime: OrchestratorRuntime):
                 return
             if path == "/api/subscriptions/refresh":
                 self._send(200, _json_bytes(asyncio.run(build_subscription_usage_payload(runtime.store, refresh=True))))
+                return
+            if path == "/api/connectors/validate":
+                self._send(200, _json_bytes(validate_connector_config(payload)))
+                return
+            if path == "/api/connectors/config-preview":
+                validation = validate_connector_config(payload)
+                if not validation.get("success"):
+                    self._send(400, _json_bytes({"detail": validation}))
+                    return
+                self._send(200, _json_bytes(build_config_preview(payload)))
                 return
             if path == "/api/repair-services":
                 self._send(200, _json_bytes(asyncio.run(repair_core_services(runtime.store))))

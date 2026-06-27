@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connectors - AI Orchestrator</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #334155;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --primary: #3b82f6;
+            --code-bg: #0b1220;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html { min-height: 100%; overflow-y: auto; }
+        body {
+            min-height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            padding: 2rem 2rem 3rem;
+            overflow-y: auto;
+        }
+        .container { max-width: 1440px; margin: 0 auto; }
+        nav { margin-bottom: 2rem; }
+        nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            margin-right: 1.5rem;
+            transition: color 0.2s;
+        }
+        nav a:hover, nav a.active { color: var(--text); }
+        header {
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+        }
+        h1 { font-size: 1.75rem; font-weight: 650; letter-spacing: 0; }
+        .subtitle { color: var(--text-muted); font-size: 0.875rem; margin-top: 0.35rem; }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            min-height: 28px;
+            padding: 0.25rem 0.65rem;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            white-space: nowrap;
+        }
+        .pill.ok { color: var(--success); border-color: rgba(34, 197, 94, 0.45); background: rgba(34, 197, 94, 0.1); }
+        .pill.warn { color: var(--warning); border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.1); }
+        .layout {
+            display: grid;
+            grid-template-columns: minmax(320px, 0.8fr) minmax(420px, 1.2fr);
+            gap: 1rem;
+            align-items: start;
+        }
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+        }
+        .card + .card { margin-top: 1rem; }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 0.8rem;
+            padding-bottom: 0.7rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .card-title { font-size: 1rem; font-weight: 650; }
+        .connector-grid {
+            display: grid;
+            gap: 0.75rem;
+        }
+        .connector-card {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.85rem;
+            background: rgba(15, 23, 42, 0.56);
+        }
+        .connector-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            align-items: flex-start;
+            margin-bottom: 0.65rem;
+        }
+        .connector-name { font-weight: 650; overflow-wrap: anywhere; }
+        .connector-id {
+            color: var(--text-muted);
+            font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+            font-size: 0.75rem;
+            margin-top: 0.15rem;
+        }
+        .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.55rem;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+        .cap-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            margin-top: 0.7rem;
+        }
+        .cap {
+            color: var(--primary);
+            background: rgba(59, 130, 246, 0.12);
+            border: 1px solid rgba(59, 130, 246, 0.24);
+            border-radius: 4px;
+            padding: 0.18rem 0.4rem;
+            font-size: 0.72rem;
+        }
+        label {
+            display: block;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            margin: 0 0 0.3rem;
+        }
+        input, select, textarea {
+            width: 100%;
+            min-height: 42px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font: inherit;
+            padding: 0.65rem 0.75rem;
+        }
+        textarea { min-height: 82px; resize: vertical; }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.8rem;
+        }
+        .form-row { margin-bottom: 0.8rem; }
+        .hidden { display: none; }
+        .actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+        button {
+            min-height: 40px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg);
+            color: var(--text);
+            cursor: pointer;
+            font: inherit;
+            font-weight: 650;
+            padding: 0.55rem 0.85rem;
+        }
+        button.primary { background: var(--primary); border-color: var(--primary); color: white; }
+        button:disabled { opacity: 0.6; cursor: wait; }
+        pre {
+            min-height: 180px;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: #dce8f7;
+            font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+            padding: 0.9rem;
+        }
+        .status-line {
+            color: var(--text-muted);
+            font-size: 0.82rem;
+            margin-top: 0.75rem;
+            overflow-wrap: anywhere;
+        }
+        .status-line.error { color: var(--danger); }
+        .empty { color: var(--text-muted); padding: 1rem 0; }
+        @media (max-width: 900px) {
+            .layout, .form-grid { grid-template-columns: 1fr; }
+            header { display: block; }
+            header .pill { margin-top: 0.8rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav>
+            <a href="/">Home</a>
+            <a href="/workers">Workers</a>
+            <a href="/budget">Budget</a>
+            <a href="/connectors" class="active">Connectors</a>
+            <a href="/receipts">Receipts</a>
+        </nav>
+
+        <header>
+            <div>
+                <h1>Connector Management</h1>
+                <div class="subtitle" id="authorityLine">Loading authority...</div>
+            </div>
+            <span class="pill" id="credentialPolicy">Policy loading</span>
+        </header>
+
+        <main class="layout" id="connectorsPanel">
+            <section>
+                <article class="card">
+                    <div class="card-header">
+                        <div class="card-title">Authority Services</div>
+                        <button id="refreshConnectors" onclick="loadConnectors()">Refresh</button>
+                    </div>
+                    <div class="connector-grid" id="connectorList">
+                        <div class="empty">Loading connectors...</div>
+                    </div>
+                </article>
+
+                <article class="card">
+                    <div class="card-header">
+                        <div class="card-title">Templates</div>
+                    </div>
+                    <div id="templateList" class="cap-list"></div>
+                </article>
+            </section>
+
+            <section>
+                <article class="card">
+                    <div class="card-header">
+                        <div class="card-title">Config Wizard</div>
+                        <span class="pill ok">No secret values</span>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="connectorName">Name</label>
+                            <input id="connectorName" value="local-drive">
+                        </div>
+                        <div class="form-row">
+                            <label for="transport">Transport</label>
+                            <select id="transport" onchange="syncTransportFields()">
+                                <option value="stdio">STDIO</option>
+                                <option value="http">HTTP</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="stdioFields">
+                        <div class="form-row">
+                            <label for="command">Command</label>
+                            <input id="command" value="node">
+                        </div>
+                        <div class="form-row">
+                            <label for="args">Args</label>
+                            <input id="args" value="server.js">
+                        </div>
+                        <div class="form-row">
+                            <label for="envVars">Env Vars</label>
+                            <input id="envVars" value="LOCAL_DRIVE_TOKEN">
+                        </div>
+                    </div>
+                    <div id="httpFields" class="hidden">
+                        <div class="form-row">
+                            <label for="url">URL</label>
+                            <input id="url" value="http://127.0.0.1:3000/mcp">
+                        </div>
+                        <div class="form-row">
+                            <label for="bearerTokenEnvVar">Bearer Token Env Var</label>
+                            <input id="bearerTokenEnvVar" value="">
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="enabledTools">Enabled Tools</label>
+                            <input id="enabledTools" value="">
+                        </div>
+                        <div class="form-row">
+                            <label for="approvalMode">Approval Mode</label>
+                            <select id="approvalMode">
+                                <option value="">Default</option>
+                                <option value="prompt">Prompt</option>
+                                <option value="approve">Approve</option>
+                                <option value="auto">Auto</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button class="primary" id="previewConfig" onclick="previewConfig()">Generate Preview</button>
+                        <button onclick="resetWizard()">Reset</button>
+                    </div>
+                    <div class="status-line" id="wizardStatus">Waiting for config.</div>
+                </article>
+
+                <article class="card">
+                    <div class="card-header">
+                        <div class="card-title">Codex MCP Preview</div>
+                    </div>
+                    <pre id="configPreview">No preview generated.</pre>
+                </article>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const esc = value => String(value == null ? "" : value)
+            .replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+        const splitList = value => String(value || "").split(/[,\n]/).map(item => item.trim()).filter(Boolean);
+
+        async function getJson(url) {
+            const response = await fetch(url);
+            const body = await response.json();
+            if (!response.ok) throw new Error(body.detail?.message || body.error || response.statusText);
+            return body;
+        }
+
+        async function postJson(url, payload) {
+            const response = await fetch(url, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload),
+            });
+            const body = await response.json();
+            if (!response.ok) {
+                const error = new Error(body.detail?.message || body.error || response.statusText);
+                error.payload = body;
+                throw error;
+            }
+            return body;
+        }
+
+        function renderConnectors(payload) {
+            document.getElementById("authorityLine").textContent =
+                `${payload.authority?.terminal_state || "unknown"} / ${payload.authority?.decision || "no decision"}`;
+            document.getElementById("credentialPolicy").textContent = payload.credential_policy || "credential policy unknown";
+            document.getElementById("credentialPolicy").className = "pill ok";
+
+            const templates = payload.templates || [];
+            document.getElementById("templateList").innerHTML = templates.map(template =>
+                `<button class="cap" onclick="applyTemplate('${esc(template.transport)}')">${esc(template.name)}</button>`
+            ).join("");
+
+            const rows = payload.connectors || [];
+            const list = document.getElementById("connectorList");
+            if (!rows.length) {
+                list.innerHTML = `<div class="empty">No authority services recorded.</div>`;
+                return;
+            }
+            list.innerHTML = rows.map(connector => {
+                const healthy = connector.health_state === "healthy";
+                const caps = connector.capabilities || [];
+                return `
+                    <div class="connector-card">
+                        <div class="connector-top">
+                            <div>
+                                <div class="connector-name">${esc(connector.name)}</div>
+                                <div class="connector-id">${esc(connector.adapter_name || connector.id)}</div>
+                            </div>
+                            <span class="pill ${healthy ? "ok" : "warn"}">${esc(connector.health_state || "unknown")}</span>
+                        </div>
+                        <div class="meta-grid">
+                            <div>Protocol: ${esc(connector.protocol || "unknown")}</div>
+                            <div>Source: ${esc(connector.authority || "unknown")}</div>
+                            <div>Group: ${esc(connector.service_group || "unknown")}</div>
+                            <div>${esc(connector.configuration?.status || "managed")}</div>
+                        </div>
+                        ${caps.length ? `<div class="cap-list">${caps.map(cap => `<span class="cap">${esc(cap)}</span>`).join("")}</div>` : ""}
+                    </div>
+                `;
+            }).join("");
+        }
+
+        async function loadConnectors() {
+            const button = document.getElementById("refreshConnectors");
+            button.disabled = true;
+            button.textContent = "Refreshing...";
+            try {
+                renderConnectors(await getJson("/api/connectors"));
+            } catch (error) {
+                document.getElementById("connectorList").innerHTML = `<div class="empty">Connector load failed: ${esc(error.message)}</div>`;
+            } finally {
+                button.disabled = false;
+                button.textContent = "Refresh";
+            }
+        }
+
+        function syncTransportFields() {
+            const transport = document.getElementById("transport").value;
+            document.getElementById("stdioFields").classList.toggle("hidden", transport !== "stdio");
+            document.getElementById("httpFields").classList.toggle("hidden", transport !== "http");
+        }
+
+        function applyTemplate(transport) {
+            document.getElementById("transport").value = transport === "http" ? "http" : "stdio";
+            syncTransportFields();
+        }
+
+        function buildPayload() {
+            const transport = document.getElementById("transport").value;
+            const payload = {
+                name: document.getElementById("connectorName").value.trim(),
+                transport,
+                enabled: true,
+                enabled_tools: splitList(document.getElementById("enabledTools").value),
+            };
+            const approval = document.getElementById("approvalMode").value;
+            if (approval) payload.default_tools_approval_mode = approval;
+            if (transport === "stdio") {
+                payload.command = document.getElementById("command").value.trim();
+                payload.args = splitList(document.getElementById("args").value);
+                payload.env_vars = splitList(document.getElementById("envVars").value);
+            } else {
+                payload.url = document.getElementById("url").value.trim();
+                const bearer = document.getElementById("bearerTokenEnvVar").value.trim();
+                if (bearer) payload.bearer_token_env_var = bearer;
+            }
+            return payload;
+        }
+
+        async function previewConfig() {
+            const button = document.getElementById("previewConfig");
+            const status = document.getElementById("wizardStatus");
+            button.disabled = true;
+            status.textContent = "Generating preview...";
+            status.className = "status-line";
+            try {
+                const result = await postJson("/api/connectors/config-preview", buildPayload());
+                document.getElementById("configPreview").textContent = result.config_text || "";
+                status.textContent = result.validation?.message || result.state;
+            } catch (error) {
+                document.getElementById("configPreview").textContent = "Preview rejected.";
+                status.textContent = error.message;
+                status.className = "status-line error";
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function resetWizard() {
+            document.getElementById("connectorName").value = "local-drive";
+            document.getElementById("transport").value = "stdio";
+            document.getElementById("command").value = "node";
+            document.getElementById("args").value = "server.js";
+            document.getElementById("envVars").value = "LOCAL_DRIVE_TOKEN";
+            document.getElementById("url").value = "http://127.0.0.1:3000/mcp";
+            document.getElementById("bearerTokenEnvVar").value = "";
+            document.getElementById("enabledTools").value = "";
+            document.getElementById("approvalMode").value = "";
+            document.getElementById("configPreview").textContent = "No preview generated.";
+            document.getElementById("wizardStatus").textContent = "Waiting for config.";
+            document.getElementById("wizardStatus").className = "status-line";
+            syncTransportFields();
+        }
+
+        syncTransportFields();
+        loadConnectors();
+    </script>
+</body>
+</html>

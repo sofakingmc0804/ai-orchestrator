@@ -1,0 +1,74 @@
+{
+  "receipt_type": "ai_orchestrator_connector_salvage_port",
+  "generated_at_utc": "2026-06-27T03:03:40Z",
+  "terminal_state": "produced",
+  "route": [
+    "execution-repair-debugging",
+    "code-github-ci",
+    "browser-ui-web-apps",
+    "cloud-ai-ml"
+  ],
+  "authority": {
+    "source_receipt": ".runtime/orchestrator/receipts/consolidation-example-codex-agent-salvage-20260617T023043Z.json",
+    "source_decision": "salvage_ui_and_connector_primitives_into_ai_orchestrator_do_not_run_as_separate_service",
+    "official_codex_mcp_reference": "C:/Users/Couch/AppData/Local/Temp/openai-docs-cache/codex-manual.md lines 7920-8093",
+    "repo_authority_apis": [
+      "StateStore.list_services",
+      "StateStore.list_capabilities"
+    ]
+  },
+  "action": "build",
+  "produced": {
+    "ui_surface": [
+      "orchestrator/ui/static/connectors.html",
+      "orchestrator/ui/server.py",
+      "orchestrator/ui/simple_server.py",
+      "orchestrator/ui/static/index.html",
+      "orchestrator/ui/static/workers.html",
+      "orchestrator/ui/static/budget.html",
+      "orchestrator/ui/static/receipts.html"
+    ],
+    "config_generation_path": [
+      "orchestrator/connectors.py"
+    ],
+    "tests": [
+      "tests/test_connectors_salvage.py"
+    ]
+  },
+  "credential_boundary": {
+    "copied_credentials": false,
+    "copied_auth_json": false,
+    "copied_cap_sid": false,
+    "accepted_secret_values": false,
+    "config_policy": "Codex MCP config preview uses env_vars, bearer_token_env_var, and env_http_headers references instead of credential values."
+  },
+  "runtime_boundary": {
+    "started_example_codex_agent": false,
+    "started_second_control_plane": false,
+    "connector_validation_mode": "shape_and_config_rendering_only_no_spawn"
+  },
+  "proof": [
+    {
+      "command": "python -m pytest tests/test_connectors_salvage.py::test_config_preview_uses_env_references_and_rejects_secret_values -q",
+      "exit_code": 0,
+      "output": "1 passed in 1.61s"
+    },
+    {
+      "command": "python -m pytest tests/test_connectors_salvage.py tests/test_ui_api.py -q",
+      "exit_code": 0,
+      "output": "14 passed in 14.91s"
+    },
+    {
+      "command": "python -m pytest -q",
+      "exit_code": 0,
+      "output": "226 passed in 169.80s (0:02:49)"
+    }
+  ],
+  "terminal_receipt": {
+    "route": "code, browser-ui, local runtime, Codex MCP config",
+    "authority": "salvage receipt plus repo StateStore APIs plus official Codex MCP config reference",
+    "action": "build",
+    "proof": "tests listed above",
+    "terminal_state": "produced"
+  }
+}

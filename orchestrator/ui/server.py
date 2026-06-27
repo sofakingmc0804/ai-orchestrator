@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from orchestrator.autopilot.watchers import scan_autopilot_roots_once
 from orchestrator.benchmarks.latency import run_selection_latency_benchmark
 from orchestrator.config import Settings
+from orchestrator.connectors import build_config_preview, build_connectors_payload, connector_templates, validate_connector_config
 from orchestrator.discovery.auth import probe_auth_and_quota, quota_snapshots
 from orchestrator.discovery.budget_probes import probe_to_dict, run_all_probes
 from orchestrator.discovery.projects import discover_projects
@@ -29,6 +30,7 @@ from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
 from orchestrator.discovery.subscription_usage import build_api_budget_payload, build_subscription_usage_payload
 from orchestrator.ui.dashboard import build_failover_events_payload, build_governance_receipts_payload, build_quality_leaderboard_payload
+from orchestrator.ui.dashboard_status import build_dashboard_status
 from orchestrator.usage.accounting import build_token_accounting_payload
 from orchestrator.usage.flow import build_token_flow_payload
 
@@ -99,6 +101,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def budget_page() -> str:
         return (static_dir / "budget.html").read_text(encoding="utf-8")
 
+    @app.get("/connectors", response_class=HTMLResponse)
+    async def connectors_page() -> str:
+        return (static_dir / "connectors.html").read_text(encoding="utf-8")
+
     @app.get("/receipts", response_class=HTMLResponse)
     async def receipts_page() -> str:
         return (static_dir / "receipts.html").read_text(encoding="utf-8")
@@ -115,6 +121,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "state_path": str(settings.state_path),
             "notifications_path": str(settings.notifications_path),
         }
+
+    @app.get("/api/dashboard-status")
+    async def operator_dashboard_status() -> dict[str, object]:
+        route_api_ready = any(
+            getattr(route, "path", None) == "/api/route" and "POST" in (getattr(route, "methods", set()) or set())
+            for route in app.routes
+        )
+        return build_dashboard_status(settings, write_receipt=False, in_process=True, route_api_ready=route_api_ready)
 
     @app.get("/api/workers")
     async def workers() -> dict[str, object]:
@@ -159,6 +173,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/capabilities")
     async def capabilities() -> list[dict[str, object]]:
         return await store.list_capabilities()
+
+    @app.get("/api/connectors")
+    async def connectors() -> dict[str, object]:
+        return build_connectors_payload(settings.repo_root, await store.list_services(), await store.list_capabilities())
+
+    @app.get("/api/connectors/templates")
+    async def connectors_templates() -> dict[str, object]:
+        return {"state": "produced", "templates": connector_templates()}
+
+    @app.post("/api/connectors/validate")
+    async def connectors_validate(payload: dict[str, object]) -> dict[str, object]:
+        return validate_connector_config(payload)
+
+    @app.post("/api/connectors/config-preview")
+    async def connectors_config_preview(payload: dict[str, object]) -> dict[str, object]:
+        validation = validate_connector_config(payload)
+        if not validation.get("success"):
+            raise HTTPException(status_code=400, detail=validation)
+        return build_config_preview(payload)
 
     @app.get("/api/auth-quota")
     async def auth_quota() -> dict[str, object]:
