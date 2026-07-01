@@ -1,9 +1,0 @@
-routing:
-  allowed_adapters:
-    - copilot-vscode
-  preferred_adapters:
-    - copilot-vscode
-approval:
-  required_at: high
-output:
-  directory: ORCHESTRATOR_OUTPUT

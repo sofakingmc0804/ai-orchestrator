@@ -1,9 +1,0 @@
-routing:
-  allowed_adapters:
-    - copilot-gh
-  preferred_adapters:
-    - copilot-gh
-approval:
-  required_at: high
-output:
-  directory: ORCHESTRATOR_OUTPUT

@@ -1,7 +1,0 @@
-routing:
-  allowed_adapters:
-    - ollama-cli
-  preferred_adapters:
-    - ollama-cli
-approval:
-  required_at: high

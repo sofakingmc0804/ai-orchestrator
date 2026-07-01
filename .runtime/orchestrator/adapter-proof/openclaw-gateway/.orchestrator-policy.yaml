@@ -1,9 +1,0 @@
-routing:
-  allowed_adapters:
-    - openclaw-gateway
-  preferred_adapters:
-    - openclaw-gateway
-approval:
-  required_at: high
-output:
-  directory: ORCHESTRATOR_OUTPUT

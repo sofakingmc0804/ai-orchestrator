@@ -1,1 +1,0 @@
-Scheduler task proof for CT-15 add, pause, resume, and trigger controls.

@@ -5,22 +5,58 @@ __pycache__/
 .hypothesis/
 .benchmarks/
 
-# Local runtime is migrated into the repo for ownership, but mutable databases
-# and log streams should not be pushed accidentally.
+# ---------------------------------------------------------------------------
+# Runtime output & private/mutable state.
+# These stay on disk so the agents keep working locally; they are never tracked.
+# The AI resource governor CODE and CONFIG under .runtime/ai-resource-governor/
+# (ai_governor.py, bin/, scripts/, tests/, policy.json, model-roster.json, *.md)
+# ARE tracked; only its mutable receipts/state below are ignored.
+# ---------------------------------------------------------------------------
 .runtime/**/*.sqlite
 .runtime/**/*.sqlite-wal
 .runtime/**/*.sqlite-shm
 .runtime/**/*.log
 .runtime/archives/
 .runtime/backups/
+.runtime/orchestrator/
+.runtime/ai-resource-governor/receipts/
+.runtime/ai-resource-governor/repair-queue.jsonl
+
+# Top-level generated run dumps.
+ORCHESTRATOR_OUTPUT/
+
+# Generated dashboard data (contains live financials / customer PII).
+orchestrator/ui/static/business_snapshot.json
 
 # Transient benchmark run outputs (kept locally, not committed).
 benchmark_results/
 
-# Local/editor noise.
+# ---------------------------------------------------------------------------
+# Secrets & credentials — never track. .env.example is the tracked template.
+# ---------------------------------------------------------------------------
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+**/token.json
+**/credentials.json
+**/service-account*.json
+**/client_secret*.json
+**/*secret*.json
+
+# ---------------------------------------------------------------------------
+# Editor / OS / backup noise.
+# ---------------------------------------------------------------------------
 .venv/
 venv/
 *.egg-info/
 dist/
 build/
+*.bak
+*.bak.*
+*.tmp
+.DS_Store
+Thumbs.db
