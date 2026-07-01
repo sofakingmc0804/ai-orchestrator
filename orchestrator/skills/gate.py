@@ -48,6 +48,27 @@ BROWSER_BRIDGE_TOOL_PATTERNS = [
 
 BROWSER_BRIDGE_REQUIREMENTS = {"browser-use", "chrome"}
 BROWSER_BRIDGE_SKILLS = {"browser-use:browser", "chrome:Chrome"}
+GOVCON_DAILY_AUTO_SEND_RECIPIENTS = {"owner@example.com", "partner@example.com"}
+GMAIL_RECIPIENT_FIELDS = {"to", "cc", "bcc", "recipient", "recipients"}
+GMAIL_BODY_FIELDS = {"body", "html_body", "htmlbody", "plain_text", "plaintext", "message", "content", "text"}
+GMAIL_SUBJECT_FIELDS = {"subject"}
+FORBIDDEN_EMAIL_IDENTITY_PATTERNS = [
+    re.compile(r"\bMatt\s+Dobbins\b", re.I),
+]
+EMAIL_SIGNOFF_RE = re.compile(
+    r"(?ms)"
+    r"(?:^|\n)"
+    r"(?:thank you|thanks|regards|best|respectfully submitted|sincerely),?\s*\n+"
+    r"(?:__\s*\n+)?"
+    r"Matt\s+(?:Couch|Dobbins)\b"
+    r"(?:\s*\n+.*){0,12}\s*$",
+    re.I,
+)
+EMAIL_INLINE_SIGNATURE_RE = re.compile(
+    r"(?mi)^\s*(?:__\s*)?$[\s\S]{0,120}^\s*Matt\s+(?:Couch|Dobbins)\s*$[\s\S]{0,400}"
+    r"(?:exampleco\.com|Example Consulting|C:\s*555-0100|555-0100)",
+    re.I,
+)
 
 MUTATING_COMMAND_PATTERNS = [
     r"\bapply_patch\b",
@@ -91,29 +112,12 @@ def _hook_context(plan: SkillHookPlan) -> str:
     )
 
 
-def _route_confirmation_context(plan: SkillHookPlan, warning: str | None = None) -> str:
-    question = plan.question or "Confirm the interpreted skill route before mutation?"
-    warning_line = f"Warning: {warning}\n" if warning else ""
-    return (
-        f"{warning_line}"
-        "Skill route requests user confirmation before mutating tools. This is advisory context; the hook will not block tool use.\n"
-        f"Question: {question}\n"
-        f"Plan: {plan.id}\n"
-        f"{_hook_context(plan)}\n"
-        "Reply options:\n"
-        f"- confirm route {plan.id}\n"
-        "- use skills: <skill-id>, <skill-id>\n"
-        f"- cancel route {plan.id}\n"
-        "Continue by following the latest user instruction and the non-desktop authority rules."
-    )
-
-
 def _blocked_authority_context(plan: SkillHookPlan, warning: str) -> str:
     return (
         f"Authority warning: {warning}\n"
         f"{_hook_context(plan)}\n"
-        "Do not use the forbidden authority surface. Continue by choosing a connector, API, export, headless or isolated route, "
-        "credentialed lease path, or no-touch operator packet."
+        "Do not treat this as a blanket block. Continue by choosing a connector, API, export, headless or isolated route, "
+        "credentialed browser-control lease, bounded idle-window Computer Use route, or operator packet."
     )
 
 
@@ -143,6 +147,19 @@ def _hard_deny(event_name: str, plan: SkillHookPlan, reason: str) -> dict[str, A
     }
 
 
+def _direct_hard_deny(event_name: str, reason: str) -> dict[str, Any]:
+    message = f"Hard deny by owner ruleset: {reason}"
+    return {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "permissionDecision": "deny",
+            "permissionDecisionReason": message,
+            "decision": {"behavior": "deny", "message": message},
+        },
+    }
+
+
 def _additional_context(event_name: str, context: str) -> dict[str, Any]:
     return {"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": context}}
 
@@ -160,8 +177,6 @@ def handle_user_prompt_submit(event: dict[str, Any], plan: SkillHookPlan) -> dic
     blocked_check = next((check for check in plan.authority_checks if check.status == "blocked"), None)
     if blocked_check:
         return _additional_context("UserPromptSubmit", _blocked_authority_context(plan, blocked_check.reason))
-    if plan.confirmation_state in {"required", "blocked"}:
-        return _additional_context("UserPromptSubmit", _route_confirmation_context(plan))
     return _additional_context("UserPromptSubmit", _hook_context(plan))
 
 
@@ -183,6 +198,152 @@ def _is_mutating_tool(event: dict[str, Any]) -> bool:
         return True
     command = _tool_command(event).lower()
     return any(re.search(pattern, command) for pattern in MUTATING_COMMAND_PATTERNS)
+
+
+def _is_gmail_tool(tool_name: str) -> bool:
+    return "gmail" in tool_name.lower()
+
+
+def _is_gmail_send_draft_tool(tool_name: str) -> bool:
+    lowered = tool_name.lower()
+    return _is_gmail_tool(tool_name) and any(token in lowered for token in ("send_draft", "_send_draft", "gmail_send_draft"))
+
+
+def _is_gmail_send_email_tool(tool_name: str) -> bool:
+    lowered = tool_name.lower()
+    return _is_gmail_tool(tool_name) and any(token in lowered for token in ("send_email", "_send_email", "gmail_send_email"))
+
+
+def _is_gmail_draft_write_tool(tool_name: str) -> bool:
+    lowered = tool_name.lower()
+    return _is_gmail_tool(tool_name) and any(
+        token in lowered
+        for token in (
+            "create_draft",
+            "_create_draft",
+            "update_draft",
+            "_update_draft",
+            "gmail_create_draft",
+            "gmail_update_draft",
+        )
+    )
+
+
+def _collect_tool_values(value: Any, fields: set[str]) -> list[str]:
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_name = str(key).lower().replace("-", "_")
+            if key_name in fields:
+                found.extend(_flatten_tool_text(item))
+            else:
+                found.extend(_collect_tool_values(item, fields))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_collect_tool_values(item, fields))
+    return found
+
+
+def _flatten_tool_text(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (int, float, bool)):
+        return [str(value)]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _flatten_tool_text(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _flatten_tool_text(item)]
+    return [str(value)]
+
+
+def _emails_from_tool_input(tool_input: Any) -> set[str]:
+    recipient_text = "\n".join(_collect_tool_values(tool_input, GMAIL_RECIPIENT_FIELDS))
+    return {email.lower() for email in re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", recipient_text)}
+
+
+def _gmail_text_from_fields(tool_input: Any, fields: set[str]) -> str:
+    return "\n".join(_collect_tool_values(tool_input, fields))
+
+
+def _email_body_errors(body: str) -> list[str]:
+    errors: list[str] = []
+    for pattern in FORBIDDEN_EMAIL_IDENTITY_PATTERNS:
+        if pattern.search(body):
+            errors.append("body contains forbidden identity value: Matt Dobbins")
+    if EMAIL_SIGNOFF_RE.search(body) or EMAIL_INLINE_SIGNATURE_RE.search(body):
+        errors.append("body contains an agent-authored signature block; let Gmail append the account signature")
+
+    uei_matches = set(re.findall(r"\b[A-Z0-9]{12}\b", body))
+    likely_uei = {
+        value
+        for value in uei_matches
+        if any(label in body[max(0, body.find(value) - 24): body.find(value) + 24].lower() for label in ("uei", "unique entity"))
+    }
+    wrong_uei = sorted(value for value in likely_uei if value != "YEAVZFFRUBJ6")
+    if wrong_uei:
+        errors.append(f"body contains non-Example UEI value(s): {', '.join(wrong_uei)}")
+
+    cage_matches = set(re.findall(r"\b[A-Z0-9]{5}\b", body))
+    likely_cage = {
+        value
+        for value in cage_matches
+        if any(label in body[max(0, body.find(value) - 12): body.find(value) + 12].lower() for label in ("cage", "cage:"))
+    }
+    wrong_cage = sorted(value for value in likely_cage if value != "9TE77")
+    if wrong_cage:
+        errors.append(f"body contains non-Example CAGE value(s): {', '.join(wrong_cage)}")
+    return errors
+
+
+def _daily_govcon_send_scope_reason(tool_input: Any) -> str | None:
+    recipients = _emails_from_tool_input(tool_input)
+    if recipients != GOVCON_DAILY_AUTO_SEND_RECIPIENTS:
+        return "Gmail auto-send is blocked except the daily GovCon brief sent only to Matt and Partner"
+
+    subject_and_body = (
+        _gmail_text_from_fields(tool_input, GMAIL_SUBJECT_FIELDS)
+        + "\n"
+        + _gmail_text_from_fields(tool_input, GMAIL_BODY_FIELDS)
+    ).lower()
+    if "govcon" not in subject_and_body or not any(term in subject_and_body for term in ("daily", "brief")):
+        return "Gmail auto-send to Matt and Partner must identify itself as the daily GovCon brief"
+
+    body_errors = _email_body_errors(_gmail_text_from_fields(tool_input, GMAIL_BODY_FIELDS))
+    if body_errors:
+        return "; ".join(body_errors)
+    return None
+
+
+def _gmail_guard_decision(event: dict[str, Any]) -> dict[str, Any] | None:
+    tool_name = str(event.get("tool_name") or "")
+    if not _is_gmail_tool(tool_name):
+        return None
+    tool_input = event.get("tool_input")
+
+    if _is_gmail_send_draft_tool(tool_name):
+        return _direct_hard_deny(
+            "PreToolUse",
+            "Gmail send_draft is blocked because the hook cannot inspect the final recipients and body; use draft-only or the explicit daily GovCon brief send path.",
+        )
+
+    if _is_gmail_send_email_tool(tool_name):
+        reason = _daily_govcon_send_scope_reason(tool_input)
+        if reason is not None:
+            return _direct_hard_deny("PreToolUse", reason)
+        return _additional_context("PreToolUse", "Gmail auto-send scope verified: daily GovCon brief to Matt and Partner only.")
+
+    if _is_gmail_draft_write_tool(tool_name):
+        body_errors = _email_body_errors(_gmail_text_from_fields(tool_input, GMAIL_BODY_FIELDS))
+        if body_errors:
+            return _direct_hard_deny("PreToolUse", "; ".join(body_errors))
+        return _additional_context(
+            "PreToolUse",
+            "Gmail draft path allowed. Keep it draft-only for external recipients; do not add a hand-written signature.",
+        )
+
+    return None
 
 
 def _has_development_gate(plan: SkillHookPlan) -> bool:
@@ -247,9 +408,9 @@ def _browser_bridge_denial_reason(plan: SkillHookPlan, event: dict[str, Any]) ->
     if check is None:
         return None
     if check.status != "passed":
-        return "Browser bridge tools require a current passed desktop control lease or a non-visible browser route."
+        return "Browser bridge tools require selected route authority plus a scoped browser/computer-control lease, an explicit idle-window condition, or a non-visible browser route."
     if "approved" in check.reason.lower() and not _has_desktop_control_lease(plan, event):
-        return "Browser bridge tools require a current desktop control lease scoped to this cwd."
+        return "Browser bridge tools require current scoped browser/computer-control authority for this cwd."
     return None
 
 
@@ -265,14 +426,18 @@ def _tool_supported_by_plan(tool_name: str, plan: SkillHookPlan, event: dict[str
 def handle_pre_tool_use(event: dict[str, Any], plan: SkillHookPlan | None) -> dict[str, Any]:
     command = _tool_command(event)
     tool_name = str(event.get("tool_name") or "")
+    gmail_guard = _gmail_guard_decision(event)
+    if gmail_guard is not None:
+        return gmail_guard
+
     if tool_name == "Bash" and _is_visible_desktop_command(command):
         if plan is not None and _has_desktop_control_lease(plan, event):
             return _additional_context(
                 "PreToolUse",
-                "Visible desktop command detected. Desktop control lease is approved for this plan; keep the action within the named visible desktop/Chrome scope and prefer connector/API/browser-lease routes when available.",
+                "Visible-control command detected. Scoped authority is approved for this plan; keep the action inside the named desktop/Chrome/app scope, stop if Matt resumes active use, and prefer connector/API/browser-lease routes when they satisfy the task.",
             )
         return _warn_pre_tool(
-            "Visible desktop command detected. This hook is steering only: prefer connector, API, export, headless or isolated browser, or credentialed Chrome extension lease; the hook will not rewrite or block this tool call."
+            "Visible-control command detected. This hook is steering only: prefer connector, API, export, headless or isolated browser, credentialed browser-control lease, or bounded idle-window Computer Use; the hook will not rewrite or block this tool call."
         )
 
     if plan is None:
@@ -289,14 +454,6 @@ def handle_pre_tool_use(event: dict[str, Any], plan: SkillHookPlan | None) -> di
         if reason is not None:
             return _warn_pre_tool(reason)
         return _additional_context("PreToolUse", "Browser bridge authority is present for this plan. Keep the action inside the selected browser route and lease scope.")
-
-    if plan.confirmation_state == "required" and _is_mutating_tool(event):
-        skills = ", ".join(plan.selected_skill_names)
-        return _warn_pre_tool(
-            "Skill route confirmation is requested before mutating tool use. "
-            f"Plan {plan.id} selected: {skills}. Ask the user to reply "
-            f"'confirm route {plan.id}' or 'use skills: <skill-id>, <skill-id>'."
-        )
 
     if tool_name == "apply_patch" and plan.domain == "code" and not _has_development_gate(plan):
         return _warn_pre_tool("Code edits are missing test-driven-development and verification-before-completion skills in the skill hook plan.")
@@ -319,8 +476,8 @@ def handle_permission_request(event: dict[str, Any], plan: SkillHookPlan | None)
             return _permission_allow()
         return {
             "systemMessage": (
-                "Visible desktop/Chrome control has no current scoped lease. Use the native one-click approval prompt only "
-                "after background-first routes have failed."
+                "Visible browser/computer control has no current scoped condition. Proceed only when Matt is not actively "
+                "using this desktop UI or a bounded task lease is approved."
             )
         }
     return {}
@@ -334,8 +491,6 @@ def _message_has_terminal_receipt(message: str, required_terminal: str) -> bool:
 
 def _should_enforce_stop(plan: SkillHookPlan) -> bool:
     if plan.has_mutating_action:
-        return True
-    if plan.confirmation_state in {"required", "confirmed", "blocked"}:
         return True
     if plan.consequence != "low":
         return True

@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
   [int]$Port = 8765,
+  [int]$HealthyDelaySeconds = 300,
+  [int]$StartReceiptMinIntervalSeconds = 900,
   [switch]$Watchdog,
   [switch]$WatchdogOnce
 )
@@ -16,6 +18,21 @@ $SupervisorDir = Join-Path $env:ORCHESTRATOR_HOME "supervisor"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType Directory -Force -Path $SupervisorDir | Out-Null
 
+function Should-WriteOrchestratorStartReceipt {
+  param([string]$EventName)
+  if ($EventName -ne "already_running") {
+    return $true
+  }
+  if ($StartReceiptMinIntervalSeconds -le 0) {
+    return $true
+  }
+  $Cutoff = (Get-Date).ToUniversalTime().AddSeconds(-1 * $StartReceiptMinIntervalSeconds)
+  $Recent = Get-ChildItem -LiteralPath $SupervisorDir -Filter "*-start-already_running.json" -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTimeUtc -gt $Cutoff } |
+    Select-Object -First 1
+  return ($null -eq $Recent)
+}
+
 function Write-OrchestratorStartReceipt {
   param(
     [string]$EventName,
@@ -24,6 +41,9 @@ function Write-OrchestratorStartReceipt {
     [bool]$Healthy,
     [string]$ErrorText = ""
   )
+  if (-not (Should-WriteOrchestratorStartReceipt -EventName $EventName)) {
+    return ""
+  }
   $Stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
   $Path = Join-Path $SupervisorDir "$Stamp-start-$EventName.json"
   $Payload = [ordered]@{
@@ -34,7 +54,7 @@ function Write-OrchestratorStartReceipt {
     port = $Port
     pid = $ProcessId
     healthy = $Healthy
-    health_url = "http://127.0.0.1:$Port/api/spec-status"
+    health_url = "http://127.0.0.1:$Port/api/dashboard-status"
     repo_root = "$RepoRoot"
     started_at = (Get-Date).ToUniversalTime().ToString("o")
     completed_at = (Get-Date).ToUniversalTime().ToString("o")
@@ -48,7 +68,7 @@ function Write-OrchestratorStartReceipt {
 
 function Test-OrchestratorHealth {
   try {
-    Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/spec-status" -TimeoutSec 3 | Out-Null
+    Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/dashboard-status" -TimeoutSec 10 | Out-Null
     return $true
   } catch {
     return $false
@@ -106,7 +126,7 @@ if ($Watchdog) {
   while ($true) {
     try {
       Ensure-OrchestratorRunning -RestartEvent:$true
-      $DelaySeconds = 30
+      $DelaySeconds = $HealthyDelaySeconds
     } catch {
       $Receipt = Write-OrchestratorStartReceipt -EventName "watchdog_error" -State "blocked_after_repair_attempt" -ProcessId 0 -Healthy $false -ErrorText "$_"
       Write-Output "watchdog_error receipt=$Receipt error=$_"

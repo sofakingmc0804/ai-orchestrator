@@ -12,15 +12,27 @@ __pycache__/
 # (ai_governor.py, bin/, scripts/, tests/, policy.json, model-roster.json, *.md)
 # ARE tracked; only its mutable receipts/state below are ignored.
 # ---------------------------------------------------------------------------
+.runtime/archives/
+.runtime/backups/
+# All state under .runtime/ is local-only and NOT tracked. The AI resource
+# governor's code/config lives here for historical reasons and is the only
+# whitelisted subtree; its mutable receipts/state stay ignored.
+/.runtime/*
+!/.runtime/ai-resource-governor/
+/.runtime/ai-resource-governor/*
+!/.runtime/ai-resource-governor/ai_governor.py
+!/.runtime/ai-resource-governor/bin/
+!/.runtime/ai-resource-governor/scripts/
+!/.runtime/ai-resource-governor/tests/
+!/.runtime/ai-resource-governor/policy.json
+!/.runtime/ai-resource-governor/model-roster.json
+!/.runtime/ai-resource-governor/*.md
+/.runtime/ai-resource-governor/receipts/
+/.runtime/ai-resource-governor/repair-queue.jsonl
 .runtime/**/*.sqlite
 .runtime/**/*.sqlite-wal
 .runtime/**/*.sqlite-shm
 .runtime/**/*.log
-.runtime/archives/
-.runtime/backups/
-.runtime/orchestrator/
-.runtime/ai-resource-governor/receipts/
-.runtime/ai-resource-governor/repair-queue.jsonl
 
 # Top-level generated run dumps.
 ORCHESTRATOR_OUTPUT/

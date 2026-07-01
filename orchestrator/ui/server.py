@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -33,6 +34,17 @@ from orchestrator.ui.dashboard import build_failover_events_payload, build_gover
 from orchestrator.ui.dashboard_status import build_dashboard_status
 from orchestrator.usage.accounting import build_token_accounting_payload
 from orchestrator.usage.flow import build_token_flow_payload
+
+
+def _business_snapshot_generated_at(settings: Settings) -> str | None:
+    """generated_at of the business snapshot the Command Center reads, for freshness checks."""
+    path = settings.repo_root / "orchestrator" / "ui" / "static" / "business_snapshot.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = payload.get("generated_at") if isinstance(payload, dict) else None
+    return str(value) if value else None
 
 
 class IntentRequest(BaseModel):
@@ -128,7 +140,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             getattr(route, "path", None) == "/api/route" and "POST" in (getattr(route, "methods", set()) or set())
             for route in app.routes
         )
-        return build_dashboard_status(settings, write_receipt=False, in_process=True, route_api_ready=route_api_ready)
+        services_rows = await store.list_services()
+        subscription_rows = await store.list_subscription_usage_snapshots()
+        subscription_checked = [str(r.get("checked_at")) for r in subscription_rows if r.get("checked_at")]
+        data_sources: dict[str, object] = {
+            "subscriptions": max(subscription_checked) if subscription_checked else None,
+            "business_snapshot": _business_snapshot_generated_at(settings),
+        }
+        return build_dashboard_status(
+            settings,
+            write_receipt=False,
+            in_process=True,
+            route_api_ready=route_api_ready,
+            services=services_rows,
+            data_sources=data_sources,
+        )
 
     @app.get("/api/workers")
     async def workers() -> dict[str, object]:
@@ -318,6 +344,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await store.upsert_projects(projects)
         await store.record_discovery("refresh", {"services": len(services), "capabilities": len(caps), "projects": len(projects)}, "Manual API refresh completed.")
         return {"services": len(services), "capabilities": len(caps), "projects": len(projects)}
+
+    @app.post("/api/refresh-services")
+    async def refresh_services() -> dict[str, int]:
+        services, caps = await discover_services_and_capabilities()
+        await store.upsert_services(services)
+        await store.upsert_capabilities(caps)
+        await store.record_discovery("refresh_services", {"services": len(services), "capabilities": len(caps)}, "Fast service health re-probe (no project scan).")
+        return {"services": len(services), "capabilities": len(caps)}
 
     @app.post("/api/repair-services")
     async def repair_services() -> dict[str, object]:

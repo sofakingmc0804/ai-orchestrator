@@ -101,9 +101,12 @@ def _is_desktop_control_approval_reply(prompt: str) -> bool:
         "approved",
         "yes approve",
         "yes, approve",
+        "approve browser control",
+        "approve computer control",
         "approve desktop control",
         "approve visible desktop control",
         "approve chrome control",
+        "idle window approved",
     }
 
 
@@ -164,6 +167,11 @@ def _prompt_requests_chrome_control(prompt: str) -> bool:
     return "chrome" in lowered and any(term in lowered for term in ("extension", "profile", "tab"))
 
 
+def _prompt_requests_computer_control(prompt: str) -> bool:
+    lowered = prompt.lower()
+    return any(term in lowered for term in ("computer use", "computer control", "visible desktop", "visible app", "foreground app", "mouse", "keyboard"))
+
+
 def _mark_confirmed(plan: SkillHookPlan, reason: str) -> SkillHookPlan:
     checks: list[AuthorityCheck] = []
     replaced = False
@@ -214,6 +222,12 @@ def _mark_desktop_control_approved(plan: SkillHookPlan, reason: str) -> SkillHoo
             "control-chrome",
             "Approved Chrome extension or active-tab lease requires Chrome control skill authority.",
         )
+    if _prompt_requests_computer_control(plan.prompt):
+        updated = _append_selected_skill(
+            updated,
+            "computer-use",
+            "Approved visible app or desktop interaction requires Computer Use skill authority and idle-window or scoped lease conditions.",
+        )
     return updated
 
 
@@ -240,7 +254,7 @@ def _resolve_followup_plan(settings: Settings, event: dict[str, Any]) -> tuple[S
     if overrides:
         return _apply_skill_override(pending, overrides), None
     if _has_pending_desktop_control_lease(pending) and _is_desktop_control_approval_reply(prompt):
-        return _mark_desktop_control_approved(pending, "User approved visible desktop or Chrome control for this pending task."), None
+        return _mark_desktop_control_approved(pending, "User approved scoped browser/computer control or an idle-window condition for this pending task."), None
     if _is_confirm_reply(prompt):
         return _mark_confirmed(pending, "User confirmed the pending skill route."), None
     if _is_cancel_reply(prompt):

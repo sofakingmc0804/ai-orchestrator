@@ -161,21 +161,18 @@ async def test_openclaw_adapter_timeout_returns_repair_action(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
-async def test_recovery_records_openclaw_service_wrapper_drift(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_recovery_does_not_restart_retired_openclaw(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def fake_run(command: str, args: list[str], timeout: float = 30) -> dict[str, Any]:
-        if args == ["gateway", "health"]:
-            return {"ok": True, "stdout": "Gateway Health\nOK (0ms)", "stderr": "", "returncode": 0}
-        return {"ok": True, "stdout": "Service: Scheduled Task (missing)\nService not installed.", "stderr": "", "returncode": 0}
+        raise AssertionError("retired OpenClaw must not be probed or restarted")
 
     monkeypatch.setattr(recovery, "_run_bounded", fake_run)
     settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
     store = StateStore(settings)
     await store.initialize()
     result = await recovery.repair_openclaw_gateway(store)
-    assert result["state"] == "healthy"
+    assert result["state"] == "retired"
     repairs = await store.list_repair_queue()
-    assert repairs
-    assert repairs[0]["failure_source"] == "openclaw-gateway"
+    assert repairs == []
 
 
 @pytest.mark.asyncio

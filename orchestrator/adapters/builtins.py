@@ -110,6 +110,7 @@ class StaticCliAdapter:
         capabilities: list[str],
         consequence_max: ConsequenceTier = ConsequenceTier.MEDIUM,
         latency_band: str = "medium",
+        optional: bool = False,
     ):
         self.name = name
         self.service_id = service_id
@@ -122,11 +123,17 @@ class StaticCliAdapter:
         self.capability_ids = capabilities
         self.consequence_max = consequence_max
         self.latency_band = latency_band
+        self.optional = optional
 
     async def health_probe(self) -> ServiceInfo:
         exe = _resolve_command(self.command)
         pid, memory_mb, uptime_seconds = _process_snapshot(self.process_names)
         state = HealthState.HEALTHY if exe or pid else HealthState.STOPPED
+        detail: str | None = None
+        repair_action: str | None = None
+        if state is HealthState.STOPPED:
+            detail = f"Neither the '{self.command}' executable nor any of its processes ({', '.join(self.process_names)}) were found."
+            repair_action = f"Install or start {self.label} so that '{self.command}' is on PATH or its process is running."
         return ServiceInfo(
             id=self.service_id,
             name=self.label,
@@ -135,6 +142,9 @@ class StaticCliAdapter:
             protocol=self.protocol,
             install_path=exe,
             health_state=state,
+            detail=detail,
+            repair_action=repair_action,
+            optional=self.optional,
             pid=pid,
             memory_mb=memory_mb,
             uptime_seconds=uptime_seconds,
@@ -292,13 +302,50 @@ class HermesAgentAdapter(StaticCliAdapter):
     async def health_probe(self) -> ServiceInfo:
         info = await super().health_probe()
         status = await _run_bounded("hermes", ["status"], timeout=20)
-        text = f"{status.get('stdout', '')}\n{status.get('stderr', '')}"
+        stdout = str(status.get("stdout", "") or "")
+        stderr = str(status.get("stderr", "") or "")
+        text = _clean_terminal_text(f"{stdout}\n{stderr}")
+        route_hint = (
+            "Hermes is upstream of the orchestrator brain; route work with "
+            "`python -m orchestrator.cli.main route` or POST /api/route."
+        )
         if status.get("ok") and "Provider:" in text and "Custom endpoint" in text:
             info.health_state = HealthState.HEALTHY
+            info.detail = None
+            info.repair_action = None
         elif status.get("ok"):
+            # The CLI ran but did not advertise a configured upstream model.
             info.health_state = HealthState.DEGRADED
+            info.detail = (
+                "`hermes status` succeeded but did not report a configured Provider and "
+                "Custom endpoint, so Hermes is not fully wired to its upstream model."
+                + (f" Output: {text[:200]}" if text else "")
+            )
+            info.repair_action = (
+                "Reconfigure the Hermes provider and custom endpoint (e.g. `hermes config` or "
+                "`hermes auth add nous --type oauth` in an owner-approved login lane), then re-probe. "
+                + route_hint
+            )
         elif status.get("timeout"):
             info.health_state = HealthState.DEGRADED
+            info.detail = "`hermes status` did not respond within 20s; the Hermes gateway is unresponsive."
+            info.repair_action = "Restart the Hermes gateway, then re-probe. " + route_hint
+        elif "not found" in str(status.get("error", "")).lower():
+            # Critical fix: previously this path fell through and inherited the base
+            # HEALTHY state (the base probe matches a running python.exe), so a missing
+            # Hermes binary was reported as healthy. Report STOPPED with a reason instead.
+            info.health_state = HealthState.STOPPED
+            info.detail = "The `hermes` executable is not installed or not on PATH."
+            info.repair_action = "Install the Hermes CLI and ensure `hermes` resolves on PATH, then re-probe."
+        else:
+            info.health_state = HealthState.DEGRADED
+            rc = status.get("returncode")
+            info.detail = (
+                "`hermes status` exited with an error"
+                + (f" (rc={rc})" if rc is not None else "")
+                + (f": {text[:200]}" if text else ".")
+            )
+            info.repair_action = "Inspect the Hermes error above and restart or repair the Hermes gateway. " + route_hint
         return info
 
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
@@ -327,16 +374,20 @@ class OpenClawGatewayAdapter(StaticCliAdapter):
             capabilities=["agentic_work", "model_gateway", "local_chat"],
             consequence_max=ConsequenceTier.MEDIUM,
             latency_band="slow",
+            optional=True,
         )
 
     async def health_probe(self) -> ServiceInfo:
         info = await super().health_probe()
-        health = await _run_bounded("openclaw", ["gateway", "health"], timeout=20)
-        text = f"{health.get('stdout', '')}\n{health.get('stderr', '')}"
-        if health.get("ok") and "OK" in text:
-            info.health_state = HealthState.HEALTHY
-        elif health.get("timeout"):
-            info.health_state = HealthState.DEGRADED
+        info.health_state = HealthState.STOPPED
+        info.version = "retired-2026-06-16"
+        info.optional = True
+        info.detail = "OpenClaw was retired during the 2026-06-16 consolidation and is intentionally not running."
+        info.repair_action = (
+            "No action needed; this service is retired. Route work with "
+            "`python -m orchestrator.cli.main route` or POST /api/route. "
+            "Archived state: C:\\Users\\Couch\\Archive\\openclaw-retired-2026-06-16."
+        )
         return info
 
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
@@ -344,31 +395,13 @@ class OpenClawGatewayAdapter(StaticCliAdapter):
         model = str(envelope.get("model") or "")
         if not prompt:
             return {"ok": False, "error": "No prompt supplied to OpenClaw adapter."}
-        args = ["infer", "model", "run", "--json", "--gateway"]
-        if model:
-            args.extend(["--model", model])
-        args.extend(["--prompt", prompt])
-        result = await _run_bounded(
-            "openclaw",
-            args,
-            timeout=180,
-        )
-        if not result.get("ok"):
-            return {
-                "ok": False,
-                "error": str(result.get("error") or result.get("stderr") or "OpenClaw dispatch failed."),
-                "repair_action": "Verify Ollama local generation, restart the loopback/token OpenClaw gateway, then run one bounded `openclaw infer model run --gateway --model ollama/qwen2.5:0.5b` proof.",
-                "raw": result,
-            }
-        stdout = _clean_terminal_text(str(result.get("stdout") or ""))
-        text = stdout
-        try:
-            payload = json.loads(stdout)
-            if isinstance(payload, dict):
-                text = str(payload.get("text") or payload.get("output") or payload.get("message") or stdout)
-        except json.JSONDecodeError:
-            pass
-        return {"ok": True, "model": model or "openclaw-default", "text": text, "raw": result}
+        return {
+            "ok": False,
+            "terminal_state": "blocked_after_repair_attempt",
+            "error": "OpenClaw was retired during the 2026-06-16 consolidation and is no longer a downstream dispatch target.",
+            "repair_action": "Use `python -m orchestrator.cli.main route` or POST /api/route; archived OpenClaw state is under C:\\Users\\Couch\\Archive\\openclaw-retired-2026-06-16.",
+            "model": model or "openclaw-retired",
+        }
 
 
 class ClaudePrintAdapter(StaticCliAdapter):
@@ -634,6 +667,7 @@ class SyntheticTestServiceAdapter(StaticCliAdapter):
             capabilities=["synthetic_echo"],
             consequence_max=ConsequenceTier.LOW,
             latency_band="fast",
+            optional=True,
         )
 
     async def health_probe(self) -> ServiceInfo:
@@ -644,6 +678,7 @@ class SyntheticTestServiceAdapter(StaticCliAdapter):
             adapter_name=self.name,
             protocol=self.protocol,
             health_state=HealthState.HEALTHY,
+            optional=True,
         )
 
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:

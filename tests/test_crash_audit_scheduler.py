@@ -235,6 +235,56 @@ async def test_due_scheduler_skips_interval_task_before_next_run(tmp_path: Path)
     assert result["runs"][0]["reason"] == "scheduler_task_not_due"
 
 
+@pytest.mark.asyncio
+async def test_due_scheduler_summarizes_skips_without_per_task_audit_churn(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    await store.upsert_scheduler_task(
+        name="disabled",
+        task_type="standing_order_scan",
+        target_ref="unused-disabled",
+        enabled=False,
+    )
+    await store.upsert_scheduler_task(
+        name="not due",
+        task_type="budget_probes_cron",
+        target_ref="budget",
+        schedule_kind="interval",
+        interval_seconds=300,
+        enabled=True,
+        next_run_at="2999-01-01T00:00:00+00:00",
+    )
+
+    result = await run_due_scheduler_once(settings, store)
+
+    assert result["skipped"] == 2
+    audit = await store.list_audit_log(limit=20)
+    actions = [row["action"] for row in audit]
+    assert "scheduler_due_run_once" in actions
+    assert "scheduler_task_skipped" not in actions
+
+
+@pytest.mark.asyncio
+async def test_standing_order_migration_is_quiet_when_nothing_changed(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    folder = tmp_path / "watched"
+    folder.mkdir()
+    await store.upsert_standing_order(str(folder), "autopilot: enabled", enabled=True)
+
+    await store.migrate_standing_orders_to_scheduler_tasks()
+    first_audit = await store.list_audit_log(limit=20)
+    first_count = sum(1 for row in first_audit if row["action"] == "standing_orders_migrated")
+    await store.migrate_standing_orders_to_scheduler_tasks()
+    second_audit = await store.list_audit_log(limit=20)
+    second_count = sum(1 for row in second_audit if row["action"] == "standing_orders_migrated")
+
+    assert first_count == 1
+    assert second_count == first_count
+
+
 def test_read_legacy_manifest_normalizes_scheduled_tasks(tmp_path: Path) -> None:
     manifest = tmp_path / "scheduled-tasks.json"
     manifest.write_text(

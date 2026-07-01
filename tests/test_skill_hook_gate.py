@@ -23,6 +23,9 @@ from orchestrator.skills.runtime import persist_plan, run_hook_event
 from orchestrator.state.store import StateStore
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def _skill_names(plan: Any) -> set[str]:
     return {skill.name for skill in plan.selected_skills}
 
@@ -67,7 +70,7 @@ def _approved_desktop_plan(cwd: Path, *, expires_delta: timedelta = timedelta(mi
         AuthorityCheck(
             name="desktop_control_lease",
             status="passed",
-            reason="User approved visible desktop or Chrome control for this pending task.",
+            reason="User approved scoped browser/computer control or an idle-window condition for this pending task.",
             expires_at=(datetime.now(timezone.utc) + expires_delta).isoformat(),
             scope_cwd=str(cwd.resolve()),
         )
@@ -76,6 +79,26 @@ def _approved_desktop_plan(cwd: Path, *, expires_delta: timedelta = timedelta(mi
         for check in plan.authority_checks
     ]
     return plan.model_copy(update={"authority_checks": checks})
+
+
+def test_active_hook_context_code_does_not_generate_route_confirmation_requests() -> None:
+    active_hook_files = [
+        ROOT / "orchestrator" / "skills" / "detector.py",
+        ROOT / "orchestrator" / "skills" / "gate.py",
+    ]
+    forbidden = [
+        "confirm route",
+        "use skills:",
+        "route-confirm",
+        "confirmation request",
+        "confirmation is requested",
+        "confirm the interpreted skill route",
+    ]
+
+    active_text = "\n".join(path.read_text(encoding="utf-8").lower() for path in active_hook_files)
+
+    for phrase in forbidden:
+        assert phrase not in active_text
 
 
 def test_code_repair_prompt_selects_development_skills() -> None:
@@ -143,16 +166,16 @@ def test_router_benchmark_child_skill_prompts_select_expected_skill(prompt: str,
     assert plan.domain == expected_domain
 
 
-def test_medium_confidence_prompt_injects_single_confirmation_question() -> None:
+def test_medium_confidence_prompt_injects_route_without_confirmation_question() -> None:
     plan = detect_skill_route("work on the thing", cwd=Path.cwd())
     decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": "work on the thing", "cwd": str(Path.cwd())}, plan)
 
-    assert plan.confirmation_state == "required"
+    assert plan.confirmation_state == "not_required"
     assert "decision" not in decision
     context = decision["hookSpecificOutput"]["additionalContext"]
-    assert context.count("?") == 1
-    assert "confirm route" in context.lower()
-    assert "use skills:" in context.lower()
+    assert "Skill hook plan:" in context
+    assert "confirm route" not in context.lower()
+    assert "use skills:" not in context.lower()
 
 
 def test_medium_confidence_non_ambiguous_prompt_does_not_request_confirmation() -> None:
@@ -166,7 +189,7 @@ def test_medium_confidence_non_ambiguous_prompt_does_not_request_confirmation() 
     assert "use skills:" not in context.lower()
 
 
-def test_visible_desktop_prompt_is_managed_without_confirmation_route() -> None:
+def test_visible_desktop_prompt_is_conditional_without_confirmation_route() -> None:
     plan = detect_skill_route("use my logged-in Chrome tab to inspect the page", cwd=Path.cwd())
     decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
 
@@ -175,9 +198,21 @@ def test_visible_desktop_prompt_is_managed_without_confirmation_route() -> None:
     assert plan.confirmation_state == "not_required"
     checks = {check.name: check for check in plan.authority_checks}
     assert checks["desktop_control_lease"].status == "required"
-    assert "background-first" in context.lower()
+    assert "browser or computer-control authority requested" in context.lower()
     assert "confirm route" not in context.lower()
     assert "forbidden" not in context.lower()
+
+
+def test_computer_use_prompt_selects_conditional_computer_control_route() -> None:
+    plan = detect_skill_route("Use Computer Use to operate the desktop app when I am not actively using this desktop UI.", cwd=Path.cwd())
+
+    checks = {check.name: check for check in plan.authority_checks}
+
+    assert plan.domain == "browser"
+    assert "computer-use" in _skill_names(plan)
+    assert checks["desktop_control_lease"].status == "required"
+    assert "not actively using this desktop ui" in checks["desktop_control_lease"].reason.lower()
+    assert "forbidden" not in checks["desktop_control_lease"].reason.lower()
 
 
 def test_obvious_code_repair_prompt_injects_route_without_confirmation_prompt() -> None:
@@ -195,15 +230,127 @@ def test_obvious_code_repair_prompt_injects_route_without_confirmation_prompt() 
     assert "cancel route" not in context.lower()
 
 
-def test_external_mutation_still_requires_confirmation() -> None:
+def test_external_mutation_injects_route_without_confirmation_prompt() -> None:
     plan = detect_skill_route("send this Gmail reply to the customer", cwd=Path.cwd())
     decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
 
     context = decision["hookSpecificOutput"]["additionalContext"]
 
-    assert plan.confirmation_state == "required"
-    assert "confirm route" in context.lower()
+    assert plan.confirmation_state == "not_required"
+    assert "confirm route" not in context.lower()
     assert "gmail:gmail" in context
+
+
+def test_pre_tool_use_blocks_external_gmail_auto_send_without_plan() -> None:
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__codex_apps__gmail._send_email",
+            "tool_input": {
+                "to": "supplier@example.test",
+                "subject": "RFQ HHS0017441",
+                "body": "Please quote the attached items.",
+            },
+        },
+        None,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "except the daily govcon brief" in output["permissionDecisionReason"].lower()
+
+
+def test_pre_tool_use_allows_daily_govcon_brief_send_to_matt_and_partner() -> None:
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__codex_apps__gmail._send_email",
+            "tool_input": {
+                "to": ["Matt Couch <owner@example.com>", "Partner <partner@example.com>"],
+                "subject": "Example GovCon Daily Brief - 2026-06-15",
+                "body": "GovCon daily brief for Matt and Partner.",
+            },
+        },
+        None,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "daily GovCon brief" in output["additionalContext"]
+
+
+def test_pre_tool_use_blocks_blind_gmail_send_draft() -> None:
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__codex_apps__gmail._send_draft",
+            "tool_input": {"draft_id": "draft-123"},
+        },
+        None,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "send_draft is blocked" in output["permissionDecisionReason"].lower()
+
+
+def test_pre_tool_use_blocks_gmail_draft_with_agent_signature() -> None:
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__codex_apps__gmail._create_draft",
+            "tool_input": {
+                "to": "supplier@example.test",
+                "subject": "RFQ HHS0017441",
+                "body": "Please quote the attached items.\n\nThank you,\nMatt Couch\nExample Consulting\nC: 555-0100",
+            },
+        },
+        None,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "agent-authored signature" in output["permissionDecisionReason"].lower()
+
+
+def test_pre_tool_use_allows_clean_external_gmail_draft() -> None:
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__codex_apps__gmail._create_draft",
+            "tool_input": {
+                "to": "supplier@example.test",
+                "subject": "RFQ HHS0017441",
+                "body": "Please quote solicitation ABC123DEF456 for Example Consulting.\nUEI: YEAVZFFRUBJ6\nCAGE: 9TE77\n",
+            },
+        },
+        None,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in output
+    assert "draft path allowed" in output["additionalContext"].lower()
+
+
+def test_pre_tool_use_blocks_gmail_draft_with_wrong_labeled_uei() -> None:
+    decision = handle_pre_tool_use(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__codex_apps__gmail._create_draft",
+            "tool_input": {
+                "to": "supplier@example.test",
+                "subject": "RFQ HHS0017441",
+                "body": "Example Consulting UEI: ABC123DEF456",
+            },
+        },
+        None,
+    )
+
+    output = decision["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert "non-Example UEI" in output["permissionDecisionReason"]
 
 
 def test_forbidden_metered_route_prompt_is_hard_denied() -> None:
@@ -299,14 +446,14 @@ def test_govcon_local_build_cleanup_prompt_does_not_require_route_confirmation()
     assert "confirm route" not in context.lower()
 
 
-def test_broad_destructive_machine_prompt_still_requires_confirmation() -> None:
+def test_broad_destructive_machine_prompt_does_not_request_route_confirmation() -> None:
     plan = detect_skill_route("wipe the C:\\ drive and reset the machine", cwd=Path.cwd())
     decision = handle_user_prompt_submit({"hook_event_name": "UserPromptSubmit", "prompt": plan.prompt, "cwd": str(Path.cwd())}, plan)
 
     context = decision["hookSpecificOutput"]["additionalContext"]
 
-    assert plan.confirmation_state == "required"
-    assert "confirm route" in context.lower()
+    assert plan.confirmation_state == "not_required"
+    assert "confirm route" not in context.lower()
 
 
 def test_destructive_prompt_does_not_borrow_suggestion_discovery_exemption() -> None:
@@ -316,8 +463,8 @@ def test_destructive_prompt_does_not_borrow_suggestion_discovery_exemption() -> 
     context = decision["hookSpecificOutput"]["additionalContext"]
 
     assert plan.interpreted_actions[0].mutates is True
-    assert plan.confirmation_state == "required"
-    assert "confirm route" in context.lower()
+    assert plan.confirmation_state == "not_required"
+    assert "confirm route" not in context.lower()
 
 
 def test_confirmation_reply_proceeds_and_marks_confirmed() -> None:
@@ -365,7 +512,7 @@ def test_pre_tool_use_advises_visible_desktop_command_without_rewriting() -> Non
     assert output["hookEventName"] == "PreToolUse"
     assert "permissionDecision" not in output
     assert "updatedInput" not in output
-    assert "visible desktop" in output["additionalContext"].lower()
+    assert "visible-control" in output["additionalContext"].lower()
 
 
 def test_pre_tool_use_does_not_rewrite_text_search_that_mentions_chrome() -> None:
@@ -415,7 +562,7 @@ def test_pre_tool_use_advises_unplanned_visible_desktop_command_without_rewritin
     assert output["hookEventName"] == "PreToolUse"
     assert "permissionDecision" not in output
     assert "updatedInput" not in output
-    assert "visible desktop" in output["additionalContext"].lower()
+    assert "visible-control" in output["additionalContext"].lower()
 
 
 def test_pre_tool_use_advises_expired_desktop_control_lease_without_rewriting() -> None:
@@ -434,7 +581,7 @@ def test_pre_tool_use_advises_expired_desktop_control_lease_without_rewriting() 
     assert output["hookEventName"] == "PreToolUse"
     assert "permissionDecision" not in output
     assert "updatedInput" not in output
-    assert "visible desktop" in output["additionalContext"].lower()
+    assert "visible-control" in output["additionalContext"].lower()
 
 
 def test_pre_tool_use_advises_desktop_control_lease_for_wrong_cwd_without_rewriting(tmp_path: Path) -> None:
@@ -457,7 +604,7 @@ def test_pre_tool_use_advises_desktop_control_lease_for_wrong_cwd_without_rewrit
     assert output["hookEventName"] == "PreToolUse"
     assert "permissionDecision" not in output
     assert "updatedInput" not in output
-    assert "visible desktop" in output["additionalContext"].lower()
+    assert "visible-control" in output["additionalContext"].lower()
 
 
 def test_permission_request_allows_valid_desktop_control_lease() -> None:
@@ -556,7 +703,7 @@ def test_pre_tool_use_warns_for_browser_bridge_when_route_did_not_select_browser
     assert "outside the selected skill authority" in output["additionalContext"]
 
 
-def test_pre_tool_use_warns_for_chrome_bridge_until_desktop_control_lease_is_approved() -> None:
+def test_pre_tool_use_warns_for_chrome_bridge_until_conditional_control_is_approved() -> None:
     plan = detect_skill_route("use my logged-in Chrome tab to inspect the page", cwd=Path.cwd())
     decision = handle_pre_tool_use(
         {
@@ -571,10 +718,10 @@ def test_pre_tool_use_warns_for_chrome_bridge_until_desktop_control_lease_is_app
     output = decision["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
     assert "permissionDecision" not in output
-    assert "desktop control lease" in output["additionalContext"].lower()
+    assert "scoped browser/computer-control lease" in output["additionalContext"].lower()
 
 
-def test_permission_request_without_desktop_control_lease_falls_through_to_native_prompt() -> None:
+def test_permission_request_without_desktop_control_condition_falls_through_to_native_prompt() -> None:
     plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
     decision = handle_permission_request(
         {
@@ -588,7 +735,7 @@ def test_permission_request_without_desktop_control_lease_falls_through_to_nativ
 
     assert "hookSpecificOutput" not in decision
     assert "systemMessage" in decision
-    assert "one-click" in decision["systemMessage"]
+    assert "not actively" in decision["systemMessage"]
 
 
 def test_pre_tool_use_warns_apply_patch_without_skill_plan() -> None:
@@ -792,7 +939,8 @@ async def test_yes_approved_desktop_lease_is_cwd_scoped(tmp_path: Path) -> None:
     assert output["hookEventName"] == "PreToolUse"
     assert "permissionDecision" not in output
     assert "updatedInput" not in output
-    assert "visible desktop" in output["additionalContext"].lower()
+    assert "visible-control" in output["additionalContext"].lower()
+    assert "will not rewrite or block" in output["additionalContext"].lower()
 
 
 @pytest.mark.asyncio
@@ -840,7 +988,7 @@ async def test_runtime_permission_request_allows_valid_desktop_lease(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_confirmation_reply_uses_pending_plan_and_allows_risky_mutation(tmp_path: Path) -> None:
+async def test_pending_plan_allows_risky_mutation_without_route_confirmation(tmp_path: Path) -> None:
     settings = Settings(home=tmp_path, state_path=tmp_path / "state.sqlite", notifications_path=tmp_path / "notifications.jsonl", log_dir=tmp_path / "logs", repo_root=tmp_path)
     first = await run_hook_event(
         {
@@ -854,7 +1002,7 @@ async def test_confirmation_reply_uses_pending_plan_and_allows_risky_mutation(tm
         record=False,
     )
     first_context = first["hookSpecificOutput"]["additionalContext"]
-    plan_id = first_context.split("Plan: ", maxsplit=1)[1].splitlines()[0]
+    assert "confirm route" not in first_context.lower()
 
     warned = await run_hook_event(
         {
@@ -868,30 +1016,15 @@ async def test_confirmation_reply_uses_pending_plan_and_allows_risky_mutation(tm
         settings=settings,
         record=False,
     )
-    assert "permissionDecision" not in warned["hookSpecificOutput"]
-    assert "confirmation is requested" in warned["hookSpecificOutput"]["additionalContext"].lower()
-
-    confirmed = await run_hook_event(
-        {
-            "hook_event_name": "UserPromptSubmit",
-            "session_id": "session-1",
-            "turn_id": "turn-2",
-            "cwd": str(Path.cwd()),
-            "prompt": f"confirm route {plan_id}",
-        },
-        settings=settings,
-        record=False,
-    )
-
-    context = confirmed["hookSpecificOutput"]["additionalContext"]
-    assert "Original user prompt: push this commit to GitHub" in context
-    assert "Confirmation state: confirmed" in context
+    assert "decision" not in warned
+    assert warned["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert "confirm route" not in warned["hookSpecificOutput"]["additionalContext"].lower()
 
     pre_tool = await run_hook_event(
         {
             "hook_event_name": "PreToolUse",
             "session_id": "session-1",
-            "turn_id": "turn-2",
+            "turn_id": "turn-1",
             "cwd": str(Path.cwd()),
             "tool_name": "Bash",
             "tool_input": {"command": "git push origin main"},
@@ -1034,7 +1167,7 @@ async def test_cancel_route_reply_is_advisory_not_blocking(tmp_path: Path) -> No
         settings=settings,
         record=False,
     )
-    plan_id = first["hookSpecificOutput"]["additionalContext"].split("Plan: ", maxsplit=1)[1].splitlines()[0]
+    plan_id = first["hookSpecificOutput"]["additionalContext"].split("Skill hook plan: ", maxsplit=1)[1].splitlines()[0]
 
     decision = await run_hook_event(
         {

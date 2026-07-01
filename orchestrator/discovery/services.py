@@ -24,6 +24,11 @@ async def _probe_adapter(adapter: object) -> tuple[ServiceInfo, list[Capability]
                 adapter_name=name,
                 protocol=protocol,
                 health_state=HealthState.DEGRADED,
+                detail=f"Health probe raised an exception: {exc}",
+                repair_action=(
+                    f"Inspect the {label} adapter's health_probe for the error above; "
+                    "the probe itself failed, so this state is not a verified service status."
+                ),
                 version=f"probe failed: {exc}",
             ),
             [],

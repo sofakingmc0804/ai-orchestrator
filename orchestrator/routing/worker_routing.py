@@ -284,6 +284,17 @@ def _budget_score(worker: dict[str, Any], budget_lookup: dict[str, dict[str, Any
     return max(0.0, min(1.0, remaining / limit))
 
 
+def _budget_source_for_worker(worker: dict[str, Any], budget_lookup: dict[str, dict[str, Any]]) -> str:
+    contract = str(worker.get("contract_type") or "")
+    if contract == BillingClass.LOCAL_RESOURCE.value:
+        return str(worker.get("budget_source_id") or "local-hardware")
+    if contract == BillingClass.SUBSCRIPTION_UNLIMITED.value:
+        return str(worker.get("budget_source_id") or "subscription_unlimited")
+    provider = str(worker.get("provider_id") or worker.get("surface") or "")
+    budget_source = lookup_by_provider(provider, budget_lookup)
+    return str((budget_source or {}).get("source") or "none")
+
+
 def _reserve_rejection_reason(
     intent: Intent,
     worker: dict[str, Any],
@@ -540,7 +551,7 @@ def route_with_workers(
         stat_score = _preferred_stat_score(worker, preferred_stats)
         speed_score = _speed_score(worker)
         budget_fit = _budget_score(worker, budget_lookup)
-        budget_source = lookup_by_provider(str(worker.get("provider_id") or worker.get("surface") or ""), budget_lookup)
+        budget_source = _budget_source_for_worker(worker, budget_lookup)
         contract_score = _contract_pressure_score(worker)
         model_fit = _model_fit_score(worker, job_class)
         token_score = _token_efficiency_score(worker, token_usage_summary)
@@ -566,7 +577,7 @@ def route_with_workers(
         row["preferred_stat_score"] = stat_score
         row["speed_score"] = speed_score
         row["budget_score"] = budget_fit
-        row["budget_source"] = str((budget_source or {}).get("source") or "none")
+        row["budget_source"] = budget_source
         row["contract_pressure_score"] = contract_score
         row["model_fit_score"] = model_fit
         row["token_efficiency_score"] = token_score

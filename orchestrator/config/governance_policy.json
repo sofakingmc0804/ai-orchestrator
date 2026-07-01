@@ -12,8 +12,7 @@
     "subscription_quota"
   ],
   "app_defaults": {
-    "hermes_cli_model_call": "qwen2.5:0.5b",
-    "openclaw_cli_model_call": "qwen3.5:4b"
+    "hermes_cli_model_call": "qwen2.5:0.5b"
   },
   "forbidden_fallback_billing_classes": [
     "metered_extra_cost",

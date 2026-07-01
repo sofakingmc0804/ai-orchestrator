@@ -158,6 +158,38 @@ def default_sources() -> list[SubscriptionSource]:
     ]
 
 
+SUBSCRIPTION_STALE_AFTER_SECONDS = 12 * 3600
+
+
+def _annotate_freshness(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None, int]:
+    """Tag each cached snapshot with its age and a `stale` flag so the read path can
+    show how old the quota figures are instead of presenting them as if live."""
+    now = datetime.now(timezone.utc)
+    newest: str | None = None
+    stale_count = 0
+    annotated: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        checked = str(item.get("checked_at") or "")
+        age: float | None = None
+        if checked:
+            try:
+                parsed = datetime.fromisoformat(checked.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                age = max(0.0, (now - parsed).total_seconds())
+                if newest is None or checked > newest:
+                    newest = checked
+            except ValueError:
+                age = None
+        item["age_seconds"] = age
+        item["stale"] = age is None or age > SUBSCRIPTION_STALE_AFTER_SECONDS
+        if item["stale"]:
+            stale_count += 1
+        annotated.append(item)
+    return annotated, newest, stale_count
+
+
 async def build_subscription_usage_payload(store: StateStore, refresh: bool = False) -> dict[str, Any]:
     if refresh:
         snapshots = await probe_subscription_usage(store.settings, store)
@@ -165,12 +197,16 @@ async def build_subscription_usage_payload(store: StateStore, refresh: bool = Fa
     else:
         result = {"stored": 0, "failed": 0, "total": 0}
     snapshots = await store.list_subscription_usage_snapshots()
+    snapshots, newest_checked_at, stale_count = _annotate_freshness(snapshots)
     return {
         "state": "produced",
         "budget_model": "subscription_entitlement",
         "description": "Subscription limits are account/profile scoped. API budgets are policy caps and live on the API budget lane.",
         "refresh": result,
         "subscriptions": snapshots,
+        "newest_checked_at": newest_checked_at,
+        "stale_count": stale_count,
+        "stale_after_seconds": SUBSCRIPTION_STALE_AFTER_SECONDS,
         "totals": _subscription_totals(snapshots),
     }
 

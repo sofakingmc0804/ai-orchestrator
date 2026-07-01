@@ -174,10 +174,28 @@ def _requests_chrome_control(text: str) -> bool:
     return "chrome" in text and any(term in text for term in ("extension", "profile", "tab"))
 
 
+def _requests_computer_control(text: str) -> bool:
+    return any(
+        term in text
+        for term in (
+            "computer use",
+            "computer control",
+            "visible desktop",
+            "visible app",
+            "foreground app",
+            "active desktop",
+            "mouse",
+            "keyboard",
+        )
+    )
+
+
 def _requests_visible_desktop_or_chrome_authority(text: str) -> bool:
     if _requests_chrome_control(text):
         return True
-    return any(term in text for term in ("visible chrome", "desktop", "mouse", "keyboard"))
+    if _requests_computer_control(text):
+        return True
+    return any(term in text for term in ("visible chrome", "visible browser", "active tab", "foreground window"))
 
 
 def _verb_for_text(text: str) -> str:
@@ -217,7 +235,7 @@ def _domain_for_text(lowered: str, read_only_discovery: bool = False) -> str:
         return "discovery"
     if any(term in lowered for term in ("gmail", "email", "calendar", "drive", "docs", "sheet", "canva", "github")):
         return "connected_app"
-    if _requests_chrome_control(lowered):
+    if _requests_chrome_control(lowered) or _requests_computer_control(lowered):
         return "browser"
     if _contains_any(lowered, OPENAI_TERMS):
         return "codex"
@@ -262,29 +280,9 @@ def _confidence_for_text(lowered: str, domain: str, mutates: bool) -> float:
     return 0.62
 
 
-def _requires_confirmation(lowered: str, domain: str, mutates: bool, confidence: float) -> bool:
-    if confidence < 0.75 and _contains_any(lowered, AMBIGUOUS_TERMS):
-        return True
-    if not mutates:
-        return False
-    if _contains_any(lowered, EXTERNAL_MUTATION_TERMS):
-        return True
-    if domain == "connected_app":
-        return True
-    if _is_dangerous_destructive(lowered):
-        return True
-    if _contains_any(lowered, HIGH_CONSEQUENCE_TERMS) and domain not in {"code", "general"}:
-        return True
-    return False
-
-
 def _confirmation_state(lowered: str, domain: str, mutates: bool, confidence: float) -> tuple[str, str | None]:
     if _contains_any(lowered, CONFIRMATION_TERMS):
         return "confirmed", None
-    if confidence < 0.45:
-        return "blocked", "Clarify the intended action and skill route before proceeding?"
-    if _requires_confirmation(lowered, domain, mutates, confidence):
-        return "required", "Confirm the interpreted skill route before I act?"
     return "not_required", None
 
 
@@ -297,13 +295,14 @@ def _authority_checks(lowered: str, inventory: SkillInventory, mutates: bool, co
                 name="desktop_control_lease",
                 status="required",
                 reason=(
-                    "Managed desktop or Chrome authority requested. Use background-first routes first: connectors, APIs, "
-                    "exports, logs, headless or isolated profiles. Ask for a simple yes/no desktop lease only after those routes fail."
+                    "Browser or computer-control authority requested. Prefer connector/API/export/headless or isolated routes "
+                    "when they satisfy the task. Use Chrome/browser control or Computer Use only inside a scoped lease, "
+                    "or when Matt is not actively using this desktop UI and the idle-window condition is explicit."
                 ),
             )
         )
     else:
-        checks.append(AuthorityCheck(name="desktop_control_lease", status="passed", reason="No visible desktop or Chrome control requested."))
+        checks.append(AuthorityCheck(name="desktop_control_lease", status="passed", reason="No visible browser or computer-control route requested."))
     if _requires_connected_app_tool_proof(lowered):
         checks.append(
             AuthorityCheck(
@@ -313,8 +312,6 @@ def _authority_checks(lowered: str, inventory: SkillInventory, mutates: bool, co
                 required_tool="tool_search",
             )
         )
-    if mutates and confirmation_state == "required":
-        checks.append(AuthorityCheck(name="route_confirmation", status="required", reason="Mutating actions require route confirmation before tool use."))
     if confirmation_state == "confirmed":
         checks.append(AuthorityCheck(name="route_confirmation", status="passed", reason="Prompt explicitly confirmed the interpreted skill route."))
     return checks
@@ -378,6 +375,8 @@ def _select_domain_skills(lowered: str, domain: str, selected: list[SelectedSkil
             _append_if_missing(selected, "control-in-app-browser", inventory, "Localhost render checks should use the in-app browser surface, not a shell URL open.")
         elif _requests_chrome_control(lowered):
             _append_if_missing(selected, "control-chrome", inventory, "Credential-bearing Chrome extension or active-tab work requires the Chrome control skill.")
+        elif _requests_computer_control(lowered):
+            _append_if_missing(selected, "computer-use", inventory, "Visible desktop or app interaction requires the Computer Use route with idle-window or scoped lease authority.")
 
     if domain == "connected_app":
         if "gmail" in lowered:

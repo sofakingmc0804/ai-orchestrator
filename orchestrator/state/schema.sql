@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS services (
     install_path TEXT,
     version TEXT,
     health_state TEXT,
+    detail TEXT,
+    repair_action TEXT,
+    optional INTEGER DEFAULT 0,
     last_probe_at TEXT,
     created_at TEXT,
     updated_at TEXT
@@ -353,5 +356,125 @@ CREATE TABLE IF NOT EXISTS skill_hook_receipts (
     terminal_state_requirement TEXT,
     reason TEXT,
     raw_event_json TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_response_runs (
+    id TEXT PRIMARY KEY,
+    gmail_profile_email TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    config_json TEXT,
+    processed_message_ids_json TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_response_processed_messages (
+    id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES gmail_response_runs(id),
+    message_id TEXT,
+    thread_id TEXT,
+    sender TEXT,
+    subject TEXT,
+    timestamp TEXT,
+    label_ids_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_relationship_profiles (
+    relationship_key TEXT PRIMARY KEY,
+    updated_at TEXT,
+    participants_json TEXT,
+    packet_json TEXT,
+    evidence_message_ids_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_source_claims (
+    id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES gmail_response_runs(id),
+    relationship_key TEXT,
+    status TEXT,
+    claim_text TEXT,
+    evidence_message_ids_json TEXT,
+    reason TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_response_candidates (
+    id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES gmail_response_runs(id),
+    thread_id TEXT,
+    latest_message_id TEXT,
+    subject TEXT,
+    recipients_json TEXT,
+    urgency_bucket TEXT,
+    response_state TEXT,
+    response_needed_reason TEXT,
+    risk_flags_json TEXT,
+    next_action TEXT,
+    confidence REAL,
+    missing_authority_json TEXT,
+    authority_evidence_json TEXT,
+    safe_to_draft INTEGER,
+    reply_message_id TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_draft_receipts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES gmail_response_runs(id),
+    draft_id TEXT,
+    draft_status TEXT,
+    source_thread_id TEXT,
+    source_message_id TEXT,
+    recipients_json TEXT,
+    subject TEXT,
+    body_hash TEXT,
+    created_at TEXT,
+    validation_result TEXT,
+    source_packet_hash TEXT,
+    reply_message_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_draft_preflights (
+    id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES gmail_response_runs(id),
+    thread_id TEXT,
+    latest_message_id TEXT,
+    ask_summary TEXT,
+    requested_topics_json TEXT,
+    precedent_summary TEXT,
+    precedent_message_ids_json TEXT,
+    source_needs_json TEXT,
+    discoveries_json TEXT,
+    retrieval_steps_json TEXT,
+    selected_claims_json TEXT,
+    missing_facts_json TEXT,
+    copy_brief TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_verified_discoveries (
+    id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES gmail_response_runs(id),
+    relationship_key TEXT,
+    thread_id TEXT,
+    latest_message_id TEXT,
+    topic TEXT,
+    risk_flag TEXT,
+    source_path TEXT,
+    claim_text TEXT,
+    status TEXT,
+    discovered_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS gmail_learned_precedents (
+    id TEXT PRIMARY KEY,
+    relationship_key TEXT,
+    topics_json TEXT,
+    summary TEXT,
+    evidence_message_ids_json TEXT,
+    source TEXT,
+    precedent_type TEXT DEFAULT 'approved',
+    approval_state TEXT DEFAULT 'approved',
     created_at TEXT
 );

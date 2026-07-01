@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Command Center</title>
+<style>
+  :root{
+    --bg:#0f172a; --card-bg:#1e293b; --card-2:#172033; --text:#f1f5f9; --text-muted:#94a3b8;
+    --border:#334155; --success:#22c55e; --warning:#f59e0b; --danger:#ef4444; --primary:#3b82f6;
+    --purple:#8b5cf6; --good:#22c55e; --degraded:#f59e0b; --stopped:#ef4444; --unknown:#64748b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{min-height:100%}
+  body{min-height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg);color:var(--text);line-height:1.55;padding:1.6rem 1.6rem 3rem}
+  .container{max-width:1480px;margin:0 auto}
+  header{margin-bottom:1rem;padding-bottom:1rem;border-bottom:1px solid var(--border);
+    display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+  h1{font-size:1.6rem;font-weight:650;margin-bottom:.25rem}
+  .subtitle{color:var(--text-muted);font-size:.85rem}
+  .header-actions{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;justify-content:flex-end}
+  .stamp{font-size:.75rem;color:var(--text-muted);text-align:right;min-width:150px}
+  button{background:var(--primary);color:#fff;border:0;border-radius:8px;padding:.55rem .9rem;
+    font-weight:600;cursor:pointer;font-size:.85rem}
+  button.ghost{background:var(--card-bg);border:1px solid var(--border);color:var(--text)}
+  button:disabled{opacity:.55;cursor:default}
+  nav{margin:.4rem 0 1.4rem}
+  nav a{color:var(--text-muted);text-decoration:none;margin-right:1.4rem;font-size:.9rem;transition:color .2s}
+  nav a:hover,nav a.active{color:var(--text)}
+  .banner{display:none;background:rgba(239,68,68,.12);border:1px solid var(--danger);
+    border-radius:10px;padding:.85rem 1rem;margin-bottom:1.2rem;font-size:.85rem;color:#fecaca}
+  .banner code{background:#0b1220;padding:.15rem .4rem;border-radius:5px;color:#e2e8f0}
+  .section-title{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);
+    margin:1.4rem 0 .7rem;font-weight:650}
+  .grid{display:grid;gap:1rem}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:1100px){.g4{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:1fr}}
+  @media(max-width:760px){.g4,.g2{grid-template-columns:1fr}}
+  .card{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:1.1rem 1.15rem;min-height:90px}
+  .card h2{font-size:.95rem;font-weight:650;margin-bottom:.2rem;display:flex;align-items:center;gap:.5rem;justify-content:space-between}
+  .card h2 .t{display:flex;align-items:center;gap:.5rem}
+  .card .hint{color:var(--text-muted);font-size:.72rem;margin-bottom:.7rem}
+  .kpi{display:flex;align-items:baseline;gap:.5rem}
+  .kpi .big{font-size:1.9rem;font-weight:700;line-height:1}
+  .kpi .unit{color:var(--text-muted);font-size:.8rem}
+  .statline{display:flex;gap:1.2rem;flex-wrap:wrap;margin-top:.5rem;font-size:.8rem;color:var(--text-muted)}
+  .statline b{color:var(--text);font-weight:650}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;flex-shrink:0}
+  .d-healthy{background:var(--good)} .d-degraded{background:var(--degraded)}
+  .d-stopped{background:var(--stopped)} .d-unknown{background:var(--unknown)}
+  .pill{font-size:.68rem;padding:.1rem .45rem;border-radius:20px;border:1px solid var(--border);color:var(--text-muted)}
+  ul.list{list-style:none;display:flex;flex-direction:column;gap:.15rem;margin-top:.3rem}
+  ul.list li{display:flex;align-items:center;justify-content:space-between;gap:.6rem;
+    padding:.4rem 0;border-bottom:1px solid var(--border);font-size:.83rem}
+  ul.list li:last-child{border-bottom:0}
+  ul.list .nm{display:flex;align-items:center;gap:.5rem;min-width:0}
+  ul.list .nm .txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  ul.list .sub{color:var(--text-muted);font-size:.72rem}
+  ul.list .val{color:var(--text-muted);font-size:.76rem;white-space:nowrap;flex-shrink:0}
+  .grp{margin-top:.6rem}
+  .grp .glabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin:.5rem 0 .1rem}
+  .bar{height:7px;background:#0b1220;border-radius:6px;overflow:hidden;margin-top:.3rem}
+  .bar > span{display:block;height:100%;border-radius:6px}
+  .meta{font-size:.74rem;color:var(--text-muted);margin-top:.15rem}
+  .err{color:#fca5a5;font-size:.78rem}
+  .empty{color:var(--text-muted);font-size:.8rem;padding:.3rem 0}
+  a.link{color:var(--primary);text-decoration:none} a.link:hover{text-decoration:underline}
+  .chips{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem}
+  .chip{font-size:.72rem;padding:.2rem .5rem;border-radius:7px;background:var(--card-2);border:1px solid var(--border)}
+  .chip b{color:var(--text)}
+  .money{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div>
+      <h1>Command Center</h1>
+      <div class="subtitle">Live view of every connected service on this machine: AI providers and apps, usage and cost, and business connectors.</div>
+    </div>
+    <div class="header-actions">
+      <div class="stamp" id="stamp">Loading...</div>
+      <label class="pill" style="display:flex;align-items:center;gap:.35rem;cursor:pointer">
+        <input type="checkbox" id="auto" checked style="cursor:pointer"> auto
+      </label>
+      <button class="ghost" id="refreshBtn">Refresh now</button>
+    </div>
+  </header>
+
+  <nav>
+    <a href="/">Home</a>
+    <a href="/workers">Workers</a>
+    <a href="/budget">Budget</a>
+    <a href="/connectors">Connectors</a>
+    <a href="/receipts">Receipts</a>
+    <a href="/static/command-center.html" class="active">Command Center</a>
+  </nav>
+
+  <div class="banner" id="banner"></div>
+
+  <!-- SYSTEM -->
+  <div class="section-title">System</div>
+  <div class="grid g4">
+    <div class="card" id="cardSystem">
+      <h2><span class="t">Orchestrator</span><span class="pill" id="sysPill">...</span></h2>
+      <div class="hint">FastAPI control plane on this machine</div>
+      <div id="sysBody" class="empty">Checking...</div>
+    </div>
+    <div class="card" id="cardFleetSummary">
+      <h2><span class="t">Fleet health</span></h2>
+      <div class="hint">AI providers and apps</div>
+      <div id="fleetSummary" class="empty">Loading...</div>
+    </div>
+    <div class="card" id="cardCaps">
+      <h2><span class="t">Capabilities</span></h2>
+      <div class="hint">Routable skills by billing class</div>
+      <div id="capsBody" class="empty">Loading...</div>
+    </div>
+    <div class="card" id="cardTokens">
+      <h2><span class="t">Token flow</span></h2>
+      <div class="hint">Measured in / out (live ledger)</div>
+      <div id="tokensBody" class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <!-- AI FLEET -->
+  <div class="section-title">AI Providers &amp; Apps</div>
+  <div class="grid g2">
+    <div class="card">
+      <h2><span class="t">Service fleet</span><span class="pill" id="fleetCount"></span></h2>
+      <div class="hint">Live health from the orchestrator probe. Use Refresh now to re-probe.</div>
+      <div id="fleetBody" class="empty">Loading...</div>
+    </div>
+    <div class="card">
+      <h2><span class="t">Subscriptions &amp; quota</span></h2>
+      <div class="hint">Plan entitlements and remaining quota per provider</div>
+      <div id="subsBody" class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <!-- BUSINESS -->
+  <div class="section-title">Business Connectors <span id="bizStamp" style="text-transform:none;letter-spacing:0;font-weight:400"></span></div>
+  <div class="grid g4">
+    <div class="card">
+      <h2><span class="t">QuickBooks</span><span class="pill" id="qbPill"></span></h2>
+      <div class="hint">Cash, P&amp;L, receivables, payables</div>
+      <div id="qbBody" class="empty">Loading...</div>
+    </div>
+    <div class="card">
+      <h2><span class="t">Gmail</span><span class="pill" id="gmPill"></span></h2>
+      <div class="hint">Unread and items awaiting reply</div>
+      <div id="gmBody" class="empty">Loading...</div>
+    </div>
+    <div class="card">
+      <h2><span class="t">Calendar</span><span class="pill" id="calPill"></span></h2>
+      <div class="hint">Today and what is coming up</div>
+      <div id="calBody" class="empty">Loading...</div>
+    </div>
+    <div class="card">
+      <h2><span class="t">Drive</span><span class="pill" id="drPill"></span></h2>
+      <div class="hint">Recently modified files</div>
+      <div id="drBody" class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <div style="margin-top:1.6rem;color:var(--text-muted);font-size:.72rem">
+    AI panels poll the local orchestrator API live. Business panels read a snapshot refreshed by a scheduled job.
+    Source: <code style="color:#cbd5e1">/static/business_snapshot.json</code>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var API = ""; // same-origin
+  function $(id){return document.getElementById(id);}
+  function esc(v){return String(v==null?"":v).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;");}
+  function num(v){if(v==null||v==="")return"--";var n=Number(v);return Number.isFinite(n)?n.toLocaleString():esc(v);}
+  function money(v,cur){if(v==null||v===""||!Number.isFinite(Number(v)))return"--";
+    var n=Number(v);var s=(cur||"USD")==="USD"?"$":"";
+    return s+n.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});}
+  function pct(n){return Math.max(0,Math.min(100,Math.round(n)))+"%";}
+  function ago(iso){if(!iso)return"";var t=Date.parse(iso);if(!Number.isFinite(t))return"";
+    var s=Math.floor((Date.now()-t)/1000);if(s<0)s=0;
+    if(s<60)return s+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";
+    if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago";}
+  function until(iso){if(!iso)return"";var t=Date.parse(iso);if(!Number.isFinite(t))return"";
+    var s=Math.floor((t-Date.now())/1000);if(s<=0)return"now";
+    if(s<3600)return"in "+Math.floor(s/60)+"m";
+    if(s<86400)return"in "+Math.floor(s/3600)+"h";return"in "+Math.floor(s/86400)+"d";}
+  function fmtPct(n){return(n==null||!isFinite(Number(n)))?null:Math.round(Number(n))+"%";}
+  function barColor(ratio){if(ratio==null)return"var(--unknown)";if(ratio<=0.15)return"var(--danger)";if(ratio<=0.35)return"var(--warning)";return"var(--success)";}
+  async function getJson(path, ms){
+    var ctrl=new AbortController();
+    var to=setTimeout(function(){ctrl.abort();}, ms||15000);
+    try{
+      var r=await fetch(API+path,{headers:{"Accept":"application/json"},signal:ctrl.signal});
+      var b=await r.json();
+      if(!r.ok)throw new Error((b&&b.error)||(r.status+" "+r.statusText));
+      return b;
+    } finally { clearTimeout(to); }
+  }
+  async function postJson(path){
+    var r=await fetch(API+path,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    var b=await r.json().catch(function(){return{};});
+    if(!r.ok)throw new Error((b&&b.error)||(r.status+" "+r.statusText));
+    return b;
+  }
+  function asList(d){return Array.isArray(d)?d:(d&&(d.services||d.capabilities||d.items||d.rows))||[];}
+
+  var GROUP_LABEL={cloud_clients:"Cloud clients",local_models:"Local models",agent_hosts:"Agent hosts",test:"Test/other"};
+  function healthClass(h){h=(h||"unknown").toLowerCase();return["healthy","degraded","stopped","unknown"].indexOf(h)>=0?h:"unknown";}
+
+  // ---------- SYSTEM ----------
+  async function loadSystem(){
+    try{
+      var d=await getJson("/api/dashboard-status");
+      $("banner").style.display="none";
+      var st=(d.state||"unknown");
+      var cls=st==="healthy"?"d-healthy":st==="down"?"d-stopped":"d-degraded";
+      $("sysPill").innerHTML='<span class="dot '+cls+'"></span> '+esc(st);
+      var fa=d.fastapi||{};
+      var reasons=Array.isArray(d.health_reasons)?d.health_reasons:[];
+      var cp=d.control_plane_state&&d.control_plane_state!==st?' <span class="meta">(control plane '+esc(d.control_plane_state)+')</span>':'';
+      $("sysBody").innerHTML=
+        '<div class="kpi"><span class="big">'+esc((fa.state||"?").toUpperCase())+'</span><span class="unit">api'+cp+'</span></div>'+
+        '<div class="statline"><span>host <b>'+esc(fa.host||"127.0.0.1")+':'+esc(fa.port||"")+'</b></span>'+
+        '<span>machine <b>'+esc(d.machine||"?")+'</b></span></div>'+
+        '<div class="meta">checked '+esc(ago(d.checked_at))+'</div>'+
+        (st!=="healthy"&&reasons.length?'<div class="meta" style="color:var(--warning);margin-top:.25rem">'+reasons.slice(0,4).map(esc).join("; ")+'</div>':'');
+    }catch(e){
+      $("sysPill").innerHTML='<span class="dot d-stopped"></span> down';
+      $("sysBody").innerHTML='<div class="err">Orchestrator API not reachable.</div>';
+      $("banner").style.display="block";
+      $("banner").innerHTML='The orchestrator service is not answering this second. It runs always-on with a watchdog and recovers on its own within about a minute, so these panels will refill automatically. You can also press Refresh now. Business panels below load independently.';
+    }
+  }
+
+  // ---------- FLEET ----------
+  async function loadFleet(){
+    try{
+      var services=asList(await getJson("/api/services"));
+      var counts={healthy:0,degraded:0,stopped:0,unknown:0};
+      var groups={};
+      services.forEach(function(s){
+        var h=healthClass(s.health_state);counts[h]++;
+        var g=s.service_group||"other";(groups[g]=groups[g]||[]).push(s);
+      });
+      $("fleetCount").textContent=services.length+" services";
+      // summary card
+      $("fleetSummary").innerHTML=
+        '<div class="kpi"><span class="big">'+counts.healthy+'</span><span class="unit">/ '+services.length+' healthy</span></div>'+
+        '<div class="chips">'+
+        '<span class="chip"><span class="dot d-degraded"></span> <b>'+counts.degraded+'</b> degraded</span>'+
+        '<span class="chip"><span class="dot d-stopped"></span> <b>'+counts.stopped+'</b> stopped</span>'+
+        (counts.unknown?'<span class="chip"><span class="dot d-unknown"></span> <b>'+counts.unknown+'</b> unknown</span>':'')+
+        '</div>';
+      // detailed grouped list
+      var order=["cloud_clients","local_models","agent_hosts","test"];
+      var keys=Object.keys(groups).sort(function(a,b){var ia=order.indexOf(a),ib=order.indexOf(b);return(ia<0?9:ia)-(ib<0?9:ib);});
+      var html="";
+      keys.forEach(function(g){
+        html+='<div class="grp"><div class="glabel">'+esc(GROUP_LABEL[g]||g)+'</div><ul class="list">';
+        groups[g].sort(function(a,b){return(a.name||"").localeCompare(b.name||"");}).forEach(function(s){
+          var h=healthClass(s.health_state);
+          var opt=s.optional?' <span class="pill">optional</span>':"";
+          var why=(h!=="healthy"&&(s.detail||s.repair_action))?
+            '<div class="meta" style="margin-top:.1rem">'+
+              (s.detail?esc(s.detail):"")+
+              (s.repair_action?'<div style="color:var(--primary);margin-top:.1rem">Fix: '+esc(s.repair_action)+'</div>':"")+
+            '</div>':"";
+          html+='<li style="display:block"><div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem">'+
+                '<span class="nm"><span class="dot d-'+h+'"></span><span class="txt">'+esc(s.name||s.id)+'</span>'+opt+'</span>'+
+                '<span class="val">'+esc(s.health_state||"unknown")+(s.last_probe_at?' &middot; '+esc(ago(s.last_probe_at)):"")+'</span></div>'+
+                why+'</li>';
+        });
+        html+='</ul></div>';
+      });
+      $("fleetBody").innerHTML=html||'<div class="empty">No services registered.</div>';
+    }catch(e){
+      $("fleetSummary").innerHTML='<div class="err">unavailable</div>';
+      $("fleetBody").innerHTML='<div class="err">Could not load services ('+esc(e.message)+').</div>';
+      $("fleetCount").textContent="";
+    }
+  }
+
+  // ---------- CAPABILITIES ----------
+  async function loadCaps(){
+    try{
+      var caps=asList(await getJson("/api/capabilities"));
+      var byClass={};var enabled=0;
+      caps.forEach(function(c){var b=c.billing_class||"unknown";byClass[b]=(byClass[b]||0)+1;if(c.enabled!==false)enabled++;});
+      var labelMap={subscription_quota:"Subscription quota",local_resource:"Local resource",subscription_usage:"Subscription usage",subscription_unlimited:"Subscription unlimited",metered_extra_cost:"Metered cost",unknown_cost:"Unknown cost"};
+      var chips=Object.keys(byClass).sort(function(a,b){return byClass[b]-byClass[a];}).map(function(k){
+        return '<span class="chip"><b>'+byClass[k]+'</b> '+esc(labelMap[k]||k)+'</span>';}).join("");
+      $("capsBody").innerHTML=
+        '<div class="kpi"><span class="big">'+caps.length+'</span><span class="unit">'+enabled+' enabled</span></div>'+
+        '<div class="chips">'+chips+'</div>';
+    }catch(e){$("capsBody").innerHTML='<div class="err">unavailable</div>';}
+  }
+
+  // ---------- TOKENS ----------
+  async function loadTokens(){
+    try{
+      var d=await getJson("/api/token-accounting");
+      var t=d.totals||{};
+      $("tokensBody").innerHTML=
+        '<div class="kpi"><span class="big">'+num(t.tokens_total)+'</span><span class="unit">tokens</span></div>'+
+        '<div class="statline"><span>in <b>'+num(t.tokens_in)+'</b></span><span>out <b>'+num(t.tokens_out)+'</b></span></div>'+
+        '<div class="statline"><span>directives <b>'+num(t.directives)+'</b></span><span>done <b>'+num(t.completed_directives)+'</b></span><span>attempts <b>'+num(t.attempts)+'</b></span></div>';
+    }catch(e){$("tokensBody").innerHTML='<div class="empty">Usage ledger did not load in time.</div>';}
+  }
+
+  // ---------- SUBSCRIPTIONS ----------
+  async function loadSubs(){
+    try{
+      var d=await getJson("/api/subscriptions");
+      var rows=(d&&d.subscriptions)||[];
+      if(!rows.length){$("subsBody").innerHTML='<div class="empty">No subscription snapshots yet. Run a subscription refresh in Budget to populate quota.</div>';return;}
+      var stamp=d.newest_checked_at?'<div class="meta" style="margin-bottom:.4rem">Quota probed '+esc(ago(d.newest_checked_at))+(d.stale_count?' &middot; <span style="color:var(--warning)">'+d.stale_count+' stale</span>':'')+'</div>':'';
+      $("subsBody").innerHTML=stamp+'<ul class="list">'+rows.slice(0,10).map(function(r){
+        var label=r.subscription_name||r.plan_name||r.service_id||"subscription";
+        var status=String(r.status||"").toLowerCase();
+        var windows=[];try{windows=JSON.parse(r.usage_windows_json||"[]");}catch(e){windows=[];}
+        if(!Array.isArray(windows))windows=[];
+        var right="", barW="0%", barRatio=null, meta="";
+        if(windows.length){
+          // Headline = the window closest to its limit (highest used %).
+          var w=windows.slice().sort(function(a,b){return (Number(b.used_percent)||0)-(Number(a.used_percent)||0);})[0];
+          var used=(w.used_percent==null?null:Number(w.used_percent));
+          var rem=(w.remaining_percent!=null)?Number(w.remaining_percent):(used!=null?100-used:null);
+          right=(rem!=null?(fmtPct(rem)+" left"):(used!=null?(fmtPct(used)+" used"):"live"));
+          barRatio=(rem!=null?rem/100:null);
+          barW=(rem!=null?Math.max(0,Math.min(100,Math.round(rem)))+"%":"0%");
+          meta=esc(w.label||"window")+(w.reset_at?' &middot; resets '+esc(until(w.reset_at)):"");
+        } else if(r.tokens_remaining!=null && Number(r.tokens_limit)>0){
+          var ratio=Number(r.tokens_remaining)/Number(r.tokens_limit);
+          barRatio=ratio; barW=Math.max(0,Math.min(100,Math.round(ratio*100)))+"%";
+          right=Math.round(ratio*100)+"% left";
+          meta=num(r.tokens_remaining)+" of "+num(r.tokens_limit)+" tokens left";
+        } else {
+          // Nothing was proven for this provider: state the status honestly,
+          // do NOT present app token counts as if they were quota.
+          right=esc(status||r.confidence||"unverified");
+          meta=esc(r.error||"No quota proven for this provider.");
+        }
+        var staleBadge=r.stale?' <span class="pill" style="color:var(--warning);border-color:var(--warning)">stale</span>':"";
+        var repair=(status==="auth_required")?'<div class="meta" style="color:var(--primary)">Fix: re-authenticate this provider in an owner login lane, then Refresh.</div>':"";
+        return '<li style="display:block"><div style="display:flex;justify-content:space-between;gap:.6rem">'+
+          '<span class="nm"><span class="txt">'+esc(label)+'</span></span>'+
+          '<span class="val">'+right+'</span></div>'+
+          '<div class="bar"><span style="width:'+barW+';background:'+barColor(barRatio)+'"></span></div>'+
+          '<div class="meta">'+esc(r.confidence||"unverified")+staleBadge+(meta?' &middot; '+meta:"")+'</div>'+repair+'</li>';
+      }).join("")+'</ul>';
+    }catch(e){$("subsBody").innerHTML='<div class="empty">Subscriptions unavailable.</div>';}
+  }
+
+  // ---------- BUSINESS SNAPSHOT ----------
+  function setPill(id,state){
+    var el=$(id);if(!el)return;
+    if(state==="ok"){el.innerHTML='<span class="dot d-healthy"></span> live';}
+    else if(state==="err"){el.innerHTML='<span class="dot d-stopped"></span> error';}
+    else{el.innerHTML='<span class="dot d-unknown"></span> n/a';}
+  }
+  async function loadBusiness(){
+    var snap;
+    try{
+      snap=await getJson("/static/business_snapshot.json?t="+Date.now());
+    }catch(e){
+      $("bizStamp").textContent="(snapshot not generated yet)";
+      ["qbBody","gmBody","calBody","drBody"].forEach(function(id){$(id).innerHTML='<div class="empty">No snapshot yet. The scheduled refresh will create it.</div>';});
+      return;
+    }
+    $("bizStamp").innerHTML='&middot; as of '+esc(ago(snap.generated_at))+' ('+esc((snap.generated_at||"").replace("T"," ").slice(0,16))+' UTC)';
+    var err=snap.errors||{};
+
+    // QuickBooks
+    var qb=snap.quickbooks;
+    if(qb&&!err.quickbooks){
+      setPill("qbPill","ok");
+      var cur=qb.currency||"USD";var pnl=qb.pnl||{};var ar=qb.ar_aging||{};var inv=qb.open_invoices||[];
+      var html="";
+      if(qb.company)html+='<div class="meta" style="margin-bottom:.4rem">'+esc(qb.company)+'</div>';
+      if(qb.cash!=null)html+='<div class="kpi"><span class="big money">'+money(qb.cash,cur)+'</span><span class="unit">cash</span></div>';
+      if(pnl&&(pnl.net_income!=null||pnl.income!=null)){
+        html+='<div class="statline"><span>income <b class="money">'+money(pnl.income,cur)+'</b></span>'+
+              '<span>expense <b class="money">'+money(pnl.expenses,cur)+'</b></span>'+
+              '<span>net <b class="money">'+money(pnl.net_income,cur)+'</b></span></div>';
+        if(pnl.period)html+='<div class="meta">P&amp;L '+esc(pnl.period)+'</div>';
+      }
+      if(ar&&ar.total!=null){
+        html+='<div class="grp"><div class="glabel">A/R aging</div>'+
+          '<div class="statline"><span>total <b class="money">'+money(ar.total,cur)+'</b></span>'+
+          (ar.current!=null?'<span>current <b class="money">'+money(ar.current,cur)+'</b></span>':"")+
+          (ar.overdue!=null?'<span>overdue <b class="money">'+money(ar.overdue,cur)+'</b></span>':"")+'</div></div>';
+      }
+      if(qb.equity!=null||qb.credit_cards!=null||qb.current_ratio!=null||qb.payables_total!=null){
+        html+='<div class="grp"><div class="glabel">Position</div><div class="statline">'+
+          (qb.equity!=null?'<span>net worth <b class="money">'+money(qb.equity,cur)+'</b></span>':"")+
+          (qb.payables_total!=null?'<span>payables <b class="money">'+money(qb.payables_total,cur)+'</b></span>':"")+
+          (qb.credit_cards!=null?'<span>cards <b class="money">'+money(qb.credit_cards,cur)+'</b></span>':"")+
+          (qb.current_ratio!=null?'<span>current ratio <b>'+esc(qb.current_ratio)+'</b></span>':"")+
+        '</div></div>';
+      }
+      if(inv.length){
+        html+='<div class="grp"><div class="glabel">Receivables by customer ('+inv.length+')</div><ul class="list">'+
+          inv.slice(0,5).map(function(i){return '<li><span class="nm"><span class="txt">'+esc(i.customer||i.num||"invoice")+'</span></span>'+
+            '<span class="val money">'+money(i.balance,cur)+(i.due?' &middot; '+esc(i.due):"")+'</span></li>';}).join("")+'</ul></div>';
+      }
+      $("qbBody").innerHTML=html||'<div class="empty">Connected, no figures returned.</div>';
+    }else{setPill("qbPill",qb===undefined?"na":"err");$("qbBody").innerHTML='<div class="'+(err.quickbooks?"err":"empty")+'">'+esc(err.quickbooks||"Not included in snapshot.")+'</div>';}
+
+    // Gmail
+    var gm=snap.gmail;
+    if(gm&&!err.gmail){
+      setPill("gmPill","ok");
+      var att=gm.attention||[];
+      var html='<div class="kpi"><span class="big">'+num(gm.unread_total)+'</span><span class="unit">unread</span></div>';
+      if(att.length){
+        html+='<ul class="list" style="margin-top:.5rem">'+att.slice(0,6).map(function(m){
+          return '<li><span class="nm"><span class="txt">'+esc(m.subject||"(no subject)")+'</span></span>'+
+            '<span class="val">'+esc((m.from||"").split("<")[0].trim().slice(0,18))+'</span></li>';}).join("")+'</ul>';
+      }else{html+='<div class="empty" style="margin-top:.4rem">Nothing flagged for reply.</div>';}
+      $("gmBody").innerHTML=html;
+    }else{setPill("gmPill",gm===undefined?"na":"err");$("gmBody").innerHTML='<div class="'+(err.gmail?"err":"empty")+'">'+esc(err.gmail||"Not included in snapshot.")+'</div>';}
+
+    // Calendar
+    var cal=snap.calendar;
+    if(cal&&!err.calendar){
+      setPill("calPill","ok");
+      var today=cal.today||[];var up=cal.upcoming||[];
+      var html="";
+      html+='<div class="glabel">Today ('+today.length+')</div>';
+      if(today.length){html+='<ul class="list">'+today.slice(0,5).map(function(e){
+        return '<li><span class="nm"><span class="txt">'+esc(e.title||"(busy)")+'</span></span><span class="val">'+esc(e.time||"")+'</span></li>';}).join("")+'</ul>';}
+      else{html+='<div class="empty">Clear today.</div>';}
+      if(up.length){html+='<div class="grp"><div class="glabel">Coming up</div><ul class="list">'+up.slice(0,4).map(function(e){
+        return '<li><span class="nm"><span class="txt">'+esc(e.title||"(busy)")+'</span></span><span class="val">'+esc((e.date||"")+" "+(e.time||""))+'</span></li>';}).join("")+'</ul></div>';}
+      $("calBody").innerHTML=html;
+    }else{setPill("calPill",cal===undefined?"na":"err");$("calBody").innerHTML='<div class="'+(err.calendar?"err":"empty")+'">'+esc(err.calendar||"Not included in snapshot.")+'</div>';}
+
+    // Drive
+    var dr=snap.drive;
+    if(dr&&!err.drive){
+      setPill("drPill","ok");
+      var files=dr.recent||[];
+      if(files.length){$("drBody").innerHTML='<ul class="list">'+files.slice(0,8).map(function(f){
+        var nm=f.link?'<a class="link" href="'+esc(f.link)+'" target="_blank" rel="noopener">'+esc(f.name||"file")+'</a>':esc(f.name||"file");
+        return '<li><span class="nm"><span class="txt">'+nm+'</span></span><span class="val">'+esc(ago(f.modified))+'</span></li>';}).join("")+'</ul>';}
+      else{$("drBody").innerHTML='<div class="empty">No recent files.</div>';}
+    }else{setPill("drPill",dr===undefined?"na":"err");$("drBody").innerHTML='<div class="'+(err.drive?"err":"empty")+'">'+esc(err.drive||"Not included in snapshot.")+'</div>';}
+  }
+
+  // ---------- ORCHESTRATION ----------
+  var loadingData=false, reprobing=false, cycles=0;
+  async function loadData(){
+    if(loadingData)return;loadingData=true;
+    try{
+      await Promise.allSettled([loadSystem(),loadFleet(),loadCaps(),loadTokens(),loadSubs(),loadBusiness()]);
+      $("stamp").textContent="Updated "+new Date().toLocaleTimeString();
+    }finally{loadingData=false;}
+  }
+  async function reprobe(){
+    if(reprobing)return;reprobing=true;
+    var btn=$("refreshBtn");var old=btn.textContent;btn.disabled=true;btn.textContent="Re-probing live state...";
+    $("stamp").textContent="Re-probing live state...";
+    try{ await postJson("/api/refresh-services"); }catch(e){ try{ await postJson("/api/refresh"); }catch(e2){} }
+    finally{ reprobing=false;btn.disabled=false;btn.textContent=old; await loadData(); }
+  }
+  $("refreshBtn").addEventListener("click",function(){reprobe();});
+  // Populate from current stored state first (fast), THEN re-probe the machine in the background.
+  (async function(){ await loadData(); reprobe(); })();
+  setInterval(function(){
+    if(!$("auto").checked || reprobing) return;
+    cycles++;
+    if(cycles % 12 === 0){ reprobe(); } else { loadData(); }
+  },60000);
+})();
+</script>
+</body>
+</html>

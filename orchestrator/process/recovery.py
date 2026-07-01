@@ -10,46 +10,22 @@ from orchestrator.state.store import StateStore
 
 
 async def repair_openclaw_gateway(store: StateStore) -> dict[str, Any]:
-    health = await _run_bounded("openclaw", ["gateway", "health"], timeout=20)
-    if not health.get("ok"):
-        started = await _run_bounded("openclaw", ["gateway", "start"], timeout=45)
-        if not started.get("ok"):
-            start_repair_id = await store.add_repair_item(
-                "openclaw-gateway",
-                str(started.get("error") or started.get("stderr") or "gateway start failed"),
-                "Run `openclaw gateway status`, verify port 18789, and install the gateway service if the scheduled task is missing.",
-            )
-            return {"service": "openclaw-gateway", "state": "repair_failed", "repair_id": start_repair_id, "health": health, "start": started}
-        health = await _run_bounded("openclaw", ["gateway", "health"], timeout=20)
-    status = await _run_bounded("openclaw", ["gateway", "status"], timeout=30)
-    status_text = f"{status.get('stdout', '')}\n{status.get('stderr', '')}"
-    repair_id: str | None = None
-    if "Scheduled Task (missing)" in status_text or "Service not installed" in status_text:
-        repair_id = await store.add_repair_item(
-            "openclaw-gateway",
-            "Gateway RPC is healthy but the Windows scheduled service wrapper is missing.",
-            "Run `openclaw gateway install` after confirming loopback/token settings, then verify `openclaw gateway status`.",
-        )
     return {
         "service": "openclaw-gateway",
-        "state": "healthy" if health.get("ok") else "degraded",
-        "repair_id": repair_id,
-        "health": health,
-        "status": status,
+        "state": "retired",
+        "reason": "OpenClaw was retired during the 2026-06-16 consolidation; repair-services must not restart or reinstall it.",
+        "archive_path": "C:\\Users\\Couch\\Archive\\openclaw-retired-2026-06-16",
+        "replacement": "python -m orchestrator.cli.main route",
     }
 
 
 async def repair_hermes_local_model(store: StateStore) -> dict[str, Any]:
-    status = await _run_bounded("hermes", ["status"], timeout=20)
-    text = f"{status.get('stdout', '')}\n{status.get('stderr', '')}"
-    if status.get("ok") and "Provider:" in text and "Custom endpoint" in text and "qwen2.5:0.5b" in text:
-        return {"service": "hermes-agent", "state": "healthy", "status": status}
-    repair_id = await store.add_repair_item(
-        "hermes-agent",
-        str(status.get("error") or status.get("stderr") or "Hermes is not confirmed on custom Ollama qwen2.5:0.5b."),
-        "Set Hermes provider to custom Ollama at http://127.0.0.1:11434/v1 with model qwen2.5:0.5b, then verify `hermes status`.",
-    )
-    return {"service": "hermes-agent", "state": "degraded", "repair_id": repair_id, "status": status}
+    return {
+        "service": "hermes-agent",
+        "state": "retired_downstream",
+        "reason": "Hermes is upstream of the orchestrator brain; repair-services must not require Hermes as a downstream custom-Ollama adapter.",
+        "replacement": "Hermes prompt shims call `python -m orchestrator.cli.main hermes-route` before execution.",
+    }
 
 
 async def _lm_studio_models_visible() -> tuple[bool, dict[str, Any]]:

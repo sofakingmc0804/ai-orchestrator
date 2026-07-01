@@ -9,6 +9,7 @@ from orchestrator.config import Settings
 from orchestrator.process.supervisor import (
     BUDGET_PROBES_INTERVAL_SECONDS,
     BUDGET_PROBES_TASK_ID,
+    SUPERVISOR_TICK_SECONDS,
     ensure_budget_probe_scheduler_task,
     run_supervisor_tick,
     start_supervisor_thread,
@@ -116,6 +117,10 @@ def test_supervisor_thread_stops_cleanly(tmp_path: Path) -> None:
     assert not thread.is_alive()
 
 
+def test_supervisor_default_tick_interval_limits_background_churn() -> None:
+    assert SUPERVISOR_TICK_SECONDS >= 300.0
+
+
 def test_startup_scripts_use_supervised_fastapi_service() -> None:
     start_script = Path("scripts/start-orchestrator.ps1").read_text(encoding="utf-8")
     install_script = Path("scripts/install-startup-task.ps1").read_text(encoding="utf-8")
@@ -125,5 +130,9 @@ def test_startup_scripts_use_supervised_fastapi_service() -> None:
     assert "-WindowStyle Hidden" in start_script
     assert "watchdog_restart" in start_script
     assert "proof_kind = \"live\"" in start_script
+    assert "$HealthyDelaySeconds = 300" in start_script
+    assert "$StartReceiptMinIntervalSeconds = 900" in start_script
+    assert "Should-WriteOrchestratorStartReceipt" in start_script
+    assert "-WindowStyle Hidden" in install_script
     assert "-Watchdog" in install_script
     assert "-RestartCount 3" in install_script

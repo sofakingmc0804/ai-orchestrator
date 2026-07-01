@@ -58,6 +58,39 @@ async def _seed_routeable_worker(store: StateStore) -> None:
         '["repo_coding"]',
         "[]",
     )
+    await store.db.execute(
+        "UPDATE worker_cards SET budget_source_id = ? WHERE worker_id = ?",
+        "local-hardware",
+        "qwen2.5-coder:7b@ollama-local",
+    )
+
+
+async def _seed_live_route_provenance(store: StateStore) -> None:
+    await store.upsert_budget_probes(
+        [
+            {
+                "id": "ollama-local-legacy-probe",
+                "provider_id": "ollama",
+                "probe_type": "legacy",
+                "remaining": 999999,
+                "limit": 999999,
+                "ok": True,
+                "probed_at": "2026-06-14T00:00:00Z",
+            }
+        ]
+    )
+    await store.record_operation_quality_score(
+        {
+            "id": "quality-qwen-repo-coding",
+            "dispatch_id": "dispatch-qwen-repo-coding",
+            "worker_id": "qwen2.5-coder:7b@ollama-local",
+            "operation_domain": "repo_coding",
+            "validator_name": "test-regression",
+            "composite_score": 0.97,
+            "task_id": "repo-coding-smoke",
+            "proof_kind": "live",
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -86,6 +119,28 @@ async def test_hermes_brain_bridge_writes_live_route_receipt(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_hermes_bridge_receipt_uses_live_budget_and_quality_sources(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    await _seed_routeable_worker(store)
+    await _seed_live_route_provenance(store)
+
+    receipt = await route_for_hermes_prompt(
+        settings,
+        text="fix this repo bug",
+        job_class="repo_coding",
+        argv=["-z", "fix this repo bug"],
+    )
+
+    candidate = receipt["route"]["decision"]["candidates_considered"][0]
+    assert candidate["worker_id"] == "qwen2.5-coder:7b@ollama-local"
+    assert candidate["budget_source"] == "local-hardware"
+    assert candidate["quality_source"] == "operation_quality_scores:repo_coding"
+    assert candidate["measured_quality_score"] == 0.97
+
+
+@pytest.mark.asyncio
 async def test_hermes_route_cli_accepts_base64_argv_from_powershell(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     store = StateStore(settings)
@@ -99,6 +154,38 @@ async def test_hermes_route_cli_accepts_base64_argv_from_powershell(tmp_path: Pa
     assert receipt["state"] == "produced"
     assert receipt["input"]["argv"] == argv
     assert Path(str(receipt["receipt_path"])).exists()
+
+
+@pytest.mark.asyncio
+async def test_hermes_route_cli_infers_common_prompt_mode_job_class(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    await _seed_routeable_worker(store)
+
+    receipt = await _hermes_route(settings, "Return exactly OK.", None, json.dumps(["ask", "Return exactly OK."]))
+
+    assert receipt["input"]["job_class"] == "routing_triage"
+    assert receipt["route"]["job_class"] == "routing_triage"
+    assert receipt["route"]["classification"]["overridden"] is True
+
+
+@pytest.mark.asyncio
+async def test_hermes_route_cli_honors_internal_job_class_arg(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = StateStore(settings)
+    await store.initialize()
+    await _seed_routeable_worker(store)
+
+    receipt = await _hermes_route(
+        settings,
+        "fix this repo bug",
+        None,
+        json.dumps(["--orchestrator-job-class", "repo_coding", "-z", "fix this repo bug"]),
+    )
+
+    assert receipt["input"]["job_class"] == "repo_coding"
+    assert receipt["route"]["classification"]["overridden"] is True
 
 
 @pytest.mark.asyncio

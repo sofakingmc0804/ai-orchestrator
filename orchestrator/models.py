@@ -44,6 +44,17 @@ class ServiceInfo(BaseModel):
     install_path: str | None = None
     version: str | None = None
     health_state: HealthState = HealthState.UNKNOWN
+    # Human-readable reason for the current health_state (why it is degraded/stopped).
+    # Always populate this when health_state is not HEALTHY so the dashboard never
+    # shows a bare status with no explanation.
+    detail: str | None = None
+    # Concrete, owner-facing next step to restore the service. Populate alongside
+    # `detail` for any non-healthy state.
+    repair_action: str | None = None
+    # True for services that are intentionally not running (retired, archived, or
+    # synthetic test fixtures). Optional services are reported but must NOT drag the
+    # aggregate system health to "degraded".
+    optional: bool = False
     pid: int | None = None
     memory_mb: float | None = None
     uptime_seconds: float | None = None

@@ -18,6 +18,7 @@ from orchestrator.state.store import StateStore, iso
 
 BUDGET_PROBES_TASK_ID = "task_budget_probes_cron"
 BUDGET_PROBES_INTERVAL_SECONDS = 15 * 60
+SUPERVISOR_TICK_SECONDS = 5 * 60
 
 
 def _stamp() -> str:
@@ -141,7 +142,7 @@ async def _sleep_or_stop(stop_event: Event, seconds: float) -> bool:
 def start_supervisor_thread(
     settings: Settings,
     *,
-    seconds: float = 60.0,
+    seconds: float = SUPERVISOR_TICK_SECONDS,
     tick_runner: Callable[[Settings], Awaitable[dict[str, Any]]] | None = None,
 ) -> Thread:
     stop_event = Event()

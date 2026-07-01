@@ -10,6 +10,7 @@ from typing import Any
 import aiosqlite
 
 from orchestrator.config import Settings, ensure_runtime_dirs
+from orchestrator.gmail_response_agent.store import GMAIL_RESPONSE_AGENT_SCHEMA
 from orchestrator.models import Capability, Intent, Notification, RoutingDecision, Selection, ServiceInfo
 from orchestrator.usage.tokens import estimate_tokens
 
@@ -65,11 +66,13 @@ class StateStore:
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(schema)
             await self._ensure_scheduler_task_columns(db)
+            await self._ensure_service_columns(db)
             await self._ensure_worker_card_columns(db)
             await self._ensure_receipt_columns(db)
             await self._ensure_budget_lane_tables(db)
             await self._ensure_operation_quality_scores_table(db)
             await self._ensure_skill_hook_receipts_table(db)
+            await self._ensure_gmail_response_agent_tables(db)
             await db.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (1, iso()),
@@ -160,6 +163,18 @@ class StateStore:
                 )
             await db.commit()
         return {"dispatches": dispatch_updates, "receipts": receipt_updates}
+
+    async def _ensure_service_columns(self, db: aiosqlite.Connection) -> None:
+        rows = await (await db.execute("PRAGMA table_info(services)")).fetchall()
+        columns = {str(row[1]) for row in rows}
+        additions = {
+            "detail": "ALTER TABLE services ADD COLUMN detail TEXT",
+            "repair_action": "ALTER TABLE services ADD COLUMN repair_action TEXT",
+            "optional": "ALTER TABLE services ADD COLUMN optional INTEGER DEFAULT 0",
+        }
+        for column, statement in additions.items():
+            if column not in columns:
+                await db.execute(statement)
 
     async def _ensure_scheduler_task_columns(self, db: aiosqlite.Connection) -> None:
         rows = await (await db.execute("PRAGMA table_info(scheduler_tasks)")).fetchall()
@@ -263,6 +278,23 @@ class StateStore:
             if column not in columns:
                 await db.execute(statement)
 
+    async def _ensure_gmail_response_agent_tables(self, db: aiosqlite.Connection) -> None:
+        await db.executescript(GMAIL_RESPONSE_AGENT_SCHEMA)
+        rows = await (await db.execute("PRAGMA table_info(gmail_response_candidates)")).fetchall()
+        columns = {str(row[1]) for row in rows}
+        if "authority_evidence_json" not in columns:
+            await db.execute("ALTER TABLE gmail_response_candidates ADD COLUMN authority_evidence_json TEXT")
+        preflight_rows = await (await db.execute("PRAGMA table_info(gmail_draft_preflights)")).fetchall()
+        preflight_columns = {str(row[1]) for row in preflight_rows}
+        if "retrieval_steps_json" not in preflight_columns:
+            await db.execute("ALTER TABLE gmail_draft_preflights ADD COLUMN retrieval_steps_json TEXT")
+        learned_rows = await (await db.execute("PRAGMA table_info(gmail_learned_precedents)")).fetchall()
+        learned_columns = {str(row[1]) for row in learned_rows}
+        if "precedent_type" not in learned_columns:
+            await db.execute("ALTER TABLE gmail_learned_precedents ADD COLUMN precedent_type TEXT DEFAULT 'approved'")
+        if "approval_state" not in learned_columns:
+            await db.execute("ALTER TABLE gmail_learned_precedents ADD COLUMN approval_state TEXT DEFAULT 'approved'")
+
     async def _ensure_skill_hook_receipts_table(self, db: aiosqlite.Connection) -> None:
         await db.execute(
             """
@@ -320,12 +352,13 @@ class StateStore:
                 now = iso()
                 await db.execute(
                     """
-                    INSERT INTO services(id, name, service_group, adapter_name, protocol, install_path, version, health_state, last_probe_at, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO services(id, name, service_group, adapter_name, protocol, install_path, version, health_state, detail, repair_action, optional, last_probe_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                       name=excluded.name, service_group=excluded.service_group, adapter_name=excluded.adapter_name,
                       protocol=excluded.protocol, install_path=excluded.install_path, version=excluded.version,
-                      health_state=excluded.health_state, last_probe_at=excluded.last_probe_at, updated_at=excluded.updated_at
+                      health_state=excluded.health_state, detail=excluded.detail, repair_action=excluded.repair_action,
+                      optional=excluded.optional, last_probe_at=excluded.last_probe_at, updated_at=excluded.updated_at
                     """,
                     (
                         s.id,
@@ -336,6 +369,9 @@ class StateStore:
                         s.install_path,
                         s.version,
                         s.health_state.value,
+                        s.detail,
+                        s.repair_action,
+                        1 if s.optional else 0,
                         iso(s.last_probe_at),
                         now,
                         now,
@@ -1738,7 +1774,8 @@ class StateStore:
             )
             created += 1
         result = {"standing_orders": len(orders), "created": created, "existing": len(existing)}
-        await self.audit("scheduler", "standing_orders_migrated", "scheduler_tasks", result)
+        if created:
+            await self.audit("scheduler", "standing_orders_migrated", "scheduler_tasks", result)
         return result
 
     async def list_activity(self, limit: int = 100) -> list[dict[str, Any]]:

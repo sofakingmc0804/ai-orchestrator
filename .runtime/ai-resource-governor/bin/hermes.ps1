@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$root = "C:\Users\Couch\.ai-resource-governor"
+$root = "C:\Users\Couch\dev\ai-orchestrator\.runtime\ai-resource-governor"
 $python = "C:\Python313\python.exe"
 $actual = "C:\Users\Couch\AppData\Roaming\Python\Python313\Scripts\hermes.exe"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
@@ -37,11 +37,50 @@ function Test-HermesArg {
   return $false
 }
 
+function Get-HermesKnownJobClass {
+  param([object[]]$Argv)
+  if (-not $Argv -or $Argv.Count -eq 0) { return $null }
+  for ($i = 0; $i -lt $Argv.Count; $i++) {
+    $arg = [string]$Argv[$i]
+    if ($arg -eq "--orchestrator-job-class" -and ($i + 1) -lt $Argv.Count) {
+      return [string]$Argv[$i + 1]
+    }
+    if ($arg.StartsWith("--orchestrator-job-class=")) {
+      return $arg.Substring("--orchestrator-job-class=".Length)
+    }
+  }
+  $mode = ([string]$Argv[0]).Trim().ToLowerInvariant()
+  if (@("ask", "chat", "prompt", "complete") -contains $mode) {
+    return "routing_triage"
+  }
+  if ($mode -eq "run") {
+    return "repo_coding"
+  }
+  return $null
+}
+
+function Remove-HermesOrchestratorArgs {
+  param([object[]]$Argv)
+  $clean = @()
+  for ($i = 0; $i -lt $Argv.Count; $i++) {
+    $arg = [string]$Argv[$i]
+    if ($arg -eq "--orchestrator-job-class") {
+      $i++
+      continue
+    }
+    if ($arg.StartsWith("--orchestrator-job-class=")) {
+      continue
+    }
+    $clean += $Argv[$i]
+  }
+  return $clean
+}
+
 $receipt = @{
   created_at = (Get-Date).ToUniversalTime().ToString("o")
   shim = "hermes"
   command = @($args)
-  route_policy = "ai-resource-governor"
+  route_policy = "ai-orchestrator"
   default_lane = "ollama-local-first; copilot-account-only-when-cost-safe"
 } | ConvertTo-Json -Compress
 Add-Content -Path (Join-Path $root "receipts\command-invocations.jsonl") -Value $receipt -Encoding UTF8
@@ -113,9 +152,15 @@ if ($args.Count -gt 0 -and (@("ask","chat","run","prompt","complete") -contains 
     Write-Error "Hermes prompt command could not be routed because no prompt text was found."
     exit 43
   }
+  $knownJobClass = Get-HermesKnownJobClass -Argv @($args)
+  $args = @(Remove-HermesOrchestratorArgs -Argv @($args))
   $argvJson = @($args) | ConvertTo-Json -Compress
   $argvB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($argvJson))
-  $brainJson = & $python -m orchestrator.cli.main hermes-route --text $promptText --argv-b64 $argvB64
+  $routeArgs = @("-m", "orchestrator.cli.main", "hermes-route", "--text", $promptText, "--argv-b64", $argvB64)
+  if ($knownJobClass) {
+    $routeArgs += @("--job-class", $knownJobClass)
+  }
+  $brainJson = & $python @routeArgs
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   $brainRoute = $brainJson | ConvertFrom-Json
   if ($brainRoute.state -ne "produced") {

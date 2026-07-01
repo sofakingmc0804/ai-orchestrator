@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ from orchestrator.skills.models import SkillHookPlan
 from orchestrator.skills.runtime import run_hook_event
 from orchestrator.spec_status import evaluate_spec_status
 from orchestrator.state.store import StateStore
+from orchestrator.ui.dashboard_status import build_dashboard_status
 from orchestrator.usage.flow import build_token_flow_payload
 
 
@@ -254,6 +256,10 @@ async def _spec_status(settings: Settings) -> dict[str, object]:
     return await evaluate_spec_status(settings, store)
 
 
+def _dashboard_status(settings: Settings, host: str, port: int, write_receipt: bool) -> dict[str, object]:
+    return build_dashboard_status(settings, host=host, port=port, write_receipt=write_receipt)
+
+
 async def _owner_receipt(settings: Settings) -> dict[str, object]:
     return await export_owner_receipt(settings)
 
@@ -279,6 +285,22 @@ async def _skill_route(settings: Settings, text: str, cwd: str | None = None) ->
     return {"state": "produced", "skill_hook_plan": plan.receipt_payload()}
 
 
+def _infer_hermes_job_class(argv: list[str]) -> str | None:
+    for i, arg in enumerate(argv):
+        if arg == "--orchestrator-job-class" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--orchestrator-job-class="):
+            return arg.split("=", 1)[1]
+    if not argv:
+        return None
+    mode = argv[0].strip().lower()
+    if mode in {"ask", "chat", "prompt", "complete"}:
+        return "routing_triage"
+    if mode == "run":
+        return "repo_coding"
+    return None
+
+
 async def _hermes_route(settings: Settings, text: str, job_class: str | None, argv_json: str | None, argv_b64: str | None = None) -> dict[str, object]:
     argv: list[str] = []
     if argv_b64:
@@ -287,6 +309,8 @@ async def _hermes_route(settings: Settings, text: str, job_class: str | None, ar
         parsed = json.loads(argv_json)
         if isinstance(parsed, list):
             argv = [str(item) for item in parsed]
+    if job_class is None:
+        job_class = _infer_hermes_job_class(argv)
     return await route_for_hermes_prompt(settings, text=text, job_class=job_class, argv=argv)
 
 
@@ -333,6 +357,10 @@ def main() -> None:
     sub.add_parser("refresh")
     sub.add_parser("status")
     sub.add_parser("spec-status")
+    dashboard_status = sub.add_parser("dashboard-status")
+    dashboard_status.add_argument("--host", default=os.getenv("ORCHESTRATOR_HOST", "127.0.0.1"))
+    dashboard_status.add_argument("--port", type=int, default=int(os.getenv("ORCHESTRATOR_PORT", "8765")))
+    dashboard_status.add_argument("--no-receipt", action="store_true")
     sub.add_parser("owner-receipt")
     sub.add_parser("acceptance-battery")
     token_flow = sub.add_parser("token-flow")
@@ -427,6 +455,8 @@ def main() -> None:
         result = asyncio.run(_refresh(settings))
     elif args.cmd == "spec-status":
         result = asyncio.run(_spec_status(settings))
+    elif args.cmd == "dashboard-status":
+        result = _dashboard_status(settings, args.host, args.port, not args.no_receipt)
     elif args.cmd == "owner-receipt":
         result = asyncio.run(_owner_receipt(settings))
     elif args.cmd == "acceptance-battery":

@@ -1,22 +1,19 @@
 $ErrorActionPreference = "Stop"
-$root = "C:\Users\Couch\.ai-resource-governor"
-$python = "C:\Python313\python.exe"
-$actual = "C:\Users\Couch\AppData\Roaming\npm\openclaw.cmd"
-$env:PYTHONPATH = $root
+$root = "C:\Users\Couch\dev\ai-orchestrator\.runtime\ai-resource-governor"
+$receiptDir = Join-Path $root "receipts"
+New-Item -ItemType Directory -Force -Path $receiptDir | Out-Null
 
 $receipt = @{
   created_at = (Get-Date).ToUniversalTime().ToString("o")
   shim = "openclaw"
   command = @($args)
-  route_policy = "ai-resource-governor"
-  default_lane = "ollama-local-first; no-metered-fallback"
+  route_policy = "ai-orchestrator"
+  state = "retired"
+  retired_at = "2026-06-16"
+  archive_path = "C:\Users\Couch\Archive\openclaw-retired-2026-06-16"
+  replacement = "python -m orchestrator.cli.main route"
 } | ConvertTo-Json -Compress
-Add-Content -Path (Join-Path $root "receipts\command-invocations.jsonl") -Value $receipt -Encoding UTF8
+Add-Content -Path (Join-Path $receiptDir "command-invocations.jsonl") -Value $receipt -Encoding UTF8
 
-if ($args.Count -gt 0 -and @("ask","chat","run","prompt","complete","agent") -contains [string]$args[0]) {
-  & $python (Join-Path $root "ai_governor.py") route --task-type "openclaw_cli_model_call" --capability "routing" --context-tokens 0 | Out-Null
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
-
-& $actual @args
-exit $LASTEXITCODE
+Write-Error "OpenClaw is retired on this machine. Use ai-orchestrator routing instead."
+exit 410

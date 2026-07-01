@@ -219,12 +219,10 @@ async def run_scheduler_task_once(
     if not enabled and not force:
         result["reason"] = "scheduler_task_disabled"
         result["completed_at"] = iso()
-        await store.audit("scheduler", "scheduler_task_skipped", task_id, result)
         return result
     if due_only and not force and not _is_due(task):
         result["reason"] = "scheduler_task_not_due"
         result["completed_at"] = iso()
-        await store.audit("scheduler", "scheduler_task_skipped", task_id, result)
         return result
 
     if task_type == "standing_order_scan":
