@@ -209,6 +209,8 @@ The public API is:
 
 ### Task 2: Implement the Append-Only Event Ledger and Projections
 
+**Reopened foundation gate:** adversarial Task-2 deletion proved that event ordinals alone cannot preserve original command cardinality. Keep accepted migration 2 frozen. Before Task 2 can complete, separately reviewed `0003_workbench_command_manifests.sql` must add the immutable, endpoint-bound, checksummed command authority defined in `.superpowers/sdd/task-1-command-manifest-addendum.md`. Verification must bind manifests and events bidirectionally before retry, append, snapshot, replay, or rebuild. Task 2 remains paused during that repair.
+
 **Files:**
 - Create: `orchestrator/workbench/models.py`
 - Create: `orchestrator/workbench/events.py`
@@ -395,7 +397,7 @@ Batches are nonempty and single-branch. `EventCause` is a typed classification s
 ### Task 10: Build Transcript Intelligence Through the Slice
 
 **Files:**
-- Create: `orchestrator/state/migrations/0003_transcript_metadata.sql`
+- Create: `orchestrator/state/migrations/0004_transcript_metadata.sql`
 - Create: `orchestrator/transcripts/base.py`
 - Create: `orchestrator/transcripts/identity.py`
 - Create: `orchestrator/transcripts/content_store.py`
@@ -457,7 +459,7 @@ Batches are nonempty and single-branch. `EventCause` is a typed classification s
 ### Task 12: Build Gmail Decision Delivery and Reply Correlation Through the Slice
 
 **Files:**
-- Create: `orchestrator/state/migrations/0004_decision_notifications.sql`
+- Create: `orchestrator/state/migrations/0005_decision_notifications.sql`
 - Create: `orchestrator/notifications/channels.py`
 - Create: `orchestrator/notifications/outbox.py`
 - Create: `orchestrator/notifications/signing.py`
