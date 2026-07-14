@@ -15,6 +15,7 @@ import aiosqlite
 import pytest
 
 from orchestrator.config import Settings
+from orchestrator.state import migration_runner as migration_module
 from orchestrator.state.migration_runner import (
     MigrationApplyError,
     MigrationBackupError,
@@ -45,6 +46,7 @@ WORKBENCH_TABLES = {
     "learning_proposals",
     "replacement_bootstrap_proofs",
     "quarantined_components",
+    "workbench_command_manifests",
 }
 
 
@@ -90,6 +92,8 @@ async def test_fresh_initialize_applies_migration_and_records_immutable_catalog(
     assert rows[0] == (1, "legacy_baseline", "applied", None)
     assert rows[1][0:3] == (2, "workbench_core", "applied")
     assert isinstance(rows[1][3], str) and len(rows[1][3]) == 64
+    assert rows[2][0:3] == (3, "workbench_command_manifests", "applied")
+    assert isinstance(rows[2][3], str) and len(rows[2][3]) == 64
 
 
 @pytest.mark.asyncio
@@ -372,12 +376,14 @@ async def test_migration_schema_has_required_constraints_indexes_and_json_guards
         db.execute(
             "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) VALUES ('t','main','active','now')"
         )
+        insert_single_event_manifest(db, "t", "cmd", "main", 1, "e")
         with pytest.raises(sqlite3.IntegrityError):
             db.execute(
                 "INSERT INTO workbench_events(event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,"
                 "command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,checksum,created_at) "
                 "VALUES ('e','t',1,'x',1,'service','a','main','cmd',1,0,'not-json','k','','c','now')"
             )
+        db.rollback()
 
 
 @pytest.mark.asyncio
@@ -394,17 +400,25 @@ async def test_event_rows_are_append_only_and_cause_must_be_earlier_in_same_task
             "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) "
             "VALUES ('a','main','active','now'),('b','main','active','now')"
         )
+        insert_single_event_manifest(db, "a", "cmd-a1", "main", 1, "a1")
         db.execute(
             "INSERT INTO workbench_events(event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,"
             "command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,checksum,created_at) "
             "VALUES ('a1','a',1,'x',1,'service','actor','main','cmd-a1',1,0,'{}','a1','','c1','now')"
         )
+        insert_single_event_manifest(db, "b", "cmd-b1", "main", 1, "b1")
         with pytest.raises(sqlite3.IntegrityError):
             db.execute(
                 "INSERT INTO workbench_events(event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,"
                 "cause,caused_by,command_id,command_sequence,frame_version,payload_json,idempotency_key,checksum,created_at) "
                 "VALUES ('b1','b',1,'x',1,'service','actor','main','bad','a1','cmd-b1',1,0,'{}','b1','c2','now')"
             )
+        db.execute(
+            "INSERT INTO workbench_events(event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,"
+            "command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,checksum,created_at) "
+            "VALUES ('b1','b',1,'x',1,'service','actor','main','cmd-b1',1,0,'{}','b1','','c2','now')"
+        )
+        insert_single_event_manifest(db, "a", "cmd-a2", "main", 2, "a2")
         db.execute(
             "INSERT INTO workbench_events(event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,"
             "cause,caused_by,command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,"
@@ -836,6 +850,7 @@ async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_p
             "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) "
             "VALUES ('a','main','active','now'),('b','main','active','now')"
         )
+        insert_single_event_manifest(db, "a", "cmd-a", "main", 1, "event-a", frame_version=3)
         db.execute(
             """
             INSERT INTO workbench_events(
@@ -844,6 +859,7 @@ async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_p
             ) VALUES ('event-a','a',1,'evidence.observed',1,'service','run-a','main','cmd-a',1,3,'{}','idem-a','','sum-a','now')
             """
         )
+        insert_single_event_manifest(db, "b", "cmd-b", "main", 1, "event-b", frame_version=3)
         db.execute(
             """
             INSERT INTO workbench_events(
@@ -852,6 +868,10 @@ async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_p
             ) VALUES ('event-b','b',1,'evidence.observed',1,'service','run-b','main','cmd-b',1,3,'{}',
                       'idem-b','','sum-b','now')
             """
+        )
+        insert_single_event_manifest(
+            db, "a", "cmd-a-invalidated", "main", 2, "event-a-invalidated",
+            frame_version=3, created_at="later",
         )
         db.execute(
             """
@@ -1043,6 +1063,10 @@ async def test_completion_evidence_rejects_nonexistent_wrong_kind_and_invisible_
         )
         event_sequences = {event_id: sequence for event_id, sequence, _, _, _, _ in events}
         for event_id, sequence, event_frame_version, event_type, branch_id, payload in events:
+            insert_single_event_manifest(
+                db, "lineage", f"cmd-{event_id}", branch_id, sequence, event_id,
+                frame_version=event_frame_version,
+            )
             db.execute(
                 """
                 INSERT INTO workbench_events(
@@ -1261,6 +1285,10 @@ async def test_quarantine_stages_before_activation_and_requires_replacement_proo
              json.dumps(q2_proof_fields, sort_keys=True)),
             ("q2-activation-event", 10, "component.quarantine_activated", q2_activation_payload),
         ):
+            insert_single_event_manifest(
+                db, "quarantine-task", f"cmd-{event_id}", "main", sequence, event_id,
+                frame_version=1,
+            )
             db.execute(
                 """
                 INSERT INTO workbench_events(
@@ -1516,6 +1544,7 @@ async def test_quarantine_stages_before_activation_and_requires_replacement_proo
             },
             sort_keys=True,
         )
+        insert_single_event_manifest(db, "other-task", "other-cmd", "main", 1, "other-stage", frame_version=1)
         db.execute(
             """
             INSERT INTO workbench_events(
@@ -1601,6 +1630,10 @@ async def test_quarantine_baseline_is_all_null_or_complete_verified_shape(tmp_pa
                     "replacement_build_id": "build", "manifest_checksum": f"manifest-{component_id}",
                 },
                 sort_keys=True,
+            )
+            insert_single_event_manifest(
+                db, "baseline-task", f"cmd-{component_id}", "main", sequence, f"stage-{component_id}",
+                frame_version=1,
             )
             db.execute(
                 """
@@ -1697,6 +1730,16 @@ async def test_quarantine_requires_stage_before_proof_before_activation(tmp_path
         ):
             await db.execute(
                 """
+                INSERT INTO workbench_command_manifests(
+                    task_id,command_id,target_branch_id,event_count,first_sequence,last_sequence,
+                    first_event_id,last_event_id,starting_frame_version,expected_frame_version,
+                    confirm_ordinal,drafts_checksum,manifest_checksum,created_at
+                ) VALUES ('order-task',?,'main',1,?,?,?, ?,1,1,NULL,?,?,'now')
+                """,
+                (f"cmd-{event_id}", sequence, sequence, event_id, event_id, SHA_A, SHA_B),
+            )
+            await db.execute(
+                """
                 INSERT INTO workbench_events(
                     event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,
                     command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,
@@ -1739,6 +1782,390 @@ async def test_quarantine_requires_stage_before_proof_before_activation(tmp_path
                     state='active' WHERE id='order-q'
                 """
             )
+
+
+def insert_manifest_task(db: sqlite3.Connection, task_id: str = "manifest-task") -> None:
+    db.execute(
+        "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+        "VALUES (?,?, 'running','main',0,'now','now')",
+        (task_id, task_id),
+    )
+    db.execute(
+        "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) VALUES (?,'main','active','now')",
+        (task_id,),
+    )
+
+
+def insert_command_manifest(db: sqlite3.Connection, **overrides: object) -> None:
+    values: dict[str, object] = {
+        "task_id": "manifest-task",
+        "command_id": "command-1",
+        "target_branch_id": "main",
+        "event_count": 2,
+        "first_sequence": 1,
+        "last_sequence": 2,
+        "first_event_id": "event-1",
+        "last_event_id": "event-2",
+        "starting_frame_version": 0,
+        "expected_frame_version": 0,
+        "confirm_ordinal": None,
+        "drafts_checksum": SHA_A,
+        "manifest_checksum": SHA_B,
+        "created_at": "created-1",
+    }
+    values.update(overrides)
+    columns = tuple(values)
+    db.execute(
+        f"INSERT INTO workbench_command_manifests({','.join(columns)}) "
+        f"VALUES ({','.join('?' for _ in columns)})",
+        tuple(values[column] for column in columns),
+    )
+
+
+def insert_single_event_manifest(
+    db: sqlite3.Connection,
+    task_id: str,
+    command_id: str,
+    branch_id: str,
+    sequence: int,
+    event_id: str,
+    *,
+    frame_version: int = 0,
+    created_at: str = "now",
+) -> None:
+    insert_command_manifest(
+        db,
+        task_id=task_id,
+        command_id=command_id,
+        target_branch_id=branch_id,
+        event_count=1,
+        first_sequence=sequence,
+        last_sequence=sequence,
+        first_event_id=event_id,
+        last_event_id=event_id,
+        starting_frame_version=frame_version,
+        expected_frame_version=frame_version,
+        created_at=created_at,
+    )
+
+
+def insert_manifest_event(
+    db: sqlite3.Connection,
+    event_id: str,
+    sequence: int,
+    command_id: str,
+    command_sequence: int,
+    *,
+    task_id: str = "manifest-task",
+    branch_id: str = "main",
+    created_at: str = "created-1",
+) -> None:
+    db.execute(
+        """
+        INSERT INTO workbench_events(
+            event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,
+            command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,
+            checksum,created_at
+        ) VALUES (?,?,?,'manifest.test',1,'service','writer',?,?,?,0,'{}',?,?,?,?)
+        """,
+        (
+            event_id, task_id, sequence, branch_id, command_id, command_sequence,
+            f"idem-{task_id}-{command_id}-{command_sequence}", f"prior-{sequence}", f"sum-{sequence}", created_at,
+        ),
+    )
+
+
+def test_command_manifest_checksum_contract_golden_vectors() -> None:
+    migration_path = (
+        ROOT / "orchestrator" / "state" / "migrations" / "0003_workbench_command_manifests.sql"
+    )
+    migration_sql = migration_path.read_text(encoding="utf-8")
+    assert "workbench.command.drafts.v1" in migration_sql
+    assert "workbench.command.manifest.v1" in migration_sql
+
+    drafts_envelope = {
+        "domain": "workbench.command.drafts.v1",
+        "task_id": "task-Ω",
+        "command_id": "cmd-1",
+        "drafts": [
+            {
+                "ordinal": 1, "event_type": "task.created", "event_schema_version": 1,
+                "actor_kind": "owner", "actor_id": "matt", "branch_id": "main",
+                "cause": None, "caused_by": None, "payload": {"title": "Café", "count": 1},
+            },
+            {
+                "ordinal": 2, "event_type": "frame.confirmed", "event_schema_version": 1,
+                "actor_kind": "service", "actor_id": "codex", "branch_id": "main",
+                "cause": "owner", "caused_by": "event-1",
+                "payload": {"confirmed": True, "note": None},
+            },
+        ],
+    }
+    drafts_canonical = json.dumps(
+        drafts_envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    assert drafts_canonical == (
+        '{"command_id":"cmd-1","domain":"workbench.command.drafts.v1","drafts":'
+        '[{"actor_id":"matt","actor_kind":"owner","branch_id":"main","cause":null,'
+        '"caused_by":null,"event_schema_version":1,"event_type":"task.created","ordinal":1,'
+        '"payload":{"count":1,"title":"Café"}},{"actor_id":"codex","actor_kind":"service",'
+        '"branch_id":"main","cause":"owner","caused_by":"event-1","event_schema_version":1,'
+        '"event_type":"frame.confirmed","ordinal":2,"payload":{"confirmed":true,"note":null}}],'
+        '"task_id":"task-Ω"}'
+    )
+    drafts_checksum = hashlib.sha256(drafts_canonical.encode("utf-8")).hexdigest()
+    assert drafts_checksum == "012cbc556c314a105f50acee954c59fffb51af085d6c4b0952dc28e0e4cf49a6"
+
+    manifest_envelope = {
+        "domain": "workbench.command.manifest.v1",
+        "task_id": "task-Ω", "command_id": "cmd-1", "target_branch_id": "main",
+        "event_count": 2, "first_sequence": 1, "last_sequence": 2,
+        "first_event_id": "event-1", "last_event_id": "event-2",
+        "starting_frame_version": 0, "expected_frame_version": 0, "confirm_ordinal": None,
+        "drafts_checksum": drafts_checksum, "created_at": "2026-07-14T12:00:00.000000Z",
+    }
+    manifest_canonical = json.dumps(
+        manifest_envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    assert manifest_canonical == (
+        '{"command_id":"cmd-1","confirm_ordinal":null,"created_at":"2026-07-14T12:00:00.000000Z",'
+        '"domain":"workbench.command.manifest.v1","drafts_checksum":'
+        '"012cbc556c314a105f50acee954c59fffb51af085d6c4b0952dc28e0e4cf49a6",'
+        '"event_count":2,"expected_frame_version":0,"first_event_id":"event-1","first_sequence":1,'
+        '"last_event_id":"event-2","last_sequence":2,"starting_frame_version":0,'
+        '"target_branch_id":"main","task_id":"task-Ω"}'
+    )
+    assert hashlib.sha256(manifest_canonical.encode("utf-8")).hexdigest() == (
+        "7bd436c78b30031bc321eadf27c802043bd460cc0c1f26a0f151b601c872a8a0"
+    )
+    manifest_envelope["confirm_ordinal"] = 2
+    mutated_canonical = json.dumps(
+        manifest_envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+    assert hashlib.sha256(mutated_canonical.encode("utf-8")).hexdigest() == (
+        "7867bb17603fa23f75ea9c549dbdb729eff6d70bc20c60ee89dc3607d1ba5373"
+    )
+
+
+@pytest.mark.asyncio
+async def test_command_manifests_are_complete_immutable_and_protect_tail_endpoints(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    expected_columns = {
+        "task_id", "command_id", "target_branch_id", "event_count", "first_sequence", "last_sequence",
+        "first_event_id", "last_event_id", "starting_frame_version", "expected_frame_version",
+        "confirm_ordinal", "drafts_checksum", "manifest_checksum", "created_at",
+    }
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        column_info = {str(row[1]): row for row in db.execute("PRAGMA table_info(workbench_command_manifests)")}
+        assert set(column_info) == expected_columns
+        assert {name for name, row in column_info.items() if int(row[3]) == 0} == {"confirm_ordinal"}
+        table_sql = str(db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='workbench_command_manifests'"
+        ).fetchone()[0]).upper()
+        assert table_sql.count("DEFERRABLE INITIALLY DEFERRED") == 2
+        insert_manifest_task(db)
+        insert_manifest_task(db, "")
+        db.execute(
+            "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) "
+            "VALUES ('manifest-task','','active','now')"
+        )
+        db.commit()
+
+        invalid_shapes = (
+            {"command_id": "bad-count", "event_count": 0},
+            {"command_id": "bad-first", "first_sequence": 0},
+            {"command_id": "bad-range", "last_sequence": 3},
+            {"command_id": "bad-first-id", "first_event_id": ""},
+            {"command_id": "bad-last-id", "last_event_id": " "},
+            {"command_id": "bad-start-frame", "starting_frame_version": -1},
+            {"command_id": "bad-expected-frame", "expected_frame_version": -1},
+            {"command_id": "bad-confirm-low", "confirm_ordinal": 0},
+            {"command_id": "bad-confirm-high", "confirm_ordinal": 3},
+            {"command_id": "bad-drafts", "drafts_checksum": "A" * 64},
+            {"command_id": "bad-manifest", "manifest_checksum": "short"},
+            {"task_id": "", "command_id": "blank-task"},
+            {"command_id": ""},
+            {"command_id": "blank-branch", "target_branch_id": ""},
+        )
+        for invalid in invalid_shapes:
+            with pytest.raises(sqlite3.IntegrityError):
+                insert_command_manifest(db, **invalid)
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_command_manifest(db, task_id="missing-task", command_id="cross-task")
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_command_manifest(db, command_id="cross-branch", target_branch_id="missing")
+
+        insert_command_manifest(db)
+        insert_manifest_event(db, "event-1", 1, "command-1", 1)
+        insert_manifest_event(db, "event-2", 2, "command-1", 2, created_at="created-2")
+        db.commit()
+        assert db.execute(
+            "SELECT event_count,first_sequence,last_sequence,first_event_id,last_event_id "
+            "FROM workbench_command_manifests WHERE command_id='command-1'"
+        ).fetchone() == (2, 1, 2, "event-1", "event-2")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE workbench_command_manifests SET event_count=1 WHERE command_id='command-1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("DELETE FROM workbench_command_manifests WHERE command_id='command-1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_command_manifest(
+                db, command_id="gap", event_count=1, first_sequence=4, last_sequence=4,
+                first_event_id="event-4", last_event_id="event-4",
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_command_manifest(
+                db, command_id="overlap", event_count=1, first_sequence=2, last_sequence=2,
+                first_event_id="event-overlap", last_event_id="event-overlap",
+            )
+
+        insert_command_manifest(
+            db, command_id="command-2", event_count=1, first_sequence=3, last_sequence=3,
+            first_event_id="event-3", last_event_id="event-3", confirm_ordinal=1, created_at="created-3",
+        )
+        for event_args in (
+            ("orphan", 3, "missing-command", 1, "main", "created-3"),
+            ("wrong-id", 3, "command-2", 1, "main", "created-3"),
+            ("event-3", 4, "command-2", 1, "main", "created-3"),
+            ("event-3", 3, "command-2", 2, "main", "created-3"),
+            ("event-3", 3, "command-2", 1, "missing", "created-3"),
+            ("event-3", 3, "command-2", 1, "main", "wrong-created-at"),
+        ):
+            event_id, sequence, command_id, ordinal, branch_id, created_at = event_args
+            with pytest.raises(sqlite3.IntegrityError):
+                insert_manifest_event(
+                    db, event_id, sequence, command_id, ordinal, branch_id=branch_id, created_at=created_at
+                )
+        insert_manifest_event(db, "event-3", 3, "command-2", 1, created_at="created-3")
+        db.commit()
+
+        db.execute("DROP TRIGGER workbench_events_no_delete")
+        db.commit()
+        db.execute("DELETE FROM workbench_events WHERE event_id='event-2'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.commit()
+        db.rollback()
+        assert db.execute("SELECT COUNT(*) FROM workbench_events WHERE event_id='event-2'").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_v2_without_events_upgrades_to_v3_without_fabricating_manifests(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    install_v1_fixture(settings)
+    v2_catalog = write_catalog(
+        tmp_path / "v2-only",
+        {"0002_workbench_core.sql": (
+            ROOT / "orchestrator" / "state" / "migrations" / "0002_workbench_core.sql"
+        ).read_text(encoding="utf-8")},
+    )
+    async with aiosqlite.connect(settings.state_path) as db:
+        assert await MigrationRunner(settings, v2_catalog).apply(db) == [2]
+    assert query_all(settings.state_path, "SELECT version FROM schema_migrations ORDER BY version") == [(1,), (2,)]
+    async with aiosqlite.connect(settings.state_path) as db:
+        assert await MigrationRunner(settings).apply(db) == [3]
+    assert query_all(settings.state_path, "SELECT version FROM schema_migrations ORDER BY version") == [
+        (1,), (2,), (3,),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_manifest_transaction_order_supports_root_append_and_parent_targeted_fork(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        insert_manifest_task(db, "fork-task")
+        insert_command_manifest(
+            db, task_id="fork-task", command_id="fork-command", target_branch_id="main",
+            event_count=1, first_sequence=1, last_sequence=1,
+            first_event_id="fork-event", last_event_id="fork-event", created_at="fork-created",
+        )
+        insert_manifest_event(
+            db, "fork-event", 1, "fork-command", 1, task_id="fork-task", created_at="fork-created"
+        )
+        db.execute(
+            """
+            INSERT INTO workbench_branches(
+                task_id,branch_id,parent_branch_id,forked_from_sequence,forked_from_frame_version,
+                created_by_event_id,status,created_at
+            ) VALUES ('fork-task','child','main',1,0,'fork-event','active','fork-created')
+            """
+        )
+        insert_command_manifest(
+            db, task_id="fork-task", command_id="child-command", target_branch_id="child",
+            event_count=1, first_sequence=2, last_sequence=2,
+            first_event_id="child-event", last_event_id="child-event", created_at="child-created",
+        )
+        insert_manifest_event(
+            db, "child-event", 2, "child-command", 1, task_id="fork-task",
+            branch_id="child", created_at="child-created",
+        )
+        db.commit()
+        assert db.execute(
+            "SELECT command_id,target_branch_id,first_sequence,last_sequence "
+            "FROM workbench_command_manifests WHERE task_id='fork-task' ORDER BY first_sequence"
+        ).fetchall() == [
+            ("fork-command", "main", 1, 1),
+            ("child-command", "child", 2, 2),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_v3_fails_closed_and_records_repair_for_preexisting_v2_events(tmp_path: Path) -> None:
+    assert hasattr(migration_module, "MigrationPreconditionError")
+    precondition_type = migration_module.MigrationPreconditionError
+    settings = settings_for(tmp_path)
+    install_v1_fixture(settings)
+    v2_catalog = write_catalog(
+        tmp_path / "v2-with-event",
+        {"0002_workbench_core.sql": (
+            ROOT / "orchestrator" / "state" / "migrations" / "0002_workbench_core.sql"
+        ).read_text(encoding="utf-8")},
+    )
+    async with aiosqlite.connect(settings.state_path) as db:
+        assert await MigrationRunner(settings, v2_catalog).apply(db) == [2]
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        insert_manifest_task(db, "legacy-v2-task")
+        insert_manifest_event(
+            db, "legacy-v2-event", 1, "legacy-v2-command", 1, task_id="legacy-v2-task"
+        )
+        db.commit()
+
+    async with aiosqlite.connect(settings.state_path) as db:
+        with pytest.raises(precondition_type) as raised:
+            await MigrationRunner(settings).apply(db)
+        assert not db.in_transaction
+    assert raised.value.version == 3
+    assert raised.value.code == "preexisting_workbench_events_without_manifests"
+
+    assert query_all(settings.state_path, "SELECT version FROM schema_migrations ORDER BY version") == [(1,), (2,)]
+    assert query_all(
+        settings.state_path,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='workbench_command_manifests'",
+    ) == [(0,)]
+    repair = json.loads(str(query_all(
+        settings.state_path,
+        "SELECT failure_detail FROM repair_queue WHERE failure_source='state_migration' ORDER BY created_at DESC LIMIT 1",
+    )[0][0]))
+    assert repair["version"] == 3
+    assert repair["code"] == "preexisting_workbench_events_without_manifests"
+    assert repair["backup_published"] is True
+    assert repair["backup_retained"] is True
+    assert Path(str(repair["backup_path"])).is_file()
+
+    async with aiosqlite.connect(settings.state_path) as db:
+        with pytest.raises(precondition_type) as retry:
+            await MigrationRunner(settings).apply(db)
+    assert retry.value.version == 3
+    assert retry.value.code == "preexisting_workbench_events_without_manifests"
+    assert query_all(settings.state_path, "SELECT version FROM schema_migrations ORDER BY version") == [(1,), (2,)]
+    assert query_all(
+        settings.state_path,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='workbench_command_manifests'",
+    ) == [(0,)]
 
 
 def test_migration_two_contains_no_transcript_content_storage() -> None:
@@ -2011,7 +2438,9 @@ async def test_two_concurrent_initializers_apply_each_version_exactly_once(tmp_p
         timeout=15,
     )
 
-    assert query_all(settings.state_path, "SELECT version, COUNT(*) FROM schema_migrations GROUP BY version") == [(1, 1), (2, 1)]
+    assert query_all(settings.state_path, "SELECT version, COUNT(*) FROM schema_migrations GROUP BY version") == [
+        (1, 1), (2, 1), (3, 1),
+    ]
     assert len(backup_paths(settings)) == 1
 
 
@@ -2031,6 +2460,7 @@ def test_wheel_contains_and_loads_baseline_and_numbered_sql_resources(tmp_path: 
         names = set(archive.namelist())
     assert "orchestrator/state/schema.sql" in names
     assert "orchestrator/state/migrations/0002_workbench_core.sql" in names
+    assert "orchestrator/state/migrations/0003_workbench_command_manifests.sql" in names
 
     site = tmp_path / "installed"
     subprocess.run(
@@ -2044,7 +2474,9 @@ def test_wheel_contains_and_loads_baseline_and_numbered_sql_resources(tmp_path: 
         "from importlib.resources import files; "
         "root=files('orchestrator.state'); "
         "assert 'CREATE TABLE' in root.joinpath('schema.sql').read_text(); "
-        "assert 'workbench_events' in root.joinpath('migrations','0002_workbench_core.sql').read_text()"
+        "assert 'workbench_events' in root.joinpath('migrations','0002_workbench_core.sql').read_text(); "
+        "assert 'workbench_command_manifests' in "
+        "root.joinpath('migrations','0003_workbench_command_manifests.sql').read_text()"
     )
     env = {**os.environ, "PYTHONPATH": str(site)}
     loaded = subprocess.run(

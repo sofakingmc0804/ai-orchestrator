@@ -22,6 +22,7 @@ from orchestrator.config import Settings
 _MIGRATION_NAME = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9][a-z0-9_]*)\.sql$")
 _TRANSACTION_KEYWORDS = {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}
 _BUSY_TIMEOUT_MS = 5_000
+_PRECONDITION_MARKER = re.compile(r"^migration_precondition:(?P<version>\d+):(?P<code>[a-z0-9_]+)$")
 
 
 class MigrationError(RuntimeError):
@@ -42,6 +43,19 @@ class MigrationBackupError(MigrationError):
 
 class MigrationApplyError(MigrationError):
     """A migration failed and its transaction was rolled back."""
+
+
+class MigrationPreconditionError(MigrationError):
+    """A numbered migration refused to invent authority missing from prior state."""
+
+    def __init__(self, version: int, code: str) -> None:
+        self.version = version
+        self.code = code
+        if code == "preexisting_workbench_events_without_manifests":
+            detail = "cannot derive exact command manifests from preexisting workbench events"
+        else:
+            detail = "migration precondition was not satisfied"
+        super().__init__(f"migration {version} precondition failed [{code}]: {detail}")
 
 
 @dataclass(frozen=True)
@@ -114,11 +128,14 @@ class MigrationRunner:
             await self._cleanup_failure(db, failed_version, exc, backup_path)
             raise
         except Exception as exc:
-            await self._cleanup_failure(db, failed_version, exc, backup_path)
-            if isinstance(exc, MigrationError):
-                raise
+            normalized = _normalize_migration_error(exc, failed_version)
+            await self._cleanup_failure(db, failed_version, normalized, backup_path)
+            if isinstance(normalized, MigrationError):
+                if normalized is exc:
+                    raise
+                raise normalized from exc
             label = f"migration {failed_version}" if failed_version is not None else "migration batch"
-            raise MigrationApplyError(f"{label} failed and was rolled back: {exc}") from exc
+            raise MigrationApplyError(f"{label} failed and was rolled back: {normalized}") from normalized
 
     async def _commit_compatibility(self, db: aiosqlite.Connection) -> None:
         commit_task = asyncio.create_task(db.commit())
@@ -331,6 +348,7 @@ class MigrationRunner:
                 "version": version,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
+                "code": getattr(exc, "code", None),
                 "cause_type": cause_type,
                 "cause": cause_error,
                 "cause_error": cause_error,
@@ -370,6 +388,16 @@ class MigrationRunner:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_migration_error(exc: Exception, failed_version: int | None) -> Exception:
+    marker = _PRECONDITION_MARKER.fullmatch(str(exc))
+    if marker is None:
+        return exc
+    version = int(marker.group("version"))
+    if failed_version != version:
+        return exc
+    return MigrationPreconditionError(version, marker.group("code"))
 
 
 def split_sql_statements(sql: str) -> list[str]:
