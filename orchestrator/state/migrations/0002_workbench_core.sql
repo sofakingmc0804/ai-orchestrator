@@ -844,7 +844,8 @@ CREATE TABLE quarantined_components (
 );
 
 CREATE UNIQUE INDEX idx_quarantined_components_global_identity
-ON quarantined_components(component_type, component_id);
+ON quarantined_components(component_type, component_id)
+WHERE state <> 'released';
 
 CREATE TRIGGER quarantined_components_candidate_insert_only
 BEFORE INSERT ON quarantined_components

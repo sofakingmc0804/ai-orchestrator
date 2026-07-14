@@ -1224,9 +1224,27 @@ async def test_quarantine_stages_before_activation_and_requires_replacement_proo
             {
                 "component_type": "scheduled_task",
                 "component_id": "legacy-pinger",
-                "replacement_build_id": "build-2",
+                "replacement_build_id": "build-3",
                 "manifest_checksum": "sum-2",
             },
+            sort_keys=True,
+        )
+        q2_proof_json = json.dumps({"validated": "build-3"}, sort_keys=True, separators=(",", ":"))
+        q2_proof_checksum = hashlib.sha256(q2_proof_json.encode("utf-8")).hexdigest()
+        q2_proof_fields = {
+            **proof_fields,
+            "proof_id": "proof-2",
+            "receipt_id": "receipt-2",
+            "replacement_build_id": "build-3",
+            "proof_json": json.loads(q2_proof_json),
+            "proof_checksum": q2_proof_checksum,
+            "authority_locator": "receipt://two",
+        }
+        q2_activation_payload = json.dumps(
+            {key: q2_proof_fields[key] for key in (
+                "proof_id", "receipt_id", "component_type", "component_id", "replacement_build_id",
+                "proof_checksum",
+            )},
             sort_keys=True,
         )
         for event_id, sequence, event_type, payload in (
@@ -1239,6 +1257,9 @@ async def test_quarantine_stages_before_activation_and_requires_replacement_proo
             ("alternate-proof-event", 7, "component.replacement_bootstrap_succeeded",
              json.dumps(alternate_fields, sort_keys=True)),
             ("alternate-activation-event", 8, "component.quarantine_activated", alternate_activation_payload),
+            ("q2-proof-event", 9, "component.replacement_bootstrap_succeeded",
+             json.dumps(q2_proof_fields, sort_keys=True)),
+            ("q2-activation-event", 10, "component.quarantine_activated", q2_activation_payload),
         ):
             db.execute(
                 """
@@ -1468,6 +1489,19 @@ async def test_quarantine_stages_before_activation_and_requires_replacement_proo
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("DELETE FROM replacement_bootstrap_proofs WHERE proof_id='proof-1'")
         db.execute(
+            """
+            INSERT INTO quarantined_components(
+                id,task_id,branch_id,component_type,component_id,replacement_build_id,behavior,state,
+                manifest_json,manifest_checksum,staged_at,staged_event_id,staged_event_sequence,
+                preserved_read,metadata_json
+            ) VALUES ('q2','quarantine-task','main','scheduled_task','legacy-pinger','build-3',
+                      'new staged build','candidate','{}','sum-2','later','q2-stage-event',6,1,'{}')
+            """
+        )
+        assert db.execute(
+            "SELECT replacement_build_id,state FROM quarantined_components WHERE id='q2'"
+        ).fetchone() == ("build-3", "candidate")
+        db.execute(
             "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
             "VALUES ('other-task','Other','repairing','main',1,'now','now')"
         )
@@ -1504,18 +1538,46 @@ async def test_quarantine_stages_before_activation_and_requires_replacement_proo
                           'cross-task duplicate','candidate','{}','other-manifest','now','other-stage',1,1,'{}')
                 """
             )
+        db.execute(
+            """
+            INSERT INTO replacement_bootstrap_proofs(
+                proof_id,receipt_id,task_id,branch_id,component_type,component_id,replacement_build_id,
+                proof_kind,status,authority_kind,authority_locator,verifier_kind,verifier_identity,
+                proof_event_id,proof_event_sequence,proof_json,proof_checksum,created_at
+            ) VALUES ('proof-2','receipt-2','quarantine-task','main','scheduled_task','legacy-pinger','build-3',
+                      'live_bootstrap','succeeded','runtime','receipt://two','script','verifier',
+                      'q2-proof-event',9,?,?,'now')
+            """,
+            (q2_proof_json, q2_proof_checksum),
+        )
+        db.execute("UPDATE quarantined_components SET state='shadow_readonly' WHERE id='q2'")
         with pytest.raises(sqlite3.IntegrityError):
             db.execute(
                 """
-                INSERT INTO quarantined_components(
-                    id,task_id,branch_id,component_type,component_id,replacement_build_id,behavior,state,
-                    manifest_json,manifest_checksum,staged_at,staged_event_id,staged_event_sequence,
-                    preserved_read,metadata_json
-                ) VALUES ('q2','quarantine-task','main','scheduled_task','legacy-pinger','build-2',
-                          'proof reuse after attempted delete','candidate','{}','sum-2','later',
-                          'q2-stage-event',6,1,'{}')
+                UPDATE quarantined_components
+                SET replacement_bootstrap_proof_id='proof-1',replacement_bootstrap_receipt_id='receipt-1',
+                    activated_at='later',activated_event_id='q2-activation-event',activated_event_sequence=10,
+                    state='active' WHERE id='q2'
                 """
             )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                UPDATE quarantined_components
+                SET replacement_bootstrap_proof_id='proof-2',replacement_bootstrap_receipt_id='receipt-2',
+                    activated_at='later',activated_event_id='activation-event',activated_event_sequence=4,
+                    state='active' WHERE id='q2'
+                """
+            )
+        db.execute(
+            """
+            UPDATE quarantined_components
+            SET replacement_bootstrap_proof_id='proof-2',replacement_bootstrap_receipt_id='receipt-2',
+                activated_at='later',activated_event_id='q2-activation-event',activated_event_sequence=10,
+                state='active' WHERE id='q2'
+            """
+        )
+        assert db.execute("SELECT state FROM quarantined_components WHERE id='q2'").fetchone() == ("active",)
 
 
 @pytest.mark.asyncio
