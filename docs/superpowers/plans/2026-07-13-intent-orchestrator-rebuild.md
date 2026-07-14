@@ -69,42 +69,70 @@ class WorkbenchEvent(BaseModel):
     task_id: str
     sequence: int
     event_type: str
-    actor_kind: str
-    actor_id: str
-    branch_id: str = "main"
+    actor: EventActor
+    branch_id: str
+    cause: EventCause | None = None
     caused_by: str | None = None
+    command_id: str
+    command_sequence: int
     frame_version: int
     payload: dict[str, Any]
     idempotency_key: str
-    created_at: datetime
+    created_at: str
     prior_checksum: str
     checksum: str
 
 class FrameNode(BaseModel):
     node_id: str
     node_key: str
-    branch_id: str = "main"
+    task_id: str
+    branch_id: str
     frame_version: int
     supersedes_node_id: str | None = None
-    kind: Literal["goal", "success", "constraint", "assumption", "alternative", "authority", "evidence_gap", "decision", "action"]
+    kind: FrameNodeKind
     text: str
-    status: Literal["proposed", "confirmed", "rejected", "invalidated"]
-    depends_on: list[str] = Field(default_factory=list)
-    provenance_event_ids: list[str] = Field(default_factory=list)
+    value: JsonValue
+    status: Literal["confirmed", "invalidated"]
+    depends_on: tuple[str, ...] = ()
+    provenance_event_ids: tuple[str, ...] = ()
+
+class FrameState(BaseModel):
+    task_id: str
+    branch_id: str
+    frame_version: int
+    nodes: tuple[FrameNode, ...]
+    edges: tuple[FrameEdge, ...]
+    state_checksum: str
+
+class FrameSnapshot(BaseModel):
+    state: FrameState
+    head_sequence: int
+    head_event_checksum: str
 
 class DecisionRequest(BaseModel):
     decision_id: str
     task_id: str
-    branch_id: str = "main"
-    kind: Literal["intent_clarification", "tool_approval", "external_action_approval", "evidence_checkpoint", "service_team_override", "frame_interpretation_confirmation"]
+    branch_id: str
+    revision: int
+    queue_order: int
+    kind: DecisionKind
+    semantic_identity: str
     question: str
-    options: list[dict[str, str]]
+    options: tuple[DecisionOption, ...]
     free_form_allowed: bool = True
-    recommendation: str | None = None
+    recommendation_option_id: str | None = None
+    recommendation_reason: str | None = None
+    changed_outcome: str
+    positions: tuple[OutcomePosition, ...]
+    materiality: MaterialityAssessment
     consequence_if_unresolved: str
-    affected_node_ids: list[str]
-    tier: Literal["routine", "blocking", "critical"]
+    affected_node_keys: tuple[str, ...]
+    tier: DecisionTier
     state: DecisionState
+    provenance: Provenance
+    source_occurrences: tuple[QuestionOccurrence | ReplyOccurrence, ...]
+    pending_interpretation: StructuredDecisionInterpretation | None = None
+    resolution: DecisionResolution | None = None
 
 class ServiceRun(BaseModel):
     run_id: str
@@ -113,8 +141,10 @@ class ServiceRun(BaseModel):
     role: str
     frame_version: int
     branch_id: str
+    revision: int
     state: Literal["queued", "starting", "running", "waiting_owner", "paused_dependency", "repairing", "verifying", "interrupted", "complete", "failed", "canceled"]
-    native_session_id: str | None = None
+    output_validity: Literal["current", "stale", "reverification_required"]
+    native_identity: NativeIdentityEnvelope | None = None
     receipt_event_id: str | None = None
 ```
 
@@ -160,7 +190,7 @@ The public API is:
 2. **Simple request:** the inferred frame appears immediately and execution starts without a forced confirmation unless the owner edits or stops it.
 3. **Ambiguous or consequential request:** Conversation explains the current interpretation; Shared Frame shows goals, alternatives, assumptions, authority, evidence gaps, and success; Now shows the active decision.
 4. **Multiple choice:** recommendation is visible and explained, never selected. Free-form remains equally available.
-5. **Owner edits:** an edit becomes a proposal. The workbench shows affected frame nodes, branches, runs, and artifacts before confirmation.
+5. **Owner edits:** an edit becomes a proposal. The workbench shows affected frame nodes, branches, runs, evidence, and immutable external-action references before confirmation; it never invents mutable artifact/receipt state that has no authority surface.
 6. **Correction during work:** only dependent runs pause. Unaffected research and work continue.
 7. **Model disagreement:** distinct positions and evidence remain visible until evidence resolves the difference or the owner decides.
 8. **Evidence checkpoint:** research displays source coverage, contrary evidence, unresolved gaps, and consequence. The owner may continue research or authorize design/execution.
@@ -239,28 +269,37 @@ Batches are nonempty and single-branch. `EventCause` is a typed classification s
 ### Task 3: Build Shared Frame, Dependency Graph, Decisions, and Corrections
 
 **Files:**
+- Create: `orchestrator/state/migrations/0004_intent_authority_guards.sql`
+- Create: `orchestrator/workbench/runtime.py`
 - Create: `orchestrator/workbench/frame.py`
 - Create: `orchestrator/workbench/decisions.py`
 - Create: `orchestrator/workbench/materiality.py`
+- Modify: `orchestrator/workbench/store.py`
 - Modify: `orchestrator/workbench/models.py`
 - Modify: `orchestrator/workbench/events.py`
 - Modify: `orchestrator/workbench/projector.py`
+- Test: `tests/test_workbench_domain_authority.py`
 - Test: `tests/test_shared_frame.py`
 - Test: `tests/test_decision_queue.py`
 
 **Interfaces:** branch-aware `FrameService.propose_change`, `confirm_change`, `reject_change`, `fork_from`, and `activate_branch`; `DecisionService.enqueue_native_question`, `reorder`, `resolve`, and `supersede`; `MaterialityGate.evaluate(candidate, snapshot) -> MaterialityAssessment` or typed `UndeclaredOutcomeError`.
 
+**Controller contract closure:** `.superpowers/sdd/task-3-brief.md`, `task-3-preflight.md`, and `task-3-event-contract.md` are normative. Task 3 first adds migration 4, a bounded `WorkbenchRuntime`/`CommandParticipant` authority layer inside the accepted command transaction, pre-allocation domain validation, event-backed task/branch caches, normalized-domain verification, strict public models, literal hash domains, and exact payload/reducer contracts. `core` is a reserved store-owned event authority; every non-core event maps to one runtime participant. No caller SQL callback, regex/text inference, projection-only repair, or service-level transaction is permitted. Migration 2 and 3 remain byte-identical.
+
+- [ ] Foundation RED first: migration-4 precondition/guards including pending-interpretation and discriminated append-only question/reply occurrence storage, runtime participant ownership, omitted/failed/canceled/tampered participant rollback, selected-versus-inactive branch task-global transition replay, normalized-domain row/event disagreement, storage/JSON canonicality, restart equality, Task-1/2 regression, wheel loading, and concurrency.
+
 - [ ] Prerequisite gate: Tasks 1-2 must align public models and schema; support atomic event batches, exact branch ancestry/time travel, concurrent proposals against one base, immutable node revisions plus stable `node_key`, same-task graph/input references, exact run-input revisions/frame version, branch decision queues, structured materiality/provenance, preview checksums, and byte-identical replay/rebuild.
-- [ ] RED first for the 30 grouped cases: public node round-trip and text-independence; immutable revision/supersession; concurrent proposals; complete impact preview; stale version/checksum; atomic multi-operation confirmation; dependency-only cycle/propagation semantics; cross-task rejection; historical fork/branch isolation; selective correction/run pause and incomplete-manifest repair; completed-output/evidence/receipt invalidation; correction rollback; ASK/default/ignore/declaration-required; wording-invariant materiality; structural duplicate identity with preserved disagreement; one-active queue/reorder/revision/branch rules; and exact option/free-form/late-conflict replay.
+- [ ] RED first for the grouped cases: public node round-trip, canonical tuple order, and text-independence; immutable revision/supersession; concurrent proposals; complete impact preview; stale version/checksum; atomic multi-operation confirmation; dependency-only cycle/propagation semantics; cross-task rejection; historical fork/branch isolation; selective correction/run pause and incomplete-manifest repair; completed-run output reverification, branch-scoped evidence invalidation, and immutable receipt history; correction rollback; ASK/default/ignore/declaration-required; wording-invariant materiality; structural duplicate identity with preserved disagreement; one-active queue/reorder/revision/selected-branch cache rules; urgent queued free-form/interpretation/resolution; and exact option/open-repeat/late-conflict replay.
 - [ ] Treat `node_id` as one immutable revision and `node_key` as the stable concept across revisions and branch ancestry. `text` is human display; structured `value`, explicit edges, outcome deltas, authority nodes, and provenance drive behavior. No reducer or gate parses wording to infer intent, dependency, authority, or materiality.
 - [ ] Define edge relations `depends_on`, `alternative_to`, `supports`, and `contradicts`. Only `depends_on` is acyclic and propagates invalidation; traversal runs in reverse from changed prerequisite to dependents. Evidence positions remain visible and do not imply dependency unless an explicit edge says so.
-- [ ] Proposal creation does not advance frame version; multiple proposals may share a base. Store base sequence/version/state checksum and preview checksum. Confirmation requires the exact base and preview, advances the frame once, and never silently rebases a stale proposal.
+- [ ] Proposal creation does not advance frame version; multiple proposals may share a base. Store base sequence/version/state checksum and preview checksum. Proposal and confirmation payloads carry `FrameState` without future ledger authority; the store constructs `FrameSnapshot` only after event allocation. Confirmation requires the exact base and preview, advances the frame once, and atomically supersedes the complete sorted set of pending peer proposals using a separate confirmation-time token outside the frozen impact hash.
 - [ ] Historical snapshots are read-only. Mutating history requires an explicit fork. Children inherit ancestry only through the fork boundary; later parent/sibling events and corrections do not leak across branches. Branch activation is an event and preserves every inactive branch queue/run/history.
-- [ ] Confirm corrections through one atomic `append_batch`: supersede replaced revisions; invalidate only transitive dependents in the selected branch; pause only nonterminal runs whose exact input revisions intersect; route missing manifests or pause failures to Repairing; mark completed outputs/evidence/artifacts/receipts stale or requiring re-verification; never represent irreversible external action as undone.
+- [ ] Confirm corrections through one atomic `append_batch`: supersede replaced revisions; create immutable invalidation tombstones for only transitive dependents in the selected branch; pause only nonterminal runs whose exact input revisions intersect; bind run/evidence mutations to owner-reviewed tokens and peer proposals/selected-task cache to confirmation-time tokens; route missing manifests or pause failures to Repairing; degrade completed run output to requiring re-verification and insert branch-scoped evidence invalidation overlays. Task 3 does not invent mutable artifact/receipt state: immutable receipts remain history and usefulness follows the producing run/evidence authority. Never represent irreversible external action as undone.
 - [ ] Materiality evaluates declared `OutcomeDelta` structures across intent, success, consequence, authority, cost, owner-visible UX, external action, and irreversibility. `ASK` requires materially different undelegated outcomes; `DISPLAY_DEFAULT` requires a reversible declared default within authority; `IGNORE` requires structural identity/no-op. Missing or contradictory declarations emit `question.declaration_required` back to the source service and never reach the owner queue.
-- [ ] Canonical semantic identity uses task, branch, affected logical node keys, and canonical outcome deltas. Regex/raw text hashes cannot merge. Embeddings may retrieve candidates only. Preserve every exact source question, native ID, service/run/event provenance, option, recommendation/reason, outcome delta, and conflicting position.
+- [ ] Canonical semantic identity uses task, branch, sorted affected logical node keys, and canonical position structures whose deltas use the fixed eight-dimension order and exclude position IDs. Regex/raw text hashes cannot merge. Embeddings may retrieve candidates only. Preserve every exact source question, native ID, service/run/event provenance, option, recommendation/reason, outcome delta, and conflicting position.
 - [ ] Enforce one ACTIVE decision per active branch, a full ordered open queue with optimistic queue revision, atomic next activation after resolve/supersede, and notification urgency independent of queue position. Recommendations remain visible but unselected.
-- [ ] Preserve free-form owner text exactly and never silently map it to an option. A service may propose a structured interpretation and preview inside the same active decision; resolution completes only after owner confirmation. Exact retries are idempotent; conflicting late channel replies are retained as conflicts and cannot overwrite accepted authority.
+- [ ] Preserve free-form owner text exactly and never silently map it to an option. A service may propose a structured interpretation and preview while the decision remains active or blocking/critical queued; pending interpretation is stored separately from final resolution and resolution completes only after an `accepted=true` confirmation, while `accepted=false` is an interpretation-rejection event. Original provenance is immutable; every accepted decision question/reply occurrence appends to a discriminated canonical history. Native-question identity and content are hashed separately: every repeated identity is an immutable `duplicate|conflict` observation event and cannot alter prior authority. Resolving payloads never contain their own future event ID; read models derive it from the enclosing event. Repeated open replies and conflicting late channel replies are retained and cannot overwrite accepted authority.
+- [ ] Carry each complete `ReplyOccurrence` in its event so exact timestamp, provenance, classification, native checksum, original occurrence, and canonical append are replayable without inference. Publish and enforce the exact reason-bound ordinary/correction run matrices, governed native-envelope NULL-to-complete rule, output-validity degradation, typed `service_run.receipt_recorded` binding to exact run revision/frame/input checksum, immediate-predecessor completion rule, and event-derived timestamps from `task-3-event-contract.md`.
 - [ ] Run `pytest tests/test_shared_frame.py -v`, `pytest tests/test_decision_queue.py -v`, Tasks 1-2 tests, the state-store suite, and the full repository suite. Completion requires exact branch/history replay, atomic corrections, continued unrelated work, no undeclared/nonmaterial owner questions, and preserved disagreement/provenance across restart and rebuild.
 
 ### Task 4: Implement Adaptive Guided Intake and Service-Team Recommendation
@@ -355,6 +394,7 @@ Batches are nonempty and single-branch. `EventCause` is a typed classification s
 ### Task 8: Add Completion Verification, Recovery, and Old-System Quarantine
 
 **Files:**
+- Create: `orchestrator/state/migrations/0005_completion_authority.sql`
 - Create: `orchestrator/workbench/verifier.py`
 - Create: `orchestrator/workbench/recovery.py`
 - Create: `orchestrator/workbench/cutover.py`
@@ -369,6 +409,7 @@ Batches are nonempty and single-branch. `EventCause` is a typed classification s
 **Interfaces:** exact-head `CompletionVerifier.verify`; leased `RecoveryService.recover_open_tasks`; `QuarantineRegistry.stage`, `activate`, and `assert_inactive`; `AutomationBenefitAuditor.scan`, `evaluate`, and `quarantine`.
 
 - [ ] Completion evidence is per required success predicate, not one row per node. It records named consumer, exact task/branch/node revision/frame/head, predicate/expected outcome, authority surface/readback method, verifier identity/independence, freshness, observed checksum/value, status pass/fail/conflict/inconclusive, producing run/source event, and invalidation. Model text/logs/screenshots count only when they are the declared authority.
+- [ ] If independently mutable artifact or receipt validity is required, migration 5 creates its exact normalized authority, transition guards, verifier, and a new versioned correction event before the UI or completion gate may expose that claim. Until then, Task-3 artifact/receipt usefulness derives only from producing-run output validity and branch-scoped evidence; immutable receipt events remain history.
 - [ ] After readbacks, acquire `BEGIN IMMEDIATE`, recheck unchanged branch/frame/head/success revisions, and append `verification.passed` plus `task.completed` atomically. Missing/stale/conflicting/inconclusive/mismatched evidence emits failure, deduplicated changed-mechanism repair, and Task Repairing. No other API/model/adapter may write Complete.
 - [ ] Recovery acquires one lease; verifies ledger; rebuilds disposable projections on checksum mismatch (no pending-projection queue); loads nonterminal work; validates exact provider/adapter/account/model/session/thread/turn/request/group/capability handles; reconciles decisions; reads back uncertain external actions before retry; resumes only current inputs; records every reconciliation; starts ordinary supervision only after stability.
 - [ ] State recovery is explicit: queued idempotent start; starting reserved-identity reconciliation; running exact reattach/resume; waiting_owner and paused_dependency remain; verifying repeats authority readback; repairing/interrupted uses only a due changed mechanism; complete/failed/canceled never resumes. A vanished native request is superseded while the central decision remains; late replies become conflicts.
@@ -399,7 +440,7 @@ Batches are nonempty and single-branch. `EventCause` is a typed classification s
 ### Task 10: Build Transcript Intelligence Through the Slice
 
 **Files:**
-- Create: `orchestrator/state/migrations/0004_transcript_metadata.sql`
+- Create: `orchestrator/state/migrations/0006_transcript_metadata.sql`
 - Create: `orchestrator/transcripts/base.py`
 - Create: `orchestrator/transcripts/identity.py`
 - Create: `orchestrator/transcripts/content_store.py`
@@ -461,7 +502,7 @@ Batches are nonempty and single-branch. `EventCause` is a typed classification s
 ### Task 12: Build Gmail Decision Delivery and Reply Correlation Through the Slice
 
 **Files:**
-- Create: `orchestrator/state/migrations/0005_decision_notifications.sql`
+- Create: `orchestrator/state/migrations/0007_decision_notifications.sql`
 - Create: `orchestrator/notifications/channels.py`
 - Create: `orchestrator/notifications/outbox.py`
 - Create: `orchestrator/notifications/signing.py`
@@ -484,7 +525,7 @@ Batches are nonempty and single-branch. `EventCause` is a typed classification s
 - [ ] Reserve the `(decision_id, notification_generation, channel)` delivery atomically before send. On success, persist connector result ID plus exact Gmail message/thread IDs, then read the Sent message/thread back and validate recipient, token, content digest, and timestamp before recording delivered.
 - [ ] A crash or timeout after dispatch is `delivery_uncertain`, never failed. Search/read Sent for the exact signed token and generation; adopt exactly one valid match, surface conflict for multiple matches, and retry only after proved absence. Never blind resend.
 - [ ] Poll only the exact decision thread and allowlisted sender. Verify token version/signature/expiry/decision/generation/message/thread identity before retaining the exact free-form body or option. Accepted, duplicate, conflicting-late, invalid, and superseded replies are distinct immutable events; only the first valid unresolved authority changes the decision.
-- [ ] Reject outbound/Sent/draft/auto-reply/forwarded-token/quoted-only messages and require an unseen Gmail message ID after delivery time with bounded skew. Deterministic MIME/signature stripping preserves exact owner text. Only an exact option ID/label selects automatically; material free-form interpretation creates `frame_interpretation_confirmation`.
+- [ ] Reject outbound/Sent/draft/auto-reply/forwarded-token/quoted-only messages and require an unseen Gmail message ID after delivery time with bounded skew. Deterministic MIME/signature stripping preserves exact owner text. Only a machine-carried signed `option_id` is an option selection. Plain text, even if exactly equal to an option label, remains free-form and requires `frame_interpretation_confirmation` before resolution.
 - [ ] Use a durable outbox with immutable attempts and per-account/thread reply cursors. Do not use the existing local `.eml` subscriber or any cursor that advances past an unclassified/failed external delivery or reply.
 - [ ] Correlation and workbench capabilities use separate token purposes, key IDs, nonce hashes, expiry/single-use rules, constant-time verification, and protected DPAPI/ACL-backed keys. Secret material never enters events, logs, receipts, transcripts, or model context; old keys remain verify-only only for their bounded lifetime.
 - [ ] Retry rate limits with bounded exponential backoff. Authentication drift triggers connector rediscovery and repair; SMTP and extracted OAuth credentials are forbidden substitutes.
