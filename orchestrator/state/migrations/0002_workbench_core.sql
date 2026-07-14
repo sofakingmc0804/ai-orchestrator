@@ -248,7 +248,21 @@ CREATE TABLE service_runs (
     service TEXT NOT NULL CHECK (service IN ('claude','codex','hermes','gemini','local')),
     role TEXT NOT NULL,
     frame_version INTEGER NOT NULL CHECK (frame_version >= 0),
+    adapter_provider TEXT,
+    adapter_contract_revision TEXT,
+    account_id TEXT,
+    profile_id TEXT,
+    model_id TEXT,
+    capability_inventory_revision TEXT,
+    transport_generation TEXT,
     native_session_id TEXT,
+    native_thread_id TEXT,
+    native_turn_id TEXT,
+    native_request_id TEXT,
+    native_tool_use_id TEXT,
+    native_question_group_id TEXT,
+    launch_origin TEXT CHECK (launch_origin IS NULL OR launch_origin IN ('governed','direct_unmanaged')),
+    native_handle_json TEXT CHECK (native_handle_json IS NULL OR json_valid(native_handle_json)),
     branch_id TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('queued','starting','running','waiting_owner','paused_dependency','repairing','verifying','interrupted','complete','failed','canceled')),
     receipt_event_id TEXT,
@@ -265,6 +279,26 @@ CREATE TABLE service_runs (
 
 CREATE INDEX idx_service_runs_task_branch_state
 ON service_runs(task_id, branch_id, state);
+
+CREATE UNIQUE INDEX idx_service_runs_native_request_identity
+ON service_runs(adapter_provider, account_id, profile_id, native_thread_id, native_turn_id, native_request_id)
+WHERE native_request_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_service_runs_native_tool_identity
+ON service_runs(adapter_provider, account_id, profile_id, native_thread_id, native_tool_use_id)
+WHERE native_tool_use_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_service_runs_native_question_identity
+ON service_runs(adapter_provider, account_id, profile_id, native_thread_id, native_question_group_id)
+WHERE native_question_group_id IS NOT NULL;
+
+CREATE INDEX idx_service_runs_open_native_request
+ON service_runs(
+    adapter_provider, account_id, profile_id, model_id, native_thread_id, native_turn_id,
+    native_request_id, state
+)
+WHERE native_request_id IS NOT NULL
+  AND state IN ('starting','running','waiting_owner','paused_dependency','repairing','verifying','interrupted');
 
 CREATE TABLE service_run_inputs (
     task_id TEXT NOT NULL,
@@ -286,20 +320,43 @@ ON service_run_inputs(node_id, run_id);
 CREATE TABLE evidence_refs (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES workbench_tasks(id) ON DELETE CASCADE,
-    node_id TEXT,
-    event_id TEXT REFERENCES workbench_events(event_id),
-    service_run_id TEXT,
-    evidence_kind TEXT NOT NULL,
-    authority_uri TEXT NOT NULL,
+    branch_id TEXT NOT NULL,
+    success_node_id TEXT NOT NULL,
+    frame_version INTEGER NOT NULL CHECK (frame_version >= 0),
+    observed_head_sequence INTEGER NOT NULL CHECK (observed_head_sequence >= 0),
+    predicate_id TEXT NOT NULL,
+    predicate_text TEXT,
+    predicate_json TEXT CHECK (predicate_json IS NULL OR json_valid(predicate_json)),
+    expected_outcome TEXT NOT NULL,
+    authority_kind TEXT NOT NULL,
+    authority_locator TEXT NOT NULL,
+    verifier_kind TEXT NOT NULL,
+    verifier_identity TEXT NOT NULL,
+    verification_status TEXT NOT NULL CHECK (verification_status IN ('pass','fail','conflict','inconclusive')),
+    observed_at TEXT NOT NULL,
+    valid_until TEXT,
+    observed_value_checksum TEXT NOT NULL,
     content_checksum TEXT,
+    source_event_id TEXT,
+    producing_run_id TEXT,
+    invalidated_at TEXT,
+    invalidated_event_id TEXT,
+    invalidation_reason TEXT,
     metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (task_id, node_id) REFERENCES frame_nodes(task_id, node_id),
-    FOREIGN KEY (task_id, service_run_id) REFERENCES service_runs(task_id, run_id)
+    CHECK (predicate_text IS NOT NULL OR predicate_json IS NOT NULL),
+    FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
+    FOREIGN KEY (task_id, success_node_id) REFERENCES frame_nodes(task_id, node_id),
+    FOREIGN KEY (task_id, source_event_id) REFERENCES workbench_events(task_id, event_id),
+    FOREIGN KEY (task_id, producing_run_id) REFERENCES service_runs(task_id, run_id),
+    FOREIGN KEY (task_id, invalidated_event_id) REFERENCES workbench_events(task_id, event_id)
 );
 
-CREATE INDEX idx_evidence_refs_task_node
-ON evidence_refs(task_id, node_id);
+CREATE INDEX idx_evidence_refs_current_success
+ON evidence_refs(task_id, branch_id, success_node_id, verification_status, valid_until, observed_at)
+WHERE invalidated_at IS NULL;
+
+CREATE INDEX idx_evidence_refs_predicate
+ON evidence_refs(task_id, branch_id, predicate_id, observed_at);
 
 CREATE TABLE learning_proposals (
     id TEXT PRIMARY KEY,
@@ -316,16 +373,66 @@ CREATE TABLE quarantined_components (
     id TEXT PRIMARY KEY,
     component_type TEXT NOT NULL,
     component_id TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    source_event_id TEXT REFERENCES workbench_events(event_id),
-    quarantined_at TEXT NOT NULL,
+    behavior TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('candidate','shadow_readonly','active','released')),
+    manifest_json TEXT NOT NULL CHECK (json_valid(manifest_json)),
+    manifest_checksum TEXT NOT NULL,
+    staged_at TEXT NOT NULL,
+    staged_event_id TEXT REFERENCES workbench_events(event_id),
+    replacement_bootstrap_receipt_id TEXT,
+    activated_at TEXT,
+    activated_event_id TEXT REFERENCES workbench_events(event_id),
+    preserved_read INTEGER NOT NULL CHECK (preserved_read IN (0,1)),
+    legacy_data_store INTEGER NOT NULL DEFAULT 0 CHECK (legacy_data_store IN (0,1)),
+    baseline_row_count INTEGER CHECK (baseline_row_count IS NULL OR baseline_row_count >= 0),
+    baseline_content_digest TEXT,
+    validated_backup_path TEXT,
+    validated_backup_checksum TEXT,
     released_at TEXT,
-    release_reason TEXT
+    release_reason TEXT,
+    metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
+    CHECK (
+        state <> 'active' OR (
+            replacement_bootstrap_receipt_id IS NOT NULL
+            AND activated_at IS NOT NULL
+            AND activated_event_id IS NOT NULL
+        )
+    ),
+    CHECK (state <> 'released' OR (released_at IS NOT NULL AND release_reason IS NOT NULL)),
+    CHECK (
+        baseline_row_count IS NULL OR (
+            baseline_content_digest IS NOT NULL
+            AND validated_backup_path IS NOT NULL
+            AND validated_backup_checksum IS NOT NULL
+        )
+    ),
+    CHECK (
+        legacy_data_store = 0 OR (
+            baseline_row_count IS NOT NULL
+            AND baseline_content_digest IS NOT NULL
+            AND validated_backup_path IS NOT NULL
+            AND validated_backup_checksum IS NOT NULL
+        )
+    )
 );
 
-CREATE UNIQUE INDEX idx_quarantined_components_active
+CREATE UNIQUE INDEX idx_quarantined_components_nonreleased
 ON quarantined_components(component_type, component_id)
-WHERE released_at IS NULL;
+WHERE state <> 'released';
+
+CREATE TRIGGER quarantined_components_no_direct_activation
+BEFORE INSERT ON quarantined_components
+WHEN NEW.state = 'active'
+BEGIN
+    SELECT RAISE(ABORT, 'component must be staged before activation');
+END;
+
+CREATE TRIGGER quarantined_components_activation_transition
+BEFORE UPDATE OF state ON quarantined_components
+WHEN NEW.state = 'active' AND OLD.state NOT IN ('candidate','shadow_readonly')
+BEGIN
+    SELECT RAISE(ABORT, 'only a staged component can be activated');
+END;
 
 CREATE TRIGGER schema_migrations_checksum_required
 BEFORE INSERT ON schema_migrations

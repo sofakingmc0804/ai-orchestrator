@@ -88,6 +88,42 @@ async def test_fresh_initialize_applies_migration_and_records_immutable_catalog(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["shape", "compatibility_commit"])
+async def test_compatibility_cancellation_rolls_back_and_records_no_backup_repair(
+    tmp_path: Path, phase: str
+) -> None:
+    class CancelCompatibility(MigrationRunner):
+        async def _ensure_catalog_shape(self, db: aiosqlite.Connection) -> None:
+            if phase == "shape":
+                await db.execute("ALTER TABLE schema_migrations ADD COLUMN name TEXT")
+                raise asyncio.CancelledError
+            await super()._ensure_catalog_shape(db)
+
+        async def _commit_compatibility(self, db: aiosqlite.Connection) -> None:
+            if phase == "compatibility_commit":
+                raise asyncio.CancelledError
+            await super()._commit_compatibility(db)
+
+    settings = settings_for(tmp_path)
+    install_v1_fixture(settings)
+    async with aiosqlite.connect(settings.state_path) as db:
+        with pytest.raises(asyncio.CancelledError):
+            await CancelCompatibility(settings).apply(db)
+        assert not db.in_transaction
+
+    columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(schema_migrations)")}
+    assert columns == {"version", "applied_at"}
+    repairs = query_all(
+        settings.state_path,
+        "SELECT failure_detail FROM repair_queue WHERE failure_source='state_migration'",
+    )
+    assert len(repairs) == 1
+    detail = json.loads(str(repairs[0][0]))
+    assert detail["backup_published"] is False
+    assert detail["backup_retained"] is False
+
+
+@pytest.mark.asyncio
 async def test_v1_upgrade_preserves_every_owner_sentinel_value(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
     install_v1_fixture(settings)
@@ -366,6 +402,234 @@ async def test_service_lifecycle_and_decision_kind_are_structured(tmp_path: Path
                           '[]','[]',1,'outcome','{}','{}','consequence','{}','{}','now')
                 """
             )
+
+
+@pytest.mark.asyncio
+async def test_service_runs_store_exact_native_recovery_identity(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('t','Task','running','main',1,'now','now')"
+        )
+        db.execute("INSERT INTO workbench_branches(task_id,branch_id,status,created_at) VALUES ('t','main','active','now')")
+        db.execute(
+            """
+            INSERT INTO service_runs(
+                run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,
+                adapter_contract_revision,account_id,profile_id,model_id,capability_inventory_revision,
+                transport_generation,native_session_id,native_thread_id,native_turn_id,native_request_id,
+                native_tool_use_id,native_question_group_id,launch_origin,native_handle_json,updated_at
+            ) VALUES (
+                'run-1','t','claude','researcher',1,'main','waiting_owner','anthropic','contract-v3',
+                'acct-1','profile-1','claude-opus','cap-v7','transport-v2','session-1','thread-1',
+                'turn-1','request-1','tool-1','question-group-1','governed','{"opaque":"handle-1"}','now'
+            )
+            """
+        )
+        row = db.execute(
+            """
+            SELECT adapter_provider,adapter_contract_revision,account_id,profile_id,model_id,
+                   capability_inventory_revision,transport_generation,native_session_id,native_thread_id,
+                   native_turn_id,native_request_id,native_tool_use_id,native_question_group_id,launch_origin,
+                   native_handle_json
+            FROM service_runs WHERE run_id='run-1'
+            """
+        ).fetchone()
+        assert row == (
+            "anthropic", "contract-v3", "acct-1", "profile-1", "claude-opus", "cap-v7", "transport-v2",
+            "session-1", "thread-1", "turn-1", "request-1", "tool-1", "question-group-1", "governed",
+            '{"opaque":"handle-1"}',
+        )
+        exact = (
+            "SELECT COUNT(*) FROM service_runs WHERE adapter_provider=? AND account_id=? AND profile_id=? "
+            "AND model_id=? AND native_thread_id=? AND native_turn_id=? AND native_request_id=?"
+        )
+        identity = ("anthropic", "acct-1", "profile-1", "claude-opus", "thread-1", "turn-1", "request-1")
+        assert db.execute(exact, identity).fetchone() == (1,)
+        for index in range(len(identity)):
+            mismatch = list(identity)
+            mismatch[index] = "mismatch"
+            assert db.execute(exact, tuple(mismatch)).fetchone() == (0,)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO service_runs(
+                    run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,account_id,
+                    profile_id,native_thread_id,native_turn_id,native_request_id,updated_at
+                ) VALUES ('run-duplicate','t','claude','reviewer',1,'main','running','anthropic','acct-1',
+                          'profile-1','thread-1','turn-1','request-1','now')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO service_runs(
+                    run_id,task_id,service,role,frame_version,branch_id,state,launch_origin,native_handle_json,updated_at
+                ) VALUES ('run-invalid','t','claude','reviewer',1,'main','running','unknown','not-json','now')
+                """
+            )
+
+
+@pytest.mark.asyncio
+async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('a','A','verifying','main',3,'now','now'),('b','B','running','main',3,'now','now')"
+        )
+        db.execute(
+            "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) "
+            "VALUES ('a','main','active','now'),('b','main','active','now')"
+        )
+        db.execute(
+            """
+            INSERT INTO workbench_events(
+                event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,
+                command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,checksum,created_at
+            ) VALUES ('event-a','a',1,'evidence.observed',1,'service','run-a','main','cmd-a',1,3,'{}','idem-a','','sum-a','now')
+            """
+        )
+        db.execute(
+            "INSERT INTO frame_nodes(node_id,task_id,branch_id,frame_version,node_key,kind,text,status,provenance_json,"
+            "created_at,updated_at) VALUES ('success-a','a','main',3,'success','success','Complete','confirmed','{}','now','now')"
+        )
+        db.execute(
+            "INSERT INTO service_runs(run_id,task_id,service,role,frame_version,branch_id,state,updated_at) "
+            "VALUES ('run-a','a','codex','verifier',3,'main','verifying','now')"
+        )
+        db.execute(
+            """
+            INSERT INTO evidence_refs(
+                id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                predicate_text,predicate_json,expected_outcome,authority_kind,authority_locator,verifier_kind,
+                verifier_identity,verification_status,observed_at,valid_until,observed_value_checksum,
+                content_checksum,source_event_id,producing_run_id,metadata_json
+            ) VALUES (
+                'evidence-a','a','main','success-a',3,7,'predicate-1','Output exists',
+                '{"op":"exists"}','present','filesystem','C:/proof/result.json','script','verify-result-v1',
+                'pass','2026-07-13T20:00:00Z','2026-07-14T20:00:00Z','observed-sum','content-sum',
+                'event-a','run-a','{"receipt":"r1"}'
+            )
+            """
+        )
+        row = db.execute(
+            """
+            SELECT branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,predicate_text,
+                   predicate_json,expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
+                   verification_status,observed_at,valid_until,observed_value_checksum,content_checksum,
+                   source_event_id,producing_run_id,metadata_json
+            FROM evidence_refs WHERE id='evidence-a'
+            """
+        ).fetchone()
+        assert row[0:6] == ("main", "success-a", 3, 7, "predicate-1", "Output exists")
+        assert row[12] == "pass"
+        assert row[-2:] == ("run-a", '{"receipt":"r1"}')
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO evidence_refs(
+                    id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                    expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
+                    verification_status,observed_at,observed_value_checksum,metadata_json
+                ) VALUES ('cross','b','main','success-a',3,7,'p','ok','filesystem','x','script','v','pass','now','sum','{}')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO evidence_refs(
+                    id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                    expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
+                    verification_status,observed_at,observed_value_checksum,metadata_json
+                ) VALUES ('bad-status','a','main','success-a',3,7,'p','ok','filesystem','x','script','v',
+                          'unverified','now','sum','{}')
+                """
+            )
+
+
+@pytest.mark.asyncio
+async def test_quarantine_stages_before_activation_and_requires_replacement_proof(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute(
+            """
+            INSERT INTO quarantined_components(
+                id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
+                preserved_read,metadata_json
+            ) VALUES ('q1','scheduled_task','legacy-pinger','periodically pings a UI','candidate',
+                      '{"action":"disable_after_proof"}','manifest-sum','now',1,'{}')
+            """
+        )
+        assert db.execute("SELECT state FROM quarantined_components WHERE id='q1'").fetchone() == ("candidate",)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO quarantined_components(
+                    id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
+                    preserved_read,metadata_json
+                ) VALUES ('q2','scheduled_task','legacy-pinger','duplicate','shadow_readonly','{}','sum','now',1,'{}')
+                """
+            )
+        db.execute(
+            "UPDATE quarantined_components SET state='released',released_at='now',release_reason='superseded' WHERE id='q1'"
+        )
+        db.execute(
+            """
+            INSERT INTO quarantined_components(
+                id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
+                preserved_read,metadata_json
+            ) VALUES ('q2','scheduled_task','legacy-pinger','shadow replacement','shadow_readonly','{}','sum','now',1,'{}')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE quarantined_components SET state='active' WHERE id='q2'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO quarantined_components(
+                    id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
+                    replacement_bootstrap_receipt_id,activated_at,activated_event_id,preserved_read,metadata_json
+                ) VALUES ('direct-active','scheduled_task','other-pinger','skipped staging','active','{}','sum','now',
+                          'receipt-1','now','event-proof',1,'{}')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO quarantined_components(
+                    id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
+                    legacy_data_store,preserved_read,metadata_json
+                ) VALUES ('legacy-missing-proof','sqlite_store','legacy-db','legacy rows','candidate','{}','sum','now',
+                          1,1,'{}')
+                """
+            )
+        db.execute(
+            """
+            UPDATE quarantined_components
+            SET replacement_bootstrap_receipt_id='receipt-2',activated_at='now',activated_event_id='event-proof',
+                state='active'
+            WHERE id='q2'
+            """
+        )
+        assert db.execute("SELECT state FROM quarantined_components WHERE id='q2'").fetchone() == ("active",)
+
+
+def test_migration_two_contains_no_transcript_content_storage() -> None:
+    sql = (ROOT / "orchestrator" / "state" / "migrations" / "0002_workbench_core.sql").read_text(
+        encoding="utf-8"
+    ).lower()
+    forbidden = (
+        "transcript_body", "transcript_summary", "transcript_snippet", "transcript_embedding",
+        "hidden_reasoning", "raw_transcript",
+    )
+    assert not any(name in sql for name in forbidden)
 
 
 @pytest.mark.asyncio

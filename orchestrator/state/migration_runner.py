@@ -63,12 +63,12 @@ class MigrationRunner:
         """Validate and atomically apply every pending numbered migration."""
         catalog = self._load_catalog()
         await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-        await self._ensure_catalog_shape(db)
-        await db.commit()
-
         failed_version: int | None = None
         backup_path: Path | None = None
         try:
+            await db.execute("BEGIN IMMEDIATE")
+            await self._ensure_catalog_shape(db)
+            await self._commit_compatibility(db)
             await db.execute("BEGIN IMMEDIATE")
             applied = await self._read_applied(db)
             self._validate_applied(catalog, applied)
@@ -119,6 +119,9 @@ class MigrationRunner:
                 raise
             label = f"migration {failed_version}" if failed_version is not None else "migration batch"
             raise MigrationApplyError(f"{label} failed and was rolled back: {exc}") from exc
+
+    async def _commit_compatibility(self, db: aiosqlite.Connection) -> None:
+        await db.commit()
 
     def _load_catalog(self) -> list[_Migration]:
         entries: Iterable[Any]
