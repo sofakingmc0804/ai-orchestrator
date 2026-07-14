@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +15,7 @@ import aiosqlite
 from orchestrator.config import Settings, ensure_runtime_dirs
 from orchestrator.gmail_response_agent.store import GMAIL_RESPONSE_AGENT_SCHEMA
 from orchestrator.models import Capability, Intent, Notification, RoutingDecision, Selection, ServiceInfo
+from orchestrator.state.migration_runner import MigrationRunner, split_sql_statements
 from orchestrator.usage.tokens import estimate_tokens
 
 
@@ -62,22 +66,66 @@ class StateStore:
 
     async def initialize(self) -> None:
         ensure_runtime_dirs(self.settings)
-        schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
+        schema = files("orchestrator.state").joinpath("schema.sql").read_text(encoding="utf-8")
         async with aiosqlite.connect(self.path) as db:
-            await db.executescript(schema)
-            await self._ensure_scheduler_task_columns(db)
-            await self._ensure_service_columns(db)
-            await self._ensure_worker_card_columns(db)
-            await self._ensure_receipt_columns(db)
-            await self._ensure_budget_lane_tables(db)
-            await self._ensure_operation_quality_scores_table(db)
-            await self._ensure_skill_hook_receipts_table(db)
-            await self._ensure_gmail_response_agent_tables(db)
-            await db.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                (1, iso()),
-            )
-            await db.commit()
+            await db.execute("PRAGMA busy_timeout=5000")
+            await self._bootstrap_v1_schema(db, schema)
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                await self._ensure_scheduler_task_columns(db)
+                await self._ensure_service_columns(db)
+                await self._ensure_worker_card_columns(db)
+                await self._ensure_receipt_columns(db)
+                await self._ensure_budget_lane_tables(db)
+                await self._ensure_operation_quality_scores_table(db)
+                await self._ensure_skill_hook_receipts_table(db)
+                await self._ensure_gmail_response_agent_tables(db)
+                await self._ensure_schema_migration_columns(db)
+                await db.execute(
+                    """
+                    INSERT OR IGNORE INTO schema_migrations(version, applied_at, name, status, checksum)
+                    VALUES (?, ?, 'legacy_baseline', 'applied', NULL)
+                    """,
+                    (1, iso()),
+                )
+                await db.commit()
+            except Exception:
+                if db.in_transaction:
+                    await db.rollback()
+                raise
+            await MigrationRunner(self.settings).apply(db)
+
+    async def _bootstrap_v1_schema(self, db: aiosqlite.Connection, schema: str) -> None:
+        """Run the idempotent v1 bootstrap with a bounded fresh-database lock retry."""
+        for attempt in range(5):
+            try:
+                await db.executescript(schema)
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or attempt == 4:
+                    raise
+                if db.in_transaction:
+                    await db.rollback()
+                await asyncio.sleep(0.05 * (2**attempt))
+
+    async def _ensure_schema_migration_columns(self, db: aiosqlite.Connection) -> None:
+        rows = await (await db.execute("PRAGMA table_info(schema_migrations)")).fetchall()
+        columns = {str(row[1]) for row in rows}
+        additions = {
+            "name": "ALTER TABLE schema_migrations ADD COLUMN name TEXT",
+            "status": "ALTER TABLE schema_migrations ADD COLUMN status TEXT",
+            "checksum": "ALTER TABLE schema_migrations ADD COLUMN checksum TEXT",
+        }
+        for column, statement in additions.items():
+            if column not in columns:
+                await db.execute(statement)
+        await db.execute(
+            """
+            UPDATE schema_migrations
+            SET name='legacy_baseline', status='applied', checksum=NULL
+            WHERE version=1
+            """
+        )
 
     @staticmethod
     def _legacy_orchestrator_home() -> Path:
@@ -279,7 +327,8 @@ class StateStore:
                 await db.execute(statement)
 
     async def _ensure_gmail_response_agent_tables(self, db: aiosqlite.Connection) -> None:
-        await db.executescript(GMAIL_RESPONSE_AGENT_SCHEMA)
+        for statement in split_sql_statements(GMAIL_RESPONSE_AGENT_SCHEMA):
+            await db.execute(statement)
         rows = await (await db.execute("PRAGMA table_info(gmail_response_candidates)")).fetchall()
         columns = {str(row[1]) for row in rows}
         if "authority_evidence_json" not in columns:
