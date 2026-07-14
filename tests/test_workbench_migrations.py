@@ -13,6 +13,7 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from orchestrator.config import Settings
 from orchestrator.state import migration_runner as migration_module
@@ -25,6 +26,8 @@ from orchestrator.state.migration_runner import (
     split_sql_statements,
 )
 from orchestrator.state.store import StateStore
+from orchestrator.workbench.events import EventDefinition, EventRegistry, FrameEffect
+from orchestrator.workbench.models import EventActor, EventCause, EventDraft
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1883,23 +1886,56 @@ def test_command_manifest_checksum_contract_golden_vectors() -> None:
     assert "workbench.command.drafts.v1" in migration_sql
     assert "workbench.command.manifest.v1" in migration_sql
 
+    class NestedVector(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        count: int
+        note: str | None
+
+    class NestedPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        title: str
+        details: NestedVector
+
+    class ConfirmPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        confirmed: bool
+        details: NestedVector
+
+    registry = EventRegistry()
+    registry.register(EventDefinition(
+        event_type="fixture.nested", event_schema_version=1, payload_model=NestedPayload,
+        frame_effect=FrameEffect.INHERIT, reducer=lambda state, event: state,
+    ))
+    registry.register(EventDefinition(
+        event_type="fixture.confirmed", event_schema_version=1, payload_model=ConfirmPayload,
+        frame_effect=FrameEffect.CONFIRM, reducer=lambda state, event: state,
+    ))
+    validated = (
+        registry.validate(EventDraft(
+            event_type="fixture.nested", actor=EventActor(kind="owner", actor_id="matt"),
+            payload={"title": "Café", "details": {"count": 1, "note": None}},
+        )),
+        registry.validate(EventDraft(
+            event_type="fixture.confirmed", actor=EventActor(kind="service", actor_id="codex"),
+            cause=EventCause.OWNER_REQUEST, caused_by="event-1",
+            payload={"confirmed": True, "details": {"count": 2, "note": "prêt"}},
+        )),
+    )
     drafts_envelope = {
         "domain": "workbench.command.drafts.v1",
         "task_id": "task-Ω",
         "command_id": "cmd-1",
-        "drafts": [
-            {
-                "ordinal": 1, "event_type": "task.created", "event_schema_version": 1,
-                "actor_kind": "owner", "actor_id": "matt", "branch_id": "main",
-                "cause": None, "caused_by": None, "payload": {"title": "Café", "count": 1},
-            },
-            {
-                "ordinal": 2, "event_type": "frame.confirmed", "event_schema_version": 1,
-                "actor_kind": "service", "actor_id": "codex", "branch_id": "main",
-                "cause": "owner", "caused_by": "event-1",
-                "payload": {"confirmed": True, "note": None},
-            },
-        ],
+        "drafts": [{
+            "ordinal": ordinal,
+            "event_type": item.draft.event_type,
+            "event_schema_version": item.draft.event_schema_version,
+            "actor_kind": item.draft.actor.kind,
+            "actor_id": item.draft.actor.actor_id,
+            "branch_id": item.draft.branch_id,
+            "cause": item.draft.cause.value if item.draft.cause is not None else None,
+            "caused_by": item.draft.caused_by,
+            "payload": item.payload.model_dump(mode="json"),
+        } for ordinal, item in enumerate(validated, start=1)],
     }
     drafts_canonical = json.dumps(
         drafts_envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
@@ -1907,14 +1943,15 @@ def test_command_manifest_checksum_contract_golden_vectors() -> None:
     assert drafts_canonical == (
         '{"command_id":"cmd-1","domain":"workbench.command.drafts.v1","drafts":'
         '[{"actor_id":"matt","actor_kind":"owner","branch_id":"main","cause":null,'
-        '"caused_by":null,"event_schema_version":1,"event_type":"task.created","ordinal":1,'
-        '"payload":{"count":1,"title":"Café"}},{"actor_id":"codex","actor_kind":"service",'
-        '"branch_id":"main","cause":"owner","caused_by":"event-1","event_schema_version":1,'
-        '"event_type":"frame.confirmed","ordinal":2,"payload":{"confirmed":true,"note":null}}],'
+        '"caused_by":null,"event_schema_version":1,"event_type":"fixture.nested","ordinal":1,'
+        '"payload":{"details":{"count":1,"note":null},"title":"Café"}},'
+        '{"actor_id":"codex","actor_kind":"service","branch_id":"main","cause":"owner_request",'
+        '"caused_by":"event-1","event_schema_version":1,"event_type":"fixture.confirmed",'
+        '"ordinal":2,"payload":{"confirmed":true,"details":{"count":2,"note":"prêt"}}}],'
         '"task_id":"task-Ω"}'
     )
     drafts_checksum = hashlib.sha256(drafts_canonical.encode("utf-8")).hexdigest()
-    assert drafts_checksum == "012cbc556c314a105f50acee954c59fffb51af085d6c4b0952dc28e0e4cf49a6"
+    assert drafts_checksum == "196c225b4ee2d3cc000abaded415649c6fb831cf5cd09fd0bca2e70f967d62c0"
 
     manifest_envelope = {
         "domain": "workbench.command.manifest.v1",
@@ -1930,21 +1967,119 @@ def test_command_manifest_checksum_contract_golden_vectors() -> None:
     assert manifest_canonical == (
         '{"command_id":"cmd-1","confirm_ordinal":null,"created_at":"2026-07-14T12:00:00.000000Z",'
         '"domain":"workbench.command.manifest.v1","drafts_checksum":'
-        '"012cbc556c314a105f50acee954c59fffb51af085d6c4b0952dc28e0e4cf49a6",'
+        '"196c225b4ee2d3cc000abaded415649c6fb831cf5cd09fd0bca2e70f967d62c0",'
         '"event_count":2,"expected_frame_version":0,"first_event_id":"event-1","first_sequence":1,'
         '"last_event_id":"event-2","last_sequence":2,"starting_frame_version":0,'
         '"target_branch_id":"main","task_id":"task-Ω"}'
     )
     assert hashlib.sha256(manifest_canonical.encode("utf-8")).hexdigest() == (
-        "7bd436c78b30031bc321eadf27c802043bd460cc0c1f26a0f151b601c872a8a0"
+        "0c9b063cf6b4d4cc6661c0633252a5360e91b107bdccbd59889fbd801e4e2306"
     )
     manifest_envelope["confirm_ordinal"] = 2
     mutated_canonical = json.dumps(
         manifest_envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     )
     assert hashlib.sha256(mutated_canonical.encode("utf-8")).hexdigest() == (
-        "7867bb17603fa23f75ea9c549dbdb729eff6d70bc20c60ee89dc3607d1ba5373"
+        "eb16368cc351de06ff440dafae11f7a2f43cbae35d0c4d16838f5bb835f7f1e3"
     )
+
+
+@pytest.mark.asyncio
+async def test_command_manifest_storage_classes_reject_fractional_numbers_and_blob_checksums(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    cases: tuple[tuple[str, dict[str, object]], ...] = (
+        ("fractional-count", {"event_count": 1.5, "last_sequence": 1.5}),
+        ("fractional-frames", {"starting_frame_version": 0.5, "expected_frame_version": 0.5}),
+        ("fractional-confirm", {"event_count": 2, "last_sequence": 2, "confirm_ordinal": 1.5}),
+        ("blob-drafts", {"drafts_checksum": sqlite3.Binary(b"a" * 64)}),
+        ("blob-manifest", {"manifest_checksum": sqlite3.Binary(b"b" * 64)}),
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        for label, _ in cases:
+            insert_manifest_task(db, f"type-{label}")
+        db.commit()
+        accepted: list[str] = []
+        for label, overrides in cases:
+            try:
+                insert_command_manifest(
+                    db,
+                    task_id=f"type-{label}",
+                    command_id=f"command-{label}",
+                    first_event_id=f"first-{label}",
+                    last_event_id=f"last-{label}",
+                    **overrides,
+                )
+            except sqlite3.IntegrityError:
+                continue
+            accepted.append(label)
+        db.rollback()
+        assert accepted == []
+
+
+@pytest.mark.asyncio
+async def test_event_manifest_guard_rejects_fractional_event_storage_classes(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        insert_manifest_task(db, "fractional-ordinal-task")
+        insert_manifest_task(db, "fractional-frame-task")
+        db.commit()
+        insert_command_manifest(
+            db,
+            task_id="fractional-ordinal-task",
+            command_id="fractional-ordinal-command",
+            event_count=2,
+            first_sequence=1,
+            last_sequence=2,
+            first_event_id="ordinal-first",
+            last_event_id="ordinal-last",
+        )
+        insert_command_manifest(
+            db,
+            task_id="fractional-frame-task",
+            command_id="fractional-frame-command",
+            event_count=1,
+            first_sequence=1,
+            last_sequence=1,
+            first_event_id="frame-event",
+            last_event_id="frame-event",
+        )
+        attempts = (
+            (
+                "fractional-ordinal", "fractional-ordinal-task", 1.5, 1,
+                "fractional-ordinal-command", 1.5, 0,
+            ),
+            (
+                "frame-event", "fractional-frame-task", 1, 1.5,
+                "fractional-frame-command", 1, 0.5,
+            ),
+        )
+        accepted: list[str] = []
+        for event_id, task_id, sequence, schema_version, command_id, ordinal, frame_version in attempts:
+            try:
+                db.execute(
+                    """
+                    INSERT INTO workbench_events(
+                        event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,
+                        command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,
+                        checksum,created_at
+                    ) VALUES (?,?,?,'fixture.type',?,'service','writer','main',?,?,?,'{}',?,?,?,'created-1')
+                    """,
+                    (
+                        event_id, task_id, sequence, schema_version, command_id, ordinal, frame_version,
+                        f"idem-{event_id}", f"prior-{event_id}", f"sum-{event_id}",
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                continue
+            accepted.append(event_id)
+        db.rollback()
+        assert accepted == []
 
 
 @pytest.mark.asyncio

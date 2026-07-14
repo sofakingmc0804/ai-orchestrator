@@ -61,7 +61,7 @@ CREATE TABLE workbench_command_manifests (
     FOREIGN KEY (task_id, last_event_id, last_sequence)
         REFERENCES workbench_events(task_id, event_id, sequence)
         DEFERRABLE INITIALLY DEFERRED
-);
+) STRICT;
 
 CREATE TRIGGER workbench_command_manifests_contiguous_insert
 BEFORE INSERT ON workbench_command_manifests
@@ -100,6 +100,10 @@ BEGIN
         WHERE manifest.task_id = NEW.task_id
           AND manifest.command_id = NEW.command_id
           AND manifest.target_branch_id = NEW.branch_id
+          AND typeof(NEW.sequence) = 'integer'
+          AND typeof(NEW.command_sequence) = 'integer'
+          AND typeof(NEW.frame_version) = 'integer'
+          AND typeof(NEW.event_schema_version) = 'integer'
           AND NEW.command_sequence BETWEEN 1 AND manifest.event_count
           AND NEW.sequence = manifest.first_sequence + NEW.command_sequence - 1
           AND (NEW.command_sequence <> 1 OR NEW.event_id = manifest.first_event_id)
