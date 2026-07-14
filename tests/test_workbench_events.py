@@ -34,7 +34,7 @@ from orchestrator.workbench.models import (
     UnsupportedEventType,
 )
 from orchestrator.workbench.store import WorkbenchStore
-from orchestrator.workbench.projector import Projector
+from orchestrator.workbench.projector import BranchTopology, Projector, ReplayPlan
 from orchestrator.state.store import StateStore
 
 
@@ -184,6 +184,11 @@ def test_production_registry_is_bounded_typed_and_declares_frame_effects() -> No
 class ValuePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     value: str
+
+
+class NestedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    nested: dict[str, str]
 
 
 def fixture_registry(*, effect: FrameEffect = FrameEffect.INHERIT) -> EventRegistry:
@@ -823,7 +828,224 @@ async def test_projector_rejects_unwitnessed_or_mislabeled_visible_event_tuple(t
     actor = EventActor(kind="owner", actor_id="matt")
     store = WorkbenchStore(settings)
     created = await store.create_task("task-1", "Build it", "cmd-create", actor)
-    with pytest.raises(LedgerCorruption, match="visibility witness"):
+    with pytest.raises(LedgerCorruption, match="replay plan"):
         Projector(store.registry).replay(
             (created,), task_id="task-1", branch_id="sibling-does-not-exist"
         )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_verification_and_visible_read_share_one_database_snapshot(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings, registry=fixture_registry())
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    event = await store.append(
+        "task-1",
+        "cmd-value",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "verified"}),
+    )
+    verified = asyncio.Event()
+    release_read = asyncio.Event()
+    original_verify = store._verify_ledger_db
+
+    async def pause_after_verify(db: object, task_id: str, *, include_projections: bool):
+        result = await original_verify(db, task_id, include_projections=include_projections)  # type: ignore[arg-type]
+        verified.set()
+        await release_read.wait()
+        return result
+
+    store._verify_ledger_db = pause_after_verify  # type: ignore[method-assign]
+    snapshot_task = asyncio.create_task(store.snapshot("task-1"))
+    await asyncio.wait_for(verified.wait(), timeout=5)
+
+    def corrupt_after_verification() -> None:
+        with sqlite3.connect(settings.state_path, timeout=5) as db:
+            db.execute("DROP TRIGGER workbench_events_no_update")
+            db.execute(
+                "UPDATE workbench_events SET payload_json=? WHERE event_id=?",
+                ('{"value":"corrupted-after-verification"}', event.event_id),
+            )
+
+    writer = asyncio.create_task(asyncio.to_thread(corrupt_after_verification))
+    await asyncio.sleep(0.05)
+    release_read.set()
+    snapshot = await asyncio.wait_for(snapshot_task, timeout=5)
+    await asyncio.wait_for(writer, timeout=5)
+
+    assert snapshot.state["value"] == "verified"
+    store._verify_ledger_db = original_verify  # type: ignore[method-assign]
+    assert (await store.verify_ledger("task-1")).valid is False
+
+
+@pytest.mark.asyncio
+async def test_snapshot_verify_false_still_rejects_corrupt_authority_chain(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings, registry=fixture_registry())
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    event = await store.append(
+        "task-1",
+        "cmd-value",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "verified"}),
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("DROP TRIGGER workbench_events_no_update")
+        db.execute(
+            "UPDATE workbench_events SET payload_json=? WHERE event_id=?",
+            ('{"value":"tampered"}', event.event_id),
+        )
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1", verify=False)
+
+
+@pytest.mark.asyncio
+async def test_projector_rejects_bare_events_relabelled_as_a_real_sibling(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings, registry=fixture_registry())
+    created = await store.create_task("task-1", "Build it", "cmd-create", actor)
+    left_fork = await store.fork_branch(
+        "task-1", "cmd-left", "main", "left", created.sequence, actor
+    )
+    right_fork = await store.fork_branch(
+        "task-1", "cmd-right", "main", "right", created.sequence, actor
+    )
+    left = await store.append(
+        "task-1",
+        "cmd-left-value",
+        EventDraft(
+            event_type="fixture.value",
+            actor=actor,
+            branch_id="left",
+            payload={"value": "left-only"},
+        ),
+    )
+    with pytest.raises(LedgerCorruption, match="replay plan"):
+        Projector(store.registry).replay(
+            (created, left), task_id="task-1", branch_id="right"
+        )
+    with pytest.raises(LedgerCorruption, match="topology visibility witness"):
+        store._replay(
+            store.projector,
+            (created, left),
+            task_id="task-1",
+            branch_id="right",
+        )
+    fabricated = ReplayPlan(
+        task_id="task-1",
+        target_branch_id="right",
+        at_sequence=None,
+        topology=(
+            BranchTopology("main", None, created.sequence, None, None, None),
+            BranchTopology(
+                "left", "main", created.sequence, created.sequence, 0, left_fork
+            ),
+            BranchTopology(
+                "right", "left", left.sequence, created.sequence, 0, right_fork
+            ),
+        ),
+        visible_events=(created, left),
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        projection_before = db.execute("SELECT * FROM projection_metadata ORDER BY branch_id").fetchall()
+    with pytest.raises(LedgerCorruption, match="fork transition"):
+        Projector(store.registry).replay(
+            fabricated, task_id="task-1", branch_id="right"
+        )
+    with sqlite3.connect(settings.state_path) as db:
+        assert db.execute("SELECT * FROM projection_metadata ORDER BY branch_id").fetchall() == projection_before
+
+
+@pytest.mark.asyncio
+async def test_rebuild_rejects_projector_with_a_different_registry_instance(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    authoritative = fixture_registry()
+    store = WorkbenchStore(settings, registry=authoritative)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    await store.append(
+        "task-1",
+        "cmd-value",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "good"}),
+    )
+    hostile = EventRegistry.production()
+
+    def evil_reducer(state: dict[str, object], event: object) -> dict[str, object]:
+        return {"value": "EVIL"}
+
+    hostile.register(
+        EventDefinition(
+            event_type="fixture.value",
+            event_schema_version=1,
+            payload_model=ValuePayload,
+            frame_effect=FrameEffect.INHERIT,
+            reducer=evil_reducer,
+        )
+    )
+    with pytest.raises(LedgerCorruption, match="registry"):
+        await Projector(hostile).rebuild(store, "task-1")
+    assert (await store.snapshot("task-1")).state["value"] == "good"
+
+
+@pytest.mark.asyncio
+async def test_reducer_cannot_mutate_nested_event_payload_during_any_replay_path(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    registry = fixture_registry()
+    mutation_enabled = {"value": True}
+
+    def mutating_reducer(state: dict[str, object], event: object) -> dict[str, object]:
+        payload = getattr(event, "payload")
+        if mutation_enabled["value"]:
+            payload["nested"]["value"] = "MUTATED"
+        result = dict(state)
+        result["nested"] = payload["nested"]["value"]
+        return result
+
+    registry.register(
+        EventDefinition(
+            event_type="fixture.nested",
+            event_schema_version=1,
+            payload_model=NestedPayload,
+            frame_effect=FrameEffect.INHERIT,
+            reducer=mutating_reducer,
+        )
+    )
+    store = WorkbenchStore(settings, registry=registry)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    nested = EventDraft(
+        event_type="fixture.nested",
+        actor=actor,
+        payload={"nested": {"value": "original"}},
+    )
+    with pytest.raises(LedgerCorruption, match="mutated event payload"):
+        await store.append("task-1", "cmd-single-mutate", nested)
+    with pytest.raises(LedgerCorruption, match="mutated event payload"):
+        await store.append_batch(
+            "task-1",
+            "cmd-batch-mutate",
+            (
+                EventDraft(event_type="fixture.value", actor=actor, payload={"value": "before"}),
+                nested,
+            ),
+        )
+    mutation_enabled["value"] = False
+    stored = await store.append("task-1", "cmd-valid-nested", nested)
+    assert stored.payload == {"nested": {"value": "original"}}
+    mutation_enabled["value"] = True
+    with pytest.raises(LedgerCorruption, match="mutated event payload"):
+        await store.snapshot("task-1")
+    with pytest.raises(LedgerCorruption, match="mutated event payload"):
+        await Projector(registry).rebuild(store, "task-1")
+    with sqlite3.connect(settings.state_path) as db:
+        assert json.loads(
+            db.execute(
+                "SELECT payload_json FROM workbench_events WHERE command_id='cmd-valid-nested'"
+            ).fetchone()[0]
+        ) == {"nested": {"value": "original"}}

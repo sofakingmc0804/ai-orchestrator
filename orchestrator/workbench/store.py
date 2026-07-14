@@ -6,6 +6,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Sequence
@@ -38,14 +39,53 @@ from orchestrator.workbench.models import (
     WorkbenchSnapshot,
 )
 from orchestrator.workbench.projector import (
+    BranchTopology,
     GENESIS_TIME,
     PROJECTION_NAME,
     Projector,
-    VisibleEventStream,
+    ReplayPlan,
 )
 
 
 BUSY_TIMEOUT_MS = 5_000
+
+
+@dataclass(frozen=True)
+class _StoreVisibleEvents(Sequence[WorkbenchEvent]):
+    events: tuple[WorkbenchEvent, ...]
+    task_id: str
+    branch_id: str
+    at_sequence: int | None
+    topology: tuple[BranchTopology, ...]
+
+    def __len__(self) -> int:
+        return len(self.events)
+
+    def __getitem__(self, index: Any) -> Any:
+        return self.events[index]
+
+    def extended(self, events: Iterable[WorkbenchEvent]) -> "_StoreVisibleEvents":
+        additions = tuple(events)
+        if any(event.task_id != self.task_id or event.branch_id != self.branch_id for event in additions):
+            raise LedgerCorruption(None, "cannot extend visibility with another task or branch")
+        if self.at_sequence is not None:
+            raise LedgerCorruption(None, "cannot extend a historical visibility boundary")
+        if not additions:
+            return self
+        prior_sequence = self.events[-1].sequence if self.events else 0
+        if any(event.sequence <= prior_sequence for event in additions):
+            raise LedgerCorruption(None, "visibility extension is not after the witnessed head")
+        topology = (
+            *self.topology[:-1],
+            replace(self.topology[-1], visible_through_sequence=additions[-1].sequence),
+        )
+        return _StoreVisibleEvents(
+            (*self.events, *additions),
+            self.task_id,
+            self.branch_id,
+            None,
+            topology,
+        )
 
 
 class WorkbenchStore:
@@ -96,6 +136,21 @@ class WorkbenchStore:
             if error is not None:
                 raise cancellation from error
             raise
+
+    async def _finish_rollback(self, db: aiosqlite.Connection) -> None:
+        if not db.in_transaction:
+            return
+        task = asyncio.create_task(db.rollback())
+        cancellation: asyncio.CancelledError | None = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                continue
+        task.result()
+        if cancellation is not None:
+            raise cancellation
 
     async def create_task(
         self,
@@ -165,8 +220,9 @@ class WorkbenchStore:
                     (task_id, created_at),
                 )
                 await self._insert_event(db, event)
+                visible = await self._visible_events(db, task_id, "main", at_sequence=None)
                 snapshot = self._replay(
-                    self.projector, (event,), task_id=task_id, branch_id="main"
+                    self.projector, visible, task_id=task_id, branch_id="main"
                 )
                 await self._publish_snapshot(db, snapshot, event.created_at)
                 await self._finish_commit(db)
@@ -279,7 +335,7 @@ class WorkbenchStore:
 
                 projected = self._replay(
                     self.projector,
-                    (*visible, *events),
+                    visible.extended(events),
                     task_id=task_id,
                     branch_id=branch_id,
                 )
@@ -402,13 +458,16 @@ class WorkbenchStore:
                 )
                 parent_projected = self._replay(
                     self.projector,
-                    (*parent_current, event),
+                    parent_current.extended((event,)),
                     task_id=task_id,
                     branch_id=parent_branch_id,
                 )
+                child_visible = await self._visible_events(
+                    db, task_id, branch_id, at_sequence=None
+                )
                 child_projected = self._replay(
                     self.projector,
-                    boundary_events,
+                    child_visible,
                     task_id=task_id,
                     branch_id=branch_id,
                 )
@@ -430,30 +489,49 @@ class WorkbenchStore:
         verify: bool = True,
     ) -> WorkbenchSnapshot:
         async with self._connection() as db:
-            await self._require_task(db, task_id)
-            await self._require_branch(db, task_id, branch_id)
-            if verify:
+            try:
+                await db.execute("BEGIN")
+                await self._require_task(db, task_id)
+                await self._require_branch(db, task_id, branch_id)
+                # Authority verification is never optional.  ``verify=False``
+                # skips only the disposable current projection comparison.
                 verification = await self._verify_ledger_db(
-                    db, task_id, include_projections=at_sequence is None
+                    db,
+                    task_id,
+                    include_projections=bool(verify and at_sequence is None),
                 )
                 self._require_valid(verification)
-            visible = await self._visible_events(db, task_id, branch_id, at_sequence=at_sequence)
-            return self._replay(
-                self.projector,
-                visible,
-                task_id=task_id,
-                branch_id=branch_id,
-                at_sequence=at_sequence,
-            )
+                visible = await self._visible_events(db, task_id, branch_id, at_sequence=at_sequence)
+                result = self._replay(
+                    self.projector,
+                    visible,
+                    task_id=task_id,
+                    branch_id=branch_id,
+                    at_sequence=at_sequence,
+                )
+                await self._finish_rollback(db)
+                return result
+            except BaseException:
+                await self._finish_rollback(db)
+                raise
 
     async def verify_ledger(self, task_id: str) -> LedgerVerification:
         async with self._connection() as db:
-            await self._require_task(db, task_id)
-            return await self._verify_ledger_db(db, task_id, include_projections=True)
+            try:
+                await db.execute("BEGIN")
+                await self._require_task(db, task_id)
+                result = await self._verify_ledger_db(db, task_id, include_projections=True)
+                await self._finish_rollback(db)
+                return result
+            except BaseException:
+                await self._finish_rollback(db)
+                raise
 
     async def _rebuild_projections(
         self, projector: Projector, task_id: str
     ) -> tuple[Any, ...]:
+        if projector.registry is not self.registry:
+            raise LedgerCorruption(None, "projection rebuild registry is not the store authority")
         async with self._connection() as db:
             try:
                 await db.execute("BEGIN IMMEDIATE")
@@ -713,23 +791,31 @@ class WorkbenchStore:
             reason=f"branch topology mismatch: {detail}",
         )
 
-    @staticmethod
     def _replay(
+        self,
         projector: Projector,
-        events: Iterable[WorkbenchEvent],
+        events: _StoreVisibleEvents,
         *,
         task_id: str,
         branch_id: str,
         at_sequence: int | None = None,
     ) -> WorkbenchSnapshot:
-        stream = VisibleEventStream._from_store(
-            events,
+        if (
+            not isinstance(events, _StoreVisibleEvents)
+            or events.task_id != task_id
+            or events.branch_id != branch_id
+            or events.at_sequence != at_sequence
+        ):
+            raise LedgerCorruption(None, "store replay requires an exact topology visibility witness")
+        plan = ReplayPlan(
             task_id=task_id,
-            branch_id=branch_id,
+            target_branch_id=branch_id,
             at_sequence=at_sequence,
+            topology=events.topology,
+            visible_events=events.events,
         )
         return projector.replay(
-            stream,
+            plan,
             task_id=task_id,
             branch_id=branch_id,
             at_sequence=at_sequence,
@@ -742,13 +828,13 @@ class WorkbenchStore:
         branch_id: str,
         *,
         at_sequence: int | None,
-    ) -> tuple[WorkbenchEvent, ...]:
+    ) -> _StoreVisibleEvents:
         await self._require_branch(db, task_id, branch_id)
         global_head = (await self._global_head(db, task_id))[0]
         boundary = global_head if at_sequence is None else at_sequence
         if boundary < 0 or boundary > global_head:
             raise EventValidationError(f"invalid historical boundary: {boundary}")
-        lineage: list[tuple[str, int]] = []
+        lineage: list[BranchTopology] = []
         current = branch_id
         cutoff = boundary
         seen: set[str] = set()
@@ -759,7 +845,8 @@ class WorkbenchStore:
             row = await (
                 await db.execute(
                     """
-                    SELECT parent_branch_id,forked_from_sequence
+                    SELECT branch_id,parent_branch_id,forked_from_sequence,
+                           forked_from_frame_version,created_by_event_id
                     FROM workbench_branches WHERE task_id=? AND branch_id=?
                     """,
                     (task_id, current),
@@ -767,13 +854,46 @@ class WorkbenchStore:
             ).fetchone()
             if row is None:
                 raise BranchNotFound(f"branch not found: {task_id}/{current}")
-            lineage.append((current, cutoff))
+            creation_event = None
+            if row["created_by_event_id"] is not None:
+                event_row = await (
+                    await db.execute(
+                        "SELECT * FROM workbench_events WHERE task_id=? AND event_id=?",
+                        (task_id, str(row["created_by_event_id"])),
+                    )
+                ).fetchone()
+                if event_row is None:
+                    raise LedgerCorruption(None, f"branch {current} lacks its creation event")
+                creation_event = self._event_from_row(event_row)
+            lineage.append(
+                BranchTopology(
+                    branch_id=current,
+                    parent_branch_id=(
+                        str(row["parent_branch_id"])
+                        if row["parent_branch_id"] is not None
+                        else None
+                    ),
+                    visible_through_sequence=cutoff,
+                    forked_from_sequence=(
+                        int(row["forked_from_sequence"])
+                        if row["forked_from_sequence"] is not None
+                        else None
+                    ),
+                    forked_from_frame_version=(
+                        int(row["forked_from_frame_version"])
+                        if row["forked_from_frame_version"] is not None
+                        else None
+                    ),
+                    creation_event=creation_event,
+                )
+            )
             if row["parent_branch_id"] is None:
                 break
             cutoff = min(cutoff, int(row["forked_from_sequence"]))
             current = str(row["parent_branch_id"])
+        ordered_lineage = tuple(reversed(lineage))
         rows: list[aiosqlite.Row] = []
-        for lineage_branch, lineage_cutoff in reversed(lineage):
+        for topology_item in ordered_lineage:
             rows.extend(
                 await (
                     await db.execute(
@@ -782,12 +902,22 @@ class WorkbenchStore:
                         WHERE task_id=? AND branch_id=? AND sequence<=?
                         ORDER BY sequence
                         """,
-                        (task_id, lineage_branch, lineage_cutoff),
+                        (
+                            task_id,
+                            topology_item.branch_id,
+                            topology_item.visible_through_sequence,
+                        ),
                     )
                 ).fetchall()
             )
         rows.sort(key=lambda row: int(row["sequence"]))
-        return tuple(self._event_from_row(row) for row in rows)
+        return _StoreVisibleEvents(
+            tuple(self._event_from_row(row) for row in rows),
+            task_id,
+            branch_id,
+            at_sequence,
+            ordered_lineage,
+        )
 
     async def _resolve_retry(
         self,
