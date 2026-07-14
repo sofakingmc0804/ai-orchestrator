@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import subprocess
@@ -18,6 +19,7 @@ from orchestrator.state.migration_runner import (
     MigrationCatalogError,
     MigrationChecksumError,
     MigrationRunner,
+    split_sql_statements,
 )
 from orchestrator.state.store import StateStore
 
@@ -217,6 +219,220 @@ async def test_event_rows_are_append_only_and_cause_must_be_earlier_in_same_task
             db.execute("DELETE FROM workbench_events WHERE event_id='a1'")
 
 
+@pytest.mark.asyncio
+async def test_frame_node_revisions_cannot_be_rewritten_or_deleted(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('t','Task','running','main',1,'now','now')"
+        )
+        db.execute("INSERT INTO workbench_branches(task_id,branch_id,status,created_at) VALUES ('t','main','active','now')")
+        db.execute(
+            "INSERT INTO frame_nodes(node_id,task_id,branch_id,frame_version,node_key,kind,text,status,provenance_json,"
+            "created_at,updated_at) VALUES ('n1','t','main',1,'goal','goal','Original','confirmed','{}','now','now')"
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            db.execute("UPDATE frame_nodes SET text='rewritten' WHERE node_id='n1'")
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            db.execute("DELETE FROM frame_nodes WHERE node_id='n1'")
+
+
+@pytest.mark.asyncio
+async def test_active_branch_must_exist_for_the_same_task(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('dangling','Task','running','missing',0,'now','now')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.commit()
+        db.rollback()
+
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('a','A','running','main',0,'now','now'),('b','B','running','other',0,'now','now')"
+        )
+        db.execute(
+            "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) "
+            "VALUES ('a','main','active','now'),('b','other','active','now')"
+        )
+        db.commit()
+        db.execute("UPDATE workbench_tasks SET active_branch_id='other' WHERE id='a'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.commit()
+        db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_edges_and_service_inputs_enforce_type_task_and_frame(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('a','A','running','main',2,'now','now'),('b','B','running','main',2,'now','now')"
+        )
+        db.execute(
+            "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) "
+            "VALUES ('a','main','active','now'),('b','main','active','now')"
+        )
+        for node_id, task_id in (("a1", "a"), ("a2", "a"), ("b1", "b")):
+            db.execute(
+                "INSERT INTO frame_nodes(node_id,task_id,branch_id,frame_version,node_key,kind,text,status,provenance_json,"
+                "created_at,updated_at) VALUES (?,?, 'main',2,?,'goal',?,'confirmed','{}','now','now')",
+                (node_id, task_id, node_id, node_id),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO frame_edges(id,task_id,branch_id,frame_version,from_node_id,to_node_id,edge_type,created_at) "
+                "VALUES ('bad-type','a','main',2,'a1','a2','contains','now')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO frame_edges(id,task_id,branch_id,frame_version,from_node_id,to_node_id,edge_type,created_at) "
+                "VALUES ('cross-task','a','main',2,'a1','b1','supports','now')"
+            )
+        db.execute(
+            "INSERT INTO service_runs(run_id,task_id,service,role,frame_version,branch_id,state,updated_at) "
+            "VALUES ('r','a','codex','implementer',2,'main','running','now')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "INSERT INTO service_run_inputs(task_id,run_id,node_id,input_frame_version,ordinal) "
+                "VALUES ('a','r','a1',1,0)"
+            )
+        db.execute(
+            "INSERT INTO service_run_inputs(task_id,run_id,node_id,input_frame_version,ordinal) "
+            "VALUES ('a','r','a1',2,0)"
+        )
+
+
+@pytest.mark.asyncio
+async def test_service_lifecycle_and_decision_kind_are_structured(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    decision_columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(decision_requests)")}
+    assert "kind" in decision_columns
+
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('t','Task','running','main',1,'now','now')"
+        )
+        db.execute("INSERT INTO workbench_branches(task_id,branch_id,status,created_at) VALUES ('t','main','active','now')")
+        for ordinal, state in enumerate(("starting", "interrupted", "canceled")):
+            db.execute(
+                "INSERT INTO service_runs(run_id,task_id,service,role,frame_version,branch_id,state,updated_at) "
+                "VALUES (?,?, 'codex','implementer',1,'main',?,'now')",
+                (f"run-{ordinal}", "t", state),
+            )
+        decision_kinds = (
+            "intent_clarification",
+            "tool_approval",
+            "external_action_approval",
+            "evidence_checkpoint",
+            "service_team_override",
+            "frame_interpretation_confirmation",
+        )
+        for ordinal, kind in enumerate(decision_kinds):
+            db.execute(
+                """
+                INSERT INTO decision_requests(
+                    decision_id,task_id,branch_id,state,tier,kind,queue_order,semantic_identity,question,
+                    affected_node_ids_json,options_json,free_form_allowed,changed_outcome,outcome_deltas_json,
+                    materiality_json,consequence_if_unresolved,consequence_json,provenance_json,created_at
+                ) VALUES (?, 't','main','queued','routine',?,?,?,'Question?','[]','[]',1,'outcome','{}','{}',
+                          'consequence','{}','{}','now')
+                """,
+                (f"decision-{ordinal}", kind, ordinal, f"semantic-{ordinal}"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO decision_requests(
+                    decision_id,task_id,branch_id,state,tier,kind,queue_order,semantic_identity,question,
+                    affected_node_ids_json,options_json,free_form_allowed,changed_outcome,outcome_deltas_json,
+                    materiality_json,consequence_if_unresolved,consequence_json,provenance_json,created_at
+                ) VALUES ('bad-kind','t','main','resolved','routine','clarification',99,'bad','Question?',
+                          '[]','[]',1,'outcome','{}','{}','consequence','{}','{}','now')
+                """
+            )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_rolls_back_records_accurate_repair_and_propagates(tmp_path: Path) -> None:
+    class CancelDuringBackup(MigrationRunner):
+        def _create_validated_backup(self, next_version: int) -> Path:
+            raise asyncio.CancelledError
+
+    settings = settings_for(tmp_path)
+    install_v1_fixture(settings)
+    async with aiosqlite.connect(settings.state_path) as db:
+        with pytest.raises(asyncio.CancelledError):
+            await CancelDuringBackup(settings).apply(db)
+        assert not db.in_transaction
+
+    details = query_all(
+        settings.state_path,
+        "SELECT failure_detail FROM repair_queue WHERE failure_source='state_migration'",
+    )
+    assert len(details) == 1
+    payload = json.loads(str(details[0][0]))
+    assert payload["backup_published"] is False
+    assert payload["backup_retained"] is False
+    assert payload["backup_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_repair_finishes_cleanup_and_still_propagates(tmp_path: Path) -> None:
+    class PauseDuringRepair(MigrationRunner):
+        def __init__(self, settings: Settings, migrations_dir: Path) -> None:
+            super().__init__(settings, migrations_dir)
+            self.repair_started = asyncio.Event()
+            self.release_repair = asyncio.Event()
+
+        async def _record_repair(
+            self,
+            db: aiosqlite.Connection,
+            version: int | None,
+            exc: BaseException,
+            backup_path: Path | None,
+        ) -> None:
+            self.repair_started.set()
+            await self.release_repair.wait()
+            await super()._record_repair(db, version, exc, backup_path)
+
+    settings = settings_for(tmp_path)
+    install_v1_fixture(settings)
+    catalog = write_catalog(
+        tmp_path / "cancel-repair",
+        {"0002_break.sql": "CREATE TABLE before_cancel(id TEXT); INSERT INTO missing_table VALUES (1);"},
+    )
+    runner = PauseDuringRepair(settings, catalog)
+    async with aiosqlite.connect(settings.state_path) as db:
+        task = asyncio.create_task(runner.apply(db))
+        await asyncio.wait_for(runner.repair_started.wait(), timeout=5)
+        task.cancel()
+        runner.release_repair.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not db.in_transaction
+
+    assert query_all(
+        settings.state_path,
+        "SELECT COUNT(*) FROM repair_queue WHERE failure_source='state_migration'",
+    ) == [(1,)]
+
+
 def write_catalog(path: Path, files: dict[str, str]) -> Path:
     path.mkdir(parents=True)
     for name, sql in files.items():
@@ -244,6 +460,12 @@ async def test_partial_statement_failure_rolls_back_and_writes_one_durable_repai
     assert query_all(settings.state_path, "SELECT version FROM schema_migrations WHERE version=2") == []
     repairs = query_all(settings.state_path, "SELECT failure_source, resolved FROM repair_queue WHERE failure_source='state_migration'")
     assert repairs == [("state_migration", 0)]
+    detail = json.loads(
+        str(query_all(settings.state_path, "SELECT failure_detail FROM repair_queue WHERE failure_source='state_migration'")[0][0])
+    )
+    assert detail["backup_published"] is True
+    assert detail["backup_retained"] is True
+    assert Path(detail["backup_path"]).is_file()
 
 
 @pytest.mark.asyncio
@@ -279,6 +501,12 @@ async def test_backup_publication_failure_aborts_before_schema_writes(tmp_path: 
 
     assert query_all(settings.state_path, "SELECT COUNT(*) FROM sqlite_master WHERE name='workbench_events'") == [(0,)]
     assert query_all(settings.state_path, "SELECT version FROM schema_migrations WHERE version=2") == []
+    detail = json.loads(
+        str(query_all(settings.state_path, "SELECT failure_detail FROM repair_queue WHERE failure_source='state_migration'")[0][0])
+    )
+    assert detail["backup_published"] is False
+    assert detail["backup_retained"] is False
+    assert detail["backup_path"] is None
 
 
 @pytest.mark.asyncio
@@ -356,6 +584,38 @@ async def test_unknown_applied_version_is_rejected(tmp_path: Path) -> None:
     async with aiosqlite.connect(settings.state_path) as db:
         with pytest.raises(MigrationCatalogError, match="unknown applied version"):
             await MigrationRunner(settings).apply(db)
+
+
+@pytest.mark.asyncio
+async def test_numbered_migration_rows_are_fully_immutable(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    updates = {
+        "name": "changed",
+        "status": "changed",
+        "applied_at": "changed",
+        "checksum": "0" * 64,
+    }
+    with sqlite3.connect(settings.state_path) as db:
+        for field, value in updates.items():
+            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+                db.execute(f"UPDATE schema_migrations SET {field}=? WHERE version=2", (value,))
+
+
+def test_sql_splitter_handles_literals_comments_and_trailing_comment_only_remainder() -> None:
+    sql = """
+    CREATE TABLE split_test(value TEXT DEFAULT ';'); -- a line-comment semicolon ;
+    /* a block-comment semicolon ; */ INSERT INTO split_test(value) VALUES ('a;b');
+    -- trailing comment only ;
+    """
+
+    statements = split_sql_statements(sql)
+
+    assert len(statements) == 2
+    with sqlite3.connect(":memory:") as db:
+        for statement in statements:
+            db.execute(statement)
+        assert db.execute("SELECT value FROM split_test").fetchall() == [("a;b",)]
 
 
 @pytest.mark.asyncio

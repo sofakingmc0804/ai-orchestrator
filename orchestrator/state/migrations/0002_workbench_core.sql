@@ -5,7 +5,10 @@ CREATE TABLE workbench_tasks (
     active_branch_id TEXT NOT NULL,
     current_frame_version INTEGER NOT NULL DEFAULT 0 CHECK (current_frame_version >= 0),
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (id, active_branch_id)
+        REFERENCES workbench_branches(task_id, branch_id)
+        DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE TABLE workbench_branches (
@@ -130,6 +133,18 @@ BEGIN
     ) THEN RAISE(ABORT, 'supersedes_node_id must be an earlier revision of the same node_key') END;
 END;
 
+CREATE TRIGGER frame_nodes_no_update
+BEFORE UPDATE ON frame_nodes
+BEGIN
+    SELECT RAISE(ABORT, 'frame node revisions are immutable');
+END;
+
+CREATE TRIGGER frame_nodes_no_delete
+BEFORE DELETE ON frame_nodes
+BEGIN
+    SELECT RAISE(ABORT, 'frame node revisions are immutable');
+END;
+
 CREATE INDEX idx_frame_nodes_task_branch_version
 ON frame_nodes(task_id, branch_id, frame_version);
 
@@ -140,7 +155,7 @@ CREATE TABLE frame_edges (
     frame_version INTEGER NOT NULL CHECK (frame_version >= 0),
     from_node_id TEXT NOT NULL,
     to_node_id TEXT NOT NULL,
-    edge_type TEXT NOT NULL,
+    edge_type TEXT NOT NULL CHECK (edge_type IN ('depends_on','alternative_to','supports','contradicts')),
     created_by_event_id TEXT,
     created_at TEXT NOT NULL,
     CHECK (from_node_id <> to_node_id),
@@ -184,6 +199,14 @@ CREATE TABLE decision_requests (
     branch_id TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('queued','active','resolved','superseded')),
     tier TEXT NOT NULL CHECK (tier IN ('routine','blocking','critical')),
+    kind TEXT NOT NULL CHECK (kind IN (
+        'intent_clarification',
+        'tool_approval',
+        'external_action_approval',
+        'evidence_checkpoint',
+        'service_team_override',
+        'frame_interpretation_confirmation'
+    )),
     queue_order INTEGER NOT NULL CHECK (queue_order >= 0),
     semantic_identity TEXT NOT NULL,
     question TEXT NOT NULL,
@@ -227,13 +250,14 @@ CREATE TABLE service_runs (
     frame_version INTEGER NOT NULL CHECK (frame_version >= 0),
     native_session_id TEXT,
     branch_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('queued','running','waiting_owner','paused_dependency','repairing','verifying','complete','failed')),
+    state TEXT NOT NULL CHECK (state IN ('queued','starting','running','waiting_owner','paused_dependency','repairing','verifying','interrupted','complete','failed','canceled')),
     receipt_event_id TEXT,
     input_manifest_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(input_manifest_json)),
     started_at TEXT,
     updated_at TEXT NOT NULL,
     completed_at TEXT,
     UNIQUE (task_id, run_id),
+    UNIQUE (task_id, run_id, frame_version),
     UNIQUE (service, native_session_id),
     FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
     FOREIGN KEY (task_id, receipt_event_id) REFERENCES workbench_events(task_id, event_id)
@@ -251,6 +275,8 @@ CREATE TABLE service_run_inputs (
     PRIMARY KEY (run_id, node_id),
     UNIQUE (run_id, ordinal),
     FOREIGN KEY (task_id, run_id) REFERENCES service_runs(task_id, run_id) ON DELETE CASCADE,
+    FOREIGN KEY (task_id, run_id, input_frame_version)
+        REFERENCES service_runs(task_id, run_id, frame_version),
     FOREIGN KEY (task_id, node_id) REFERENCES frame_nodes(task_id, node_id)
 );
 
@@ -308,11 +334,11 @@ BEGIN
     SELECT RAISE(ABORT, 'numbered migrations require a sha256 checksum');
 END;
 
-CREATE TRIGGER schema_migrations_checksum_immutable
-BEFORE UPDATE OF checksum ON schema_migrations
-WHEN OLD.version >= 2 AND NEW.checksum IS NOT OLD.checksum
+CREATE TRIGGER schema_migrations_fields_immutable
+BEFORE UPDATE ON schema_migrations
+WHEN OLD.version >= 2
 BEGIN
-    SELECT RAISE(ABORT, 'applied migration checksum is immutable');
+    SELECT RAISE(ABORT, 'applied numbered migration fields are immutable');
 END;
 
 CREATE TRIGGER schema_migrations_no_delete

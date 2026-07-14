@@ -67,6 +67,7 @@ class MigrationRunner:
         await db.commit()
 
         failed_version: int | None = None
+        backup_path: Path | None = None
         try:
             await db.execute("BEGIN IMMEDIATE")
             applied = await self._read_applied(db)
@@ -78,7 +79,17 @@ class MigrationRunner:
 
             failed_version = pending[0].version
             try:
-                await asyncio.to_thread(self._create_validated_backup, pending[0].version)
+                backup_task = asyncio.create_task(
+                    asyncio.to_thread(self._create_validated_backup, pending[0].version)
+                )
+                try:
+                    backup_path = await asyncio.shield(backup_task)
+                except asyncio.CancelledError:
+                    try:
+                        backup_path = await backup_task
+                    except BaseException:
+                        backup_path = None
+                    raise
             except MigrationBackupError:
                 raise
             except Exception as exc:  # pragma: no cover - defensive normalization
@@ -99,12 +110,11 @@ class MigrationRunner:
                 applied_versions.append(migration.version)
             await db.commit()
             return applied_versions
+        except asyncio.CancelledError as exc:
+            await self._cleanup_failure(db, failed_version, exc, backup_path)
+            raise
         except Exception as exc:
-            if db.in_transaction:
-                await db.rollback()
-            if db.in_transaction:  # sqlite must not carry a poisoned transaction onward
-                raise MigrationApplyError("migration rollback did not end the transaction") from exc
-            await self._record_repair(db, failed_version, exc)
+            await self._cleanup_failure(db, failed_version, exc, backup_path)
             if isinstance(exc, MigrationError):
                 raise
             label = f"migration {failed_version}" if failed_version is not None else "migration batch"
@@ -244,7 +254,39 @@ class MigrationRunner:
             except OSError:
                 pass
 
-    async def _record_repair(self, db: aiosqlite.Connection, version: int | None, exc: Exception) -> None:
+    async def _cleanup_failure(
+        self,
+        db: aiosqlite.Connection,
+        version: int | None,
+        exc: BaseException,
+        backup_path: Path | None,
+    ) -> None:
+        async def cleanup() -> None:
+            if db.in_transaction:
+                await db.rollback()
+            if db.in_transaction:
+                raise MigrationApplyError("migration rollback did not end the transaction") from exc
+            await self._record_repair(db, version, exc, backup_path)
+
+        cleanup_task = asyncio.create_task(cleanup())
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+            await cleanup_task
+        if cancellation is not None:
+            raise cancellation
+
+    async def _record_repair(
+        self,
+        db: aiosqlite.Connection,
+        version: int | None,
+        exc: BaseException,
+        backup_path: Path | None,
+    ) -> None:
+        backup_published = backup_path is not None
+        backup_retained = bool(backup_path is not None and backup_path.is_file())
         fingerprint = hashlib.sha256(
             f"{version}|{type(exc).__name__}|{exc}".encode("utf-8", errors="replace")
         ).hexdigest()[:24]
@@ -253,7 +295,9 @@ class MigrationRunner:
                 "version": version,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
-                "backup_retained": True,
+                "backup_path": str(backup_path) if backup_path is not None else None,
+                "backup_published": backup_published,
+                "backup_retained": backup_retained,
                 "auto_restore": False,
             },
             sort_keys=True,
@@ -270,7 +314,11 @@ class MigrationRunner:
                     f"state-migration-{fingerprint}",
                     _now(),
                     detail,
-                    "Inspect the retained backup and migration catalog; repair forward, never auto-restore.",
+                    (
+                        "Inspect the retained backup and migration catalog; repair forward, never auto-restore."
+                        if backup_retained
+                        else "Repair the migration or backup mechanism forward; no published backup is available."
+                    ),
                 ),
             )
             await db.commit()
@@ -298,10 +346,33 @@ def split_sql_statements(sql: str) -> list[str]:
             buffer = []
     remainder = "".join(buffer)
     if remainder.strip():
+        if _comment_only(remainder):
+            return statements
         if not sqlite3.complete_statement(remainder):
             raise MigrationCatalogError("migration contains an incomplete SQL statement")
         statements.append(remainder.strip())
     return statements
+
+
+def _comment_only(sql: str) -> bool:
+    index = 0
+    length = len(sql)
+    while index < length:
+        if sql[index].isspace():
+            index += 1
+            continue
+        if sql.startswith("--", index):
+            newline = sql.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            if end < 0:
+                return False
+            index = end + 2
+            continue
+        return False
+    return True
 
 
 def _first_keyword(statement: str) -> str:
