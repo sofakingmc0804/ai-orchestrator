@@ -767,3 +767,63 @@ async def test_rebuild_holds_write_boundary_so_concurrent_append_is_not_lost(tmp
     assert live_after.state["value"] == "after-lock"
     rebuilt = await Projector(registry).rebuild(rebuilding, "task-1")
     assert rebuilt[0] == live_after.head
+
+
+@pytest.mark.asyncio
+async def test_create_task_retry_verifies_chain_and_projection_before_return(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute(
+            "UPDATE projection_metadata SET state_checksum=? WHERE task_id='task-1'",
+            ("0" * 64,),
+        )
+    with pytest.raises(LedgerCorruption, match="projection metadata"):
+        await store.create_task("task-1", "Build it", "cmd-create", actor)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_rejects_branch_topology_not_bound_to_fork_event(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings, registry=fixture_registry())
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    before = await store.append(
+        "task-1",
+        "cmd-before",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "before"}),
+    )
+    await store.fork_branch("task-1", "cmd-fork", "main", "child", before.sequence, actor)
+    after = await store.append(
+        "task-1",
+        "cmd-after",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "after"}),
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("DROP TRIGGER workbench_branches_identity_immutable")
+        db.execute(
+            "UPDATE workbench_branches SET forked_from_sequence=? WHERE task_id='task-1' AND branch_id='child'",
+            (after.sequence,),
+        )
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "branch topology" in str(verification.reason)
+    with pytest.raises(LedgerCorruption, match="branch topology"):
+        await Projector(store.registry).rebuild(store, "task-1")
+
+
+@pytest.mark.asyncio
+async def test_projector_rejects_unwitnessed_or_mislabeled_visible_event_tuple(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings)
+    created = await store.create_task("task-1", "Build it", "cmd-create", actor)
+    with pytest.raises(LedgerCorruption, match="visibility witness"):
+        Projector(store.registry).replay(
+            (created,), task_id="task-1", branch_id="sibling-does-not-exist"
+        )

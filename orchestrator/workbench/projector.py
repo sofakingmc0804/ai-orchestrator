@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass, field
 from typing import Iterable, TYPE_CHECKING
 
 from orchestrator.workbench.events import EventRegistry, GENESIS_CHECKSUM, canonical_json_bytes
@@ -18,6 +19,27 @@ if TYPE_CHECKING:
 
 PROJECTION_NAME = "workbench.canonical.v1"
 GENESIS_TIME = "1970-01-01T00:00:00.000000Z"
+_STORE_VISIBILITY_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class VisibleEventStream:
+    events: tuple[WorkbenchEvent, ...]
+    task_id: str
+    branch_id: str
+    at_sequence: int | None
+    _token: object = field(repr=False, compare=False)
+
+    @classmethod
+    def _from_store(
+        cls,
+        events: Iterable[WorkbenchEvent],
+        *,
+        task_id: str,
+        branch_id: str,
+        at_sequence: int | None,
+    ) -> "VisibleEventStream":
+        return cls(tuple(events), task_id, branch_id, at_sequence, _STORE_VISIBILITY_TOKEN)
 
 
 class Projector:
@@ -32,7 +54,15 @@ class Projector:
         branch_id: str,
         at_sequence: int | None = None,
     ) -> WorkbenchSnapshot:
-        events = tuple(visible_events)
+        if (
+            not isinstance(visible_events, VisibleEventStream)
+            or visible_events._token is not _STORE_VISIBILITY_TOKEN
+            or visible_events.task_id != task_id
+            or visible_events.branch_id != branch_id
+            or visible_events.at_sequence != at_sequence
+        ):
+            raise LedgerCorruption(None, "projector requires an exact store visibility witness")
+        events = visible_events.events
         previous = 0
         state: dict[str, object] = {}
         frame_version = 0

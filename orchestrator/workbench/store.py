@@ -37,7 +37,12 @@ from orchestrator.workbench.models import (
     WorkbenchEvent,
     WorkbenchSnapshot,
 )
-from orchestrator.workbench.projector import GENESIS_TIME, PROJECTION_NAME, Projector
+from orchestrator.workbench.projector import (
+    GENESIS_TIME,
+    PROJECTION_NAME,
+    Projector,
+    VisibleEventStream,
+)
 
 
 BUSY_TIMEOUT_MS = 5_000
@@ -115,6 +120,11 @@ class WorkbenchStore:
                 existing_task = await (
                     await db.execute("SELECT id FROM workbench_tasks WHERE id=?", (task_id,))
                 ).fetchone()
+                if existing_task is not None:
+                    verification = await self._verify_ledger_db(
+                        db, task_id, include_projections=True
+                    )
+                    self._require_valid(verification)
                 existing = await self._resolve_retry(
                     db, task_id, command_id, (validated,), expected_frame_version=None
                 )
@@ -155,7 +165,9 @@ class WorkbenchStore:
                     (task_id, created_at),
                 )
                 await self._insert_event(db, event)
-                snapshot = self.projector.replay((event,), task_id=task_id, branch_id="main")
+                snapshot = self._replay(
+                    self.projector, (event,), task_id=task_id, branch_id="main"
+                )
                 await self._publish_snapshot(db, snapshot, event.created_at)
                 await self._finish_commit(db)
                 return event
@@ -222,7 +234,9 @@ class WorkbenchStore:
                 branch_id = next(iter(branches))
                 await self._require_branch(db, task_id, branch_id)
                 visible = await self._visible_events(db, task_id, branch_id, at_sequence=None)
-                snapshot = self.projector.replay(visible, task_id=task_id, branch_id=branch_id)
+                snapshot = self._replay(
+                    self.projector, visible, task_id=task_id, branch_id=branch_id
+                )
                 current_frame = snapshot.frame_version
                 if confirms:
                     if expected_frame_version is None or expected_frame_version != current_frame:
@@ -263,8 +277,11 @@ class WorkbenchStore:
                     events.append(event)
                     prior_checksum = event.checksum
 
-                projected = self.projector.replay(
-                    (*visible, *events), task_id=task_id, branch_id=branch_id
+                projected = self._replay(
+                    self.projector,
+                    (*visible, *events),
+                    task_id=task_id,
+                    branch_id=branch_id,
                 )
                 for event in events:
                     await self._insert_event(db, event)
@@ -347,8 +364,11 @@ class WorkbenchStore:
                     raise IdempotencyConflict(f"branch already exists: {branch_id}")
 
                 parent_current = await self._visible_events(db, task_id, parent_branch_id, at_sequence=None)
-                parent_snapshot = self.projector.replay(
-                    parent_current, task_id=task_id, branch_id=parent_branch_id
+                parent_snapshot = self._replay(
+                    self.projector,
+                    parent_current,
+                    task_id=task_id,
+                    branch_id=parent_branch_id,
                 )
                 head_sequence, head_checksum = await self._global_head(db, task_id)
                 event = self._build_event(
@@ -380,11 +400,17 @@ class WorkbenchStore:
                         event.created_at,
                     ),
                 )
-                parent_projected = self.projector.replay(
-                    (*parent_current, event), task_id=task_id, branch_id=parent_branch_id
+                parent_projected = self._replay(
+                    self.projector,
+                    (*parent_current, event),
+                    task_id=task_id,
+                    branch_id=parent_branch_id,
                 )
-                child_projected = self.projector.replay(
-                    boundary_events, task_id=task_id, branch_id=branch_id
+                child_projected = self._replay(
+                    self.projector,
+                    boundary_events,
+                    task_id=task_id,
+                    branch_id=branch_id,
                 )
                 await self._publish_snapshot(db, parent_projected, event.created_at)
                 child_time = boundary_events[-1].created_at if boundary_events else GENESIS_TIME
@@ -412,8 +438,12 @@ class WorkbenchStore:
                 )
                 self._require_valid(verification)
             visible = await self._visible_events(db, task_id, branch_id, at_sequence=at_sequence)
-            return self.projector.replay(
-                visible, task_id=task_id, branch_id=branch_id, at_sequence=at_sequence
+            return self._replay(
+                self.projector,
+                visible,
+                task_id=task_id,
+                branch_id=branch_id,
+                at_sequence=at_sequence,
             )
 
     async def verify_ledger(self, task_id: str) -> LedgerVerification:
@@ -441,7 +471,9 @@ class WorkbenchStore:
                 for row in branches:
                     branch_id = str(row[0])
                     visible = await self._visible_events(db, task_id, branch_id, at_sequence=None)
-                    snapshot = projector.replay(visible, task_id=task_id, branch_id=branch_id)
+                    snapshot = self._replay(
+                        projector, visible, task_id=task_id, branch_id=branch_id
+                    )
                     updated_at = visible[-1].created_at if visible else GENESIS_TIME
                     await self._publish_snapshot(db, snapshot, updated_at)
                     heads.append(snapshot.head)
@@ -506,6 +538,10 @@ class WorkbenchStore:
             prior = str(row["checksum"])
             expected_sequence += 1
 
+        topology_failure = await self._verify_branch_topology(db, task_id, rows)
+        if topology_failure is not None:
+            return topology_failure
+
         if include_projections:
             branches = await (
                 await db.execute(
@@ -516,7 +552,9 @@ class WorkbenchStore:
             for branch in branches:
                 branch_id = str(branch[0])
                 visible = await self._visible_events(db, task_id, branch_id, at_sequence=None)
-                snapshot = self.projector.replay(visible, task_id=task_id, branch_id=branch_id)
+                snapshot = self._replay(
+                    self.projector, visible, task_id=task_id, branch_id=branch_id
+                )
                 metadata = await (
                     await db.execute(
                         """
@@ -552,6 +590,149 @@ class WorkbenchStore:
             checked_events=len(rows),
             head_sequence=int(rows[-1]["sequence"]) if rows else 0,
             head_checksum=prior,
+        )
+
+    async def _verify_branch_topology(
+        self,
+        db: aiosqlite.Connection,
+        task_id: str,
+        event_rows: Sequence[aiosqlite.Row],
+    ) -> LedgerVerification | None:
+        branches = await (
+            await db.execute(
+                """
+                SELECT task_id,branch_id,parent_branch_id,forked_from_sequence,
+                       forked_from_frame_version,created_by_event_id
+                FROM workbench_branches WHERE task_id=? ORDER BY branch_id
+                """,
+                (task_id,),
+            )
+        ).fetchall()
+        by_id = {str(row["event_id"]): row for row in event_rows}
+        fork_events: dict[str, aiosqlite.Row] = {}
+        for row in event_rows:
+            if str(row["event_type"]) != "branch.forked":
+                continue
+            try:
+                payload = json.loads(str(row["payload_json"]))
+                child_id = str(payload["new_branch_id"])
+            except Exception as exc:
+                return self._topology_failure(task_id, event_rows, int(row["sequence"]), str(exc))
+            if child_id in fork_events:
+                return self._topology_failure(
+                    task_id, event_rows, int(row["sequence"]), "duplicate fork event for child"
+                )
+            fork_events[child_id] = row
+
+        matched_forks: set[str] = set()
+        roots = 0
+        for branch in branches:
+            branch_id = str(branch["branch_id"])
+            parent = branch["parent_branch_id"]
+            if parent is None:
+                roots += 1
+                if any(
+                    branch[field] is not None
+                    for field in (
+                        "forked_from_sequence",
+                        "forked_from_frame_version",
+                        "created_by_event_id",
+                    )
+                ):
+                    return self._topology_failure(
+                        task_id, event_rows, 1, f"root branch {branch_id} has fork identity"
+                    )
+                continue
+            created_id = str(branch["created_by_event_id"] or "")
+            event = by_id.get(created_id)
+            if event is None or str(event["event_type"]) != "branch.forked":
+                return self._topology_failure(
+                    task_id, event_rows, None, f"branch {branch_id} lacks its fork event"
+                )
+            sequence = int(event["sequence"])
+            try:
+                payload = json.loads(str(event["payload_json"]))
+                expected = (
+                    branch_id,
+                    str(parent),
+                    int(branch["forked_from_sequence"]),
+                    int(branch["forked_from_frame_version"]),
+                )
+                observed = (
+                    str(payload["new_branch_id"]),
+                    str(payload["parent_branch_id"]),
+                    int(payload["forked_from_sequence"]),
+                    int(payload["forked_from_frame_version"]),
+                )
+            except Exception as exc:
+                return self._topology_failure(task_id, event_rows, sequence, str(exc))
+            if observed != expected or str(event["branch_id"]) != str(parent):
+                return self._topology_failure(
+                    task_id,
+                    event_rows,
+                    sequence,
+                    f"branch {branch_id} does not match its immutable fork event",
+                )
+            if int(branch["forked_from_sequence"]) < 1 or sequence <= int(
+                branch["forked_from_sequence"]
+            ):
+                return self._topology_failure(
+                    task_id, event_rows, sequence, f"branch {branch_id} has an invalid fork boundary"
+                )
+            matched_forks.add(branch_id)
+        if roots != 1:
+            return self._topology_failure(
+                task_id, event_rows, None, f"expected one root branch, found {roots}"
+            )
+        unmatched = set(fork_events) - matched_forks
+        if unmatched:
+            child = sorted(unmatched)[0]
+            event = fork_events[child]
+            return self._topology_failure(
+                task_id,
+                event_rows,
+                int(event["sequence"]),
+                f"fork event has no matching branch: {child}",
+            )
+        return None
+
+    @staticmethod
+    def _topology_failure(
+        task_id: str,
+        rows: Sequence[aiosqlite.Row],
+        sequence: int | None,
+        detail: str,
+    ) -> LedgerVerification:
+        return LedgerVerification(
+            valid=False,
+            task_id=task_id,
+            checked_events=len(rows),
+            head_sequence=int(rows[-1]["sequence"]) if rows else 0,
+            head_checksum=str(rows[-1]["checksum"]) if rows else GENESIS_CHECKSUM,
+            first_invalid_sequence=sequence,
+            reason=f"branch topology mismatch: {detail}",
+        )
+
+    @staticmethod
+    def _replay(
+        projector: Projector,
+        events: Iterable[WorkbenchEvent],
+        *,
+        task_id: str,
+        branch_id: str,
+        at_sequence: int | None = None,
+    ) -> WorkbenchSnapshot:
+        stream = VisibleEventStream._from_store(
+            events,
+            task_id=task_id,
+            branch_id=branch_id,
+            at_sequence=at_sequence,
+        )
+        return projector.replay(
+            stream,
+            task_id=task_id,
+            branch_id=branch_id,
+            at_sequence=at_sequence,
         )
 
     async def _visible_events(
