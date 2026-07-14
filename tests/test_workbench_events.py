@@ -1090,6 +1090,7 @@ async def test_rebuild_rejects_branch_topology_not_bound_to_fork_event(tmp_path:
     )
     with sqlite3.connect(settings.state_path) as db:
         db.execute("DROP TRIGGER workbench_branches_identity_immutable")
+        db.execute("DROP TRIGGER workbench_branches_task3_transition")
         db.execute(
             "UPDATE workbench_branches SET forked_from_sequence=? WHERE task_id='task-1' AND branch_id='child'",
             (after.sequence,),
@@ -1716,6 +1717,7 @@ async def test_fractional_branch_topology_fields_fail_every_authority_surface(
     )
     with sqlite3.connect(settings.state_path) as db:
         db.execute("DROP TRIGGER workbench_branches_identity_immutable")
+        db.execute("DROP TRIGGER workbench_branches_task3_transition")
         db.execute(
             f"UPDATE workbench_branches SET {column}=? "
             "WHERE task_id='task-1' AND branch_id='child'",
@@ -1784,6 +1786,7 @@ async def test_task_row_semantics_remain_bound_to_task_created(
     store = WorkbenchStore(settings)
     await store.create_task("task-1", "Build it", "cmd-create", actor)
     with sqlite3.connect(settings.state_path) as db:
+        db.execute("DROP TRIGGER workbench_tasks_task3_transition")
         db.execute(
             f"UPDATE workbench_tasks SET {column}=? WHERE id='task-1'", (changed_value,)
         )
@@ -1821,6 +1824,7 @@ async def test_branch_state_and_time_remain_bound_to_creation_event(
         "task-1", "cmd-fork", "main", "child", created.sequence, actor
     )
     with sqlite3.connect(settings.state_path) as db:
+        db.execute("DROP TRIGGER workbench_branches_task3_transition")
         if column == "created_at":
             db.execute("DROP TRIGGER workbench_branches_identity_immutable")
         db.execute(

@@ -50,6 +50,8 @@ WORKBENCH_TABLES = {
     "replacement_bootstrap_proofs",
     "quarantined_components",
     "workbench_command_manifests",
+    "decision_queue_heads",
+    "evidence_invalidation_overlays",
 }
 
 
@@ -80,6 +82,19 @@ def backup_paths(settings: Settings) -> list[Path]:
     return sorted(backup_dir.glob("state-pre-migration-*.sqlite")) if backup_dir.exists() else []
 
 
+async def initialize_through_v3(settings: Settings, catalog_path: Path) -> None:
+    install_v1_fixture(settings)
+    catalog = write_catalog(
+        catalog_path,
+        {
+            name: (ROOT / "orchestrator" / "state" / "migrations" / name).read_text(encoding="utf-8")
+            for name in ("0002_workbench_core.sql", "0003_workbench_command_manifests.sql")
+        },
+    )
+    async with aiosqlite.connect(settings.state_path) as db:
+        assert await MigrationRunner(settings, catalog).apply(db) == [2, 3]
+
+
 @pytest.mark.asyncio
 async def test_fresh_initialize_applies_migration_and_records_immutable_catalog(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
@@ -97,6 +112,8 @@ async def test_fresh_initialize_applies_migration_and_records_immutable_catalog(
     assert isinstance(rows[1][3], str) and len(rows[1][3]) == 64
     assert rows[2][0:3] == (3, "workbench_command_manifests", "applied")
     assert isinstance(rows[2][3], str) and len(rows[2][3]) == 64
+    assert rows[3][0:3] == (4, "intent_authority_guards", "applied")
+    assert isinstance(rows[3][3], str) and len(rows[3][3]) == 64
 
 
 @pytest.mark.asyncio
@@ -352,17 +369,31 @@ async def test_migration_schema_has_required_constraints_indexes_and_json_guards
     assert {"node_id", "node_key", "supersedes_node_id", "kind", "text"} <= node_columns
     decision_columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(decision_requests)")}
     assert {
-        "decision_id", "state", "tier", "queue_order", "question", "free_form_allowed", "recommendation",
-        "resolution_text", "outcome_deltas_json", "materiality_json",
+        "decision_id", "state", "tier", "queue_order", "question", "free_form_allowed",
+        "recommendation_option_id", "recommendation_reason", "positions_json", "materiality_json",
+        "revision", "last_event_id", "source_occurrences_json", "pending_interpretation_json",
     } <= decision_columns
+    assert not {
+        "recommendation", "resolution_text", "outcome_deltas_json", "affected_node_ids_json",
+        "consequence_json", "default_option_json",
+    } & decision_columns
     decision_indexes = {row[1] for row in query_all(settings.state_path, "PRAGMA index_list(decision_requests)")}
-    assert {"idx_decision_requests_one_active", "idx_decision_requests_open_queue_order"} <= decision_indexes
+    assert {"idx_decision_requests_one_active", "idx_decision_requests_active_identity"} <= decision_indexes
+    assert "idx_decision_requests_open_queue_order" not in decision_indexes
     service_columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(service_runs)")}
-    assert {"run_id", "service", "role", "frame_version", "state", "receipt_event_id"} <= service_columns
+    assert {
+        "run_id", "service", "role", "frame_version", "state", "receipt_event_id",
+        "revision", "last_event_id", "output_validity",
+    } <= service_columns
     proposal_columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(frame_proposals)")}
-    assert {"base_head_checksum", "preview_state_checksum", "expected_head_sequence"} <= proposal_columns
+    assert {
+        "base_head_checksum", "base_state_checksum", "preview_state_checksum", "impact_preview_checksum",
+        "expected_head_sequence", "decided_by_event_id",
+    } <= proposal_columns
     branch_columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(workbench_branches)")}
-    assert {"parent_branch_id", "forked_from_sequence", "forked_from_frame_version"} <= branch_columns
+    assert {
+        "parent_branch_id", "forked_from_sequence", "forked_from_frame_version", "last_transition_event_id",
+    } <= branch_columns
 
     index_names = {row[1] for row in query_all(settings.state_path, "PRAGMA index_list(frame_edges)")}
     assert {"idx_frame_edges_from", "idx_frame_edges_to"} <= index_names
@@ -436,7 +467,7 @@ async def test_event_rows_are_append_only_and_cause_must_be_earlier_in_same_task
 @pytest.mark.asyncio
 async def test_frame_node_revisions_cannot_be_rewritten_or_deleted(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    await StateStore(settings).initialize()
+    await initialize_through_v3(settings, tmp_path / "v3-frame-revisions")
     with sqlite3.connect(settings.state_path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.execute(
@@ -458,7 +489,7 @@ async def test_frame_node_revisions_cannot_be_rewritten_or_deleted(tmp_path: Pat
 @pytest.mark.asyncio
 async def test_active_branch_must_exist_for_the_same_task(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    await StateStore(settings).initialize()
+    await initialize_through_v3(settings, tmp_path / "v3-active-branch")
     with sqlite3.connect(settings.state_path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.execute(
@@ -487,7 +518,7 @@ async def test_active_branch_must_exist_for_the_same_task(tmp_path: Path) -> Non
 @pytest.mark.asyncio
 async def test_branch_ancestry_is_complete_acyclic_immutable_and_append_only(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    await StateStore(settings).initialize()
+    await initialize_through_v3(settings, tmp_path / "v3-branch-ancestry")
     with sqlite3.connect(settings.state_path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.execute(
@@ -539,7 +570,7 @@ async def test_branch_ancestry_is_complete_acyclic_immutable_and_append_only(tmp
 @pytest.mark.asyncio
 async def test_edges_and_service_inputs_enforce_type_task_and_frame(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    await StateStore(settings).initialize()
+    await initialize_through_v3(settings, tmp_path / "v3-edges-inputs")
     with sqlite3.connect(settings.state_path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.execute(
@@ -584,7 +615,7 @@ async def test_edges_and_service_inputs_enforce_type_task_and_frame(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_service_lifecycle_and_decision_kind_are_structured(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    await StateStore(settings).initialize()
+    await initialize_through_v3(settings, tmp_path / "v3-service-lifecycle")
     decision_columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(decision_requests)")}
     assert "kind" in decision_columns
 
@@ -635,7 +666,7 @@ async def test_service_lifecycle_and_decision_kind_are_structured(tmp_path: Path
 @pytest.mark.asyncio
 async def test_service_runs_store_exact_native_recovery_identity(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    await StateStore(settings).initialize()
+    await initialize_through_v3(settings, tmp_path / "v3-native-identity")
     with sqlite3.connect(settings.state_path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.execute(
@@ -842,7 +873,7 @@ async def test_service_runs_store_exact_native_recovery_identity(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    await StateStore(settings).initialize()
+    await initialize_through_v3(settings, tmp_path / "v3-evidence-roundtrip")
     with sqlite3.connect(settings.state_path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.execute(
@@ -1038,7 +1069,7 @@ async def test_completion_evidence_rejects_nonexistent_wrong_kind_and_invisible_
     tmp_path: Path,
 ) -> None:
     settings = settings_for(tmp_path)
-    await StateStore(settings).initialize()
+    await initialize_through_v3(settings, tmp_path / "v3-evidence-lineage")
     with sqlite3.connect(settings.state_path) as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.execute(
@@ -2199,9 +2230,9 @@ async def test_v2_without_events_upgrades_to_v3_without_fabricating_manifests(tm
         assert await MigrationRunner(settings, v2_catalog).apply(db) == [2]
     assert query_all(settings.state_path, "SELECT version FROM schema_migrations ORDER BY version") == [(1,), (2,)]
     async with aiosqlite.connect(settings.state_path) as db:
-        assert await MigrationRunner(settings).apply(db) == [3]
+        assert await MigrationRunner(settings).apply(db) == [3, 4]
     assert query_all(settings.state_path, "SELECT version FROM schema_migrations ORDER BY version") == [
-        (1,), (2,), (3,),
+        (1,), (2,), (3,), (4,),
     ]
 
 
@@ -2574,7 +2605,7 @@ async def test_two_concurrent_initializers_apply_each_version_exactly_once(tmp_p
     )
 
     assert query_all(settings.state_path, "SELECT version, COUNT(*) FROM schema_migrations GROUP BY version") == [
-        (1, 1), (2, 1), (3, 1),
+        (1, 1), (2, 1), (3, 1), (4, 1),
     ]
     assert len(backup_paths(settings)) == 1
 
@@ -2596,6 +2627,8 @@ def test_wheel_contains_and_loads_baseline_and_numbered_sql_resources(tmp_path: 
     assert "orchestrator/state/schema.sql" in names
     assert "orchestrator/state/migrations/0002_workbench_core.sql" in names
     assert "orchestrator/state/migrations/0003_workbench_command_manifests.sql" in names
+    assert "orchestrator/state/migrations/0004_intent_authority_guards.sql" in names
+    assert "orchestrator/workbench/failures.py" in names
 
     site = tmp_path / "installed"
     subprocess.run(
@@ -2611,7 +2644,10 @@ def test_wheel_contains_and_loads_baseline_and_numbered_sql_resources(tmp_path: 
         "assert 'CREATE TABLE' in root.joinpath('schema.sql').read_text(); "
         "assert 'workbench_events' in root.joinpath('migrations','0002_workbench_core.sql').read_text(); "
         "assert 'workbench_command_manifests' in "
-        "root.joinpath('migrations','0003_workbench_command_manifests.sql').read_text()"
+        "root.joinpath('migrations','0003_workbench_command_manifests.sql').read_text(); "
+        "assert 'decision_queue_heads' in "
+        "root.joinpath('migrations','0004_intent_authority_guards.sql').read_text(); "
+        "from orchestrator.workbench.failures import Task3Failure"
     )
     env = {**os.environ, "PYTHONPATH": str(site)}
     loaded = subprocess.run(

@@ -277,6 +277,15 @@ class WorkbenchStore:
                 )
                 await self._insert_manifest(db, manifest)
                 await self._insert_event(db, event)
+                await db.execute(
+                    "UPDATE workbench_tasks SET last_transition_event_id=? WHERE id=?",
+                    (event.event_id, task_id),
+                )
+                await db.execute(
+                    "UPDATE workbench_branches SET last_transition_event_id=? "
+                    "WHERE task_id=? AND branch_id='main'",
+                    (event.event_id, task_id),
+                )
                 staged = await self._verify_ledger_db(db, task_id, include_projections=False)
                 self._require_valid(staged)
                 visible = await self._visible_events(db, task_id, "main", at_sequence=None)
@@ -505,8 +514,9 @@ class WorkbenchStore:
                     """
                     INSERT INTO workbench_branches(
                         task_id,branch_id,parent_branch_id,forked_from_sequence,
-                        forked_from_frame_version,created_by_event_id,status,created_at
-                    ) VALUES (?,?,?,?,?,?,'active',?)
+                        forked_from_frame_version,created_by_event_id,status,created_at,
+                        last_transition_event_id
+                    ) VALUES (?,?,?,?,?,?,'active',?,?)
                     """,
                     (
                         task_id,
@@ -516,6 +526,7 @@ class WorkbenchStore:
                         fork_frame,
                         event.event_id,
                         event.created_at,
+                        event.event_id,
                     ),
                 )
                 staged = await self._verify_ledger_db(db, task_id, include_projections=False)

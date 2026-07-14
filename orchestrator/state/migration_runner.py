@@ -17,12 +17,26 @@ from typing import Any, Iterable
 import aiosqlite
 
 from orchestrator.config import Settings
+from orchestrator.workbench.failures import (
+    Task3AuthorityRowCount,
+    Task3Failure,
+    preexisting_task3_authority_failure,
+)
 
 
 _MIGRATION_NAME = re.compile(r"^(?P<version>\d{4})_(?P<name>[a-z0-9][a-z0-9_]*)\.sql$")
 _TRANSACTION_KEYWORDS = {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}
 _BUSY_TIMEOUT_MS = 5_000
 _PRECONDITION_MARKER = re.compile(r"^migration_precondition:(?P<version>\d+):(?P<code>[a-z0-9_]+)$")
+_TASK3_AUTHORITY_TABLES = (
+    "decision_requests",
+    "evidence_refs",
+    "frame_edges",
+    "frame_nodes",
+    "frame_proposals",
+    "service_run_inputs",
+    "service_runs",
+)
 
 
 class MigrationError(RuntimeError):
@@ -48,14 +62,25 @@ class MigrationApplyError(MigrationError):
 class MigrationPreconditionError(MigrationError):
     """A numbered migration refused to invent authority missing from prior state."""
 
-    def __init__(self, version: int, code: str) -> None:
+    def __init__(self, version: int, code: str, *, failure: Task3Failure | None = None) -> None:
+        if version == 4 and code == "preexisting_task3_authority_without_events" and failure is None:
+            raise ValueError("migration 4 precondition requires its exact typed failure")
+        if (version != 4 or code != "preexisting_task3_authority_without_events") and failure is not None:
+            raise ValueError("typed Task-3 failure is valid only for the migration 4 authority precondition")
         self.version = version
         self.code = code
+        self.failure = failure
         if code == "preexisting_workbench_events_without_manifests":
             detail = "cannot derive exact command manifests from preexisting workbench events"
         else:
             detail = "migration precondition was not satisfied"
         super().__init__(f"migration {version} precondition failed [{code}]: {detail}")
+
+
+@dataclass(frozen=True)
+class _ParsedPreconditionMarker(Exception):
+    version: int
+    code: str
 
 
 @dataclass(frozen=True)
@@ -129,6 +154,12 @@ class MigrationRunner:
             raise
         except Exception as exc:
             normalized = _normalize_migration_error(exc, failed_version)
+            if isinstance(normalized, _ParsedPreconditionMarker):
+                try:
+                    normalized = await self._materialize_precondition_failure(db, normalized)
+                except asyncio.CancelledError as cancellation:
+                    await self._cleanup_failure(db, failed_version, cancellation, backup_path)
+                    raise
             await self._cleanup_failure(db, failed_version, normalized, backup_path)
             if isinstance(normalized, MigrationError):
                 if normalized is exc:
@@ -136,6 +167,24 @@ class MigrationRunner:
                 raise normalized from exc
             label = f"migration {failed_version}" if failed_version is not None else "migration batch"
             raise MigrationApplyError(f"{label} failed and was rolled back: {normalized}") from normalized
+
+    async def _materialize_precondition_failure(
+        self,
+        db: aiosqlite.Connection,
+        marker: _ParsedPreconditionMarker,
+    ) -> MigrationPreconditionError:
+        if marker.version != 4 or marker.code != "preexisting_task3_authority_without_events":
+            return MigrationPreconditionError(marker.version, marker.code)
+        counts: list[Task3AuthorityRowCount] = []
+        for table_name in _TASK3_AUTHORITY_TABLES:
+            row = await (await db.execute(f"SELECT COUNT(*) FROM {table_name}")).fetchone()
+            count = int(row[0]) if row is not None else 0
+            if count > 0:
+                counts.append(Task3AuthorityRowCount(table_name=table_name, row_count=count))
+        if not counts:
+            raise MigrationApplyError("migration 4 precondition marker had no nonempty authority rows")
+        failure = preexisting_task3_authority_failure(tuple(counts))
+        return MigrationPreconditionError(marker.version, marker.code, failure=failure)
 
     async def _commit_compatibility(self, db: aiosqlite.Connection) -> None:
         commit_task = asyncio.create_task(db.commit())
@@ -336,15 +385,17 @@ class MigrationRunner:
         backup_retained = bool(backup_path is not None and backup_path.is_file())
         cause = exc.__cause__
         notes = list(getattr(exc, "__notes__", ()))
+        failure = getattr(exc, "failure", None)
+        failure_payload = failure.model_dump(mode="json") if isinstance(failure, Task3Failure) else None
         cause_type = type(cause).__name__ if cause is not None else None
         cause_error = str(cause) if cause is not None else None
-        fingerprint = hashlib.sha256(
-            f"{version}|{type(exc).__name__}|{exc}|{cause_type}|{cause_error}|{notes}".encode(
-                "utf-8", errors="replace"
+        fingerprint_source = f"{version}|{type(exc).__name__}|{exc}|{cause_type}|{cause_error}|{notes}"
+        if failure_payload is not None:
+            fingerprint_source += "|" + json.dumps(
+                failure_payload, sort_keys=True, separators=(",", ":")
             )
-        ).hexdigest()[:24]
-        detail = json.dumps(
-            {
+        fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8", errors="replace")).hexdigest()[:24]
+        detail_payload: dict[str, object] = {
                 "version": version,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
@@ -357,9 +408,10 @@ class MigrationRunner:
                 "backup_published": backup_published,
                 "backup_retained": backup_retained,
                 "auto_restore": False,
-            },
-            sort_keys=True,
-        )
+        }
+        if failure_payload is not None:
+            detail_payload["failure"] = failure_payload
+        detail = json.dumps(detail_payload, sort_keys=True)
         try:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
@@ -397,7 +449,7 @@ def _normalize_migration_error(exc: Exception, failed_version: int | None) -> Ex
     version = int(marker.group("version"))
     if failed_version != version:
         return exc
-    return MigrationPreconditionError(version, marker.group("code"))
+    return _ParsedPreconditionMarker(version, marker.group("code"))
 
 
 def split_sql_statements(sql: str) -> list[str]:
