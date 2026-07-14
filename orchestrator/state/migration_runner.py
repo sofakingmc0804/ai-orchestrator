@@ -121,7 +121,21 @@ class MigrationRunner:
             raise MigrationApplyError(f"{label} failed and was rolled back: {exc}") from exc
 
     async def _commit_compatibility(self, db: aiosqlite.Connection) -> None:
-        await db.commit()
+        commit_task = asyncio.create_task(db.commit())
+        try:
+            await asyncio.shield(commit_task)
+        except asyncio.CancelledError as cancellation:
+            while not commit_task.done():
+                try:
+                    await asyncio.shield(commit_task)
+                except asyncio.CancelledError:
+                    continue
+            try:
+                commit_task.result()
+            except BaseException as commit_error:
+                cancellation.add_note(f"compatibility commit completed with {type(commit_error).__name__}: {commit_error}")
+                raise cancellation from commit_error
+            raise cancellation
 
     def _load_catalog(self) -> list[_Migration]:
         entries: Iterable[Any]

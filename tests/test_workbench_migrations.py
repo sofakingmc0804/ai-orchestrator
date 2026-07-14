@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import zipfile
 from pathlib import Path
 
@@ -39,6 +40,7 @@ WORKBENCH_TABLES = {
     "service_run_inputs",
     "evidence_refs",
     "learning_proposals",
+    "replacement_bootstrap_proofs",
     "quarantined_components",
 }
 
@@ -113,6 +115,67 @@ async def test_compatibility_cancellation_rolls_back_and_records_no_backup_repai
 
     columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(schema_migrations)")}
     assert columns == {"version", "applied_at"}
+    repairs = query_all(
+        settings.state_path,
+        "SELECT failure_detail FROM repair_queue WHERE failure_source='state_migration'",
+    )
+    assert len(repairs) == 1
+    detail = json.loads(str(repairs[0][0]))
+    assert detail["backup_published"] is False
+    assert detail["backup_retained"] is False
+
+
+@pytest.mark.asyncio
+async def test_cancellation_while_real_compatibility_commit_is_executing_is_atomic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = settings_for(tmp_path)
+    install_v1_fixture(settings)
+    commit_started = asyncio.Event()
+    release_commit = threading.Event()
+    loop = asyncio.get_running_loop()
+    commit_wait_was_cancelled = False
+
+    async with aiosqlite.connect(settings.state_path) as db:
+        original_execute = db._execute
+        intercepted = False
+
+        async def execute_with_gated_real_commit(function: object, *args: object, **kwargs: object) -> object:
+            nonlocal intercepted, commit_wait_was_cancelled
+            if not intercepted and getattr(function, "__name__", "") == "commit":
+                intercepted = True
+
+                def gated_real_commit() -> object:
+                    loop.call_soon_threadsafe(commit_started.set)
+                    if not release_commit.wait(timeout=10):
+                        raise TimeoutError("test did not release the queued compatibility commit")
+                    return function(*args, **kwargs)  # type: ignore[operator]
+
+                try:
+                    return await original_execute(gated_real_commit)
+                except asyncio.CancelledError:
+                    commit_wait_was_cancelled = True
+                    raise
+            return await original_execute(function, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(db, "_execute", execute_with_gated_real_commit)
+        apply_task = asyncio.create_task(MigrationRunner(settings).apply(db))
+        await asyncio.wait_for(commit_started.wait(), timeout=10)
+        apply_task.cancel()
+        release_commit.set()
+        with pytest.raises(asyncio.CancelledError):
+            await apply_task
+        assert commit_wait_was_cancelled is False
+        assert not db.in_transaction
+        await db.execute("BEGIN IMMEDIATE")
+        await db.rollback()
+
+    columns = {row[1] for row in query_all(settings.state_path, "PRAGMA table_info(schema_migrations)")}
+    assert columns == {"version", "applied_at", "name", "status", "checksum"}
+    assert query_all(
+        settings.state_path,
+        "SELECT version,name,status,checksum FROM schema_migrations ORDER BY version",
+    ) == [(1, "legacy_baseline", "applied", None)]
     repairs = query_all(
         settings.state_path,
         "SELECT failure_detail FROM repair_queue WHERE failure_source='state_migration'",
@@ -443,6 +506,22 @@ async def test_service_runs_store_exact_native_recovery_identity(tmp_path: Path)
             "session-1", "thread-1", "turn-1", "request-1", "tool-1", "question-group-1", "governed",
             '{"opaque":"handle-1"}',
         )
+        db.execute(
+            """
+            INSERT INTO service_runs(
+                run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,
+                adapter_contract_revision,account_id,profile_id,model_id,capability_inventory_revision,
+                transport_generation,native_session_id,native_thread_id,native_turn_id,native_request_id,
+                native_tool_use_id,native_question_group_id,launch_origin,updated_at
+            ) VALUES ('run-2','t','claude','researcher',1,'main','running','anthropic','contract-v3',
+                      'acct-1','profile-1','claude-opus','cap-v7','transport-v2','session-1','thread-1',
+                      'turn-2','request-2','tool-1','question-group-1','governed','now')
+            """
+        )
+        assert db.execute(
+            "SELECT native_request_id,native_tool_use_id,native_question_group_id FROM service_runs "
+            "WHERE run_id='run-2'"
+        ).fetchone() == ("request-2", "tool-1", "question-group-1")
         exact = (
             "SELECT COUNT(*) FROM service_runs WHERE adapter_provider=? AND account_id=? AND profile_id=? "
             "AND model_id=? AND native_thread_id=? AND native_turn_id=? AND native_request_id=?"
@@ -462,8 +541,119 @@ async def test_service_runs_store_exact_native_recovery_identity(tmp_path: Path)
                     transport_generation,native_session_id,native_thread_id,native_turn_id,native_request_id,
                     launch_origin,updated_at
                 ) VALUES ('run-duplicate','t','claude','reviewer',1,'main','running','anthropic','contract-v3',
-                          'acct-1','profile-1','claude-opus','cap-v7','transport-v2','session-2','thread-1',
+                          'acct-1','profile-1','claude-opus','cap-v7','transport-v2','session-1','thread-1',
                           'turn-1','request-1','governed','now')
+                """
+            )
+        for suffix, tool_use_id, question_group_id in (
+            ("tool-without-request", "tool-orphan", None),
+            ("question-without-request", None, "question-orphan"),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(
+                    """
+                    INSERT INTO service_runs(
+                        run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,
+                        adapter_contract_revision,account_id,profile_id,model_id,capability_inventory_revision,
+                        transport_generation,native_session_id,native_thread_id,native_turn_id,native_tool_use_id,
+                        native_question_group_id,launch_origin,updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        f"run-{suffix}", "t", "claude", "reviewer", 1, "main", "running", "anthropic",
+                        "contract-v3", "acct-1", "profile-1", "claude-opus", "cap-v7", "transport-v2",
+                        f"session-{suffix}", "thread-chain", "turn-chain", tool_use_id, question_group_id,
+                        "governed", "now",
+                    ),
+                )
+        for column, request_id, tool_use_id, question_group_id in (
+            ("request", " ", None, None),
+            ("tool", "request-blank-tool", " ", None),
+            ("question", "request-blank-question", None, " "),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(
+                    """
+                    INSERT INTO service_runs(
+                        run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,
+                        adapter_contract_revision,account_id,profile_id,model_id,capability_inventory_revision,
+                        transport_generation,native_session_id,native_thread_id,native_turn_id,native_request_id,
+                        native_tool_use_id,native_question_group_id,launch_origin,updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        f"run-blank-{column}", "t", "claude", "reviewer", 1, "main", "running", "anthropic",
+                        "contract-v3", "acct-1", "profile-1", "claude-opus", "cap-v7", "transport-v2",
+                        f"session-blank-{column}", "thread-blank", "turn-blank", request_id, tool_use_id,
+                        question_group_id, "governed", "now",
+                    ),
+                )
+        required_envelope = (
+            "adapter_provider", "adapter_contract_revision", "account_id", "profile_id", "model_id",
+            "capability_inventory_revision", "transport_generation", "native_session_id", "native_thread_id",
+            "launch_origin",
+        )
+        base_envelope: dict[str, object] = {
+            "adapter_provider": "anthropic",
+            "adapter_contract_revision": "contract-v3",
+            "account_id": "acct-1",
+            "profile_id": "profile-1",
+            "model_id": "claude-opus",
+            "capability_inventory_revision": "cap-v7",
+            "transport_generation": "transport-v2",
+            "native_session_id": "session-envelope",
+            "native_thread_id": "thread-envelope",
+            "launch_origin": "governed",
+        }
+        for column in required_envelope:
+            for label, missing in (("null", None), ("blank", " ")):
+                envelope = dict(base_envelope)
+                envelope[column] = missing
+                if column != "native_session_id":
+                    envelope["native_session_id"] = f"session-{column}-{label}"
+                with pytest.raises(sqlite3.IntegrityError):
+                    db.execute(
+                        """
+                        INSERT INTO service_runs(
+                            run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,
+                            adapter_contract_revision,account_id,profile_id,model_id,
+                            capability_inventory_revision,transport_generation,native_session_id,native_thread_id,
+                            launch_origin,native_handle_json,updated_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            f"missing-{column}-{label}", "t", "claude", "reviewer", 1, "main", "running",
+                            envelope["adapter_provider"], envelope["adapter_contract_revision"],
+                            envelope["account_id"], envelope["profile_id"], envelope["model_id"],
+                            envelope["capability_inventory_revision"], envelope["transport_generation"],
+                            envelope["native_session_id"], envelope["native_thread_id"],
+                            envelope["launch_origin"], "{}", "now",
+                        ),
+                    )
+        for suffix in ("one", "two"):
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(
+                    """
+                    INSERT INTO service_runs(
+                        run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,
+                        adapter_contract_revision,account_id,profile_id,model_id,capability_inventory_revision,
+                        transport_generation,native_session_id,native_thread_id,native_request_id,
+                        launch_origin,updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        f"run-null-turn-{suffix}", "t", "claude", "reviewer", 1, "main", "running",
+                        "anthropic", "contract-v3", "acct-1", "profile-1", "claude-opus", "cap-v7",
+                        "transport-v2", f"session-null-turn-{suffix}", "thread-null-turn",
+                        "request-null-turn", "governed", "now",
+                    ),
+                )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO service_runs(
+                    run_id,task_id,service,role,frame_version,branch_id,state,native_handle_json,updated_at
+                ) VALUES ('run-handle-only','t','claude','reviewer',1,'main','running','{"opaque":"orphan"}','now')
                 """
             )
         with pytest.raises(sqlite3.IntegrityError):
@@ -507,8 +697,27 @@ async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_p
             """
         )
         db.execute(
+            """
+            INSERT INTO workbench_events(
+                event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,
+                command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,checksum,created_at
+            ) VALUES ('event-b','b',1,'evidence.observed',1,'service','run-b','main','cmd-b',1,3,'{}',
+                      'idem-b','','sum-b','now')
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO workbench_events(
+                event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,
+                command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,checksum,created_at
+            ) VALUES ('event-a-invalidated','a',2,'evidence.invalidated',1,'service','run-a','main',
+                      'cmd-a-invalidated',1,3,'{}','idem-a-invalidated','sum-a','sum-a-invalidated','later')
+            """
+        )
+        db.execute(
             "INSERT INTO frame_nodes(node_id,task_id,branch_id,frame_version,node_key,kind,text,status,provenance_json,"
-            "created_at,updated_at) VALUES ('success-a','a','main',3,'success','success','Complete','confirmed','{}','now','now')"
+            "created_by_event_id,created_at,updated_at) VALUES "
+            "('success-a','a','main',3,'success','success','Complete','confirmed','{}','event-a','now','now')"
         )
         db.execute(
             "INSERT INTO service_runs(run_id,task_id,service,role,frame_version,branch_id,state,updated_at) "
@@ -517,48 +726,55 @@ async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_p
         db.execute(
             """
             INSERT INTO evidence_refs(
-                id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                id,task_id,branch_id,success_node_id,success_node_frame_version,frame_version,
+                observed_head_event_id,observed_head_sequence,predicate_id,
                 predicate_text,predicate_json,expected_outcome,authority_kind,authority_locator,verifier_kind,
                 verifier_identity,verification_status,observed_at,valid_until,observed_value_checksum,
-                content_checksum,source_event_id,producing_run_id,metadata_json
+                content_checksum,source_event_id,source_event_sequence,producing_run_id,metadata_json
             ) VALUES (
-                'evidence-a','a','main','success-a',3,7,'predicate-1','Output exists',
+                'evidence-a','a','main','success-a',3,3,'event-a',1,'predicate-1','Output exists',
                 '{"op":"exists"}','present','filesystem','C:/proof/result.json','script','verify-result-v1',
                 'pass','2026-07-13T20:00:00Z','2026-07-14T20:00:00Z','observed-sum','content-sum',
-                'event-a','run-a','{"receipt":"r1"}'
+                'event-a',1,'run-a','{"receipt":"r1"}'
             )
             """
         )
         row = db.execute(
             """
-            SELECT branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,predicate_text,
+            SELECT branch_id,success_node_id,success_node_frame_version,frame_version,observed_head_event_id,
+                   observed_head_sequence,predicate_id,predicate_text,
                    predicate_json,expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
                    verification_status,observed_at,valid_until,observed_value_checksum,content_checksum,
-                   source_event_id,producing_run_id,metadata_json
+                   source_event_id,source_event_sequence,producing_run_id,metadata_json
             FROM evidence_refs WHERE id='evidence-a'
             """
         ).fetchone()
-        assert row[0:6] == ("main", "success-a", 3, 7, "predicate-1", "Output exists")
-        assert row[12] == "pass"
+        assert row[0:8] == ("main", "success-a", 3, 3, "event-a", 1, "predicate-1", "Output exists")
+        assert row[14] == "pass"
         assert row[-2:] == ("run-a", '{"receipt":"r1"}')
         with pytest.raises(sqlite3.IntegrityError):
-            db.execute(
-                """
-                INSERT INTO evidence_refs(
-                    id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
-                    expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
-                    verification_status,observed_at,observed_value_checksum,metadata_json
-                ) VALUES ('cross','b','main','success-a',3,7,'p','ok','filesystem','x','script','v','pass','now','sum','{}')
-                """
-            )
+            db.execute("UPDATE evidence_refs SET predicate_text='rewritten' WHERE id='evidence-a'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("DELETE FROM evidence_refs WHERE id='evidence-a'")
+        db.execute(
+            """
+            UPDATE evidence_refs
+            SET invalidated_at='later',invalidated_event_id='event-a-invalidated',
+                invalidated_event_sequence=2,invalidation_reason='superseded'
+            WHERE id='evidence-a'
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE evidence_refs SET invalidation_reason='rewritten' WHERE id='evidence-a'")
         with pytest.raises(sqlite3.IntegrityError):
             db.execute(
                 """
                 INSERT INTO evidence_refs(
-                    id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                    id,task_id,branch_id,success_node_id,success_node_frame_version,frame_version,
+                    observed_head_event_id,observed_head_sequence,predicate_id,
                     expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
                     verification_status,observed_at,observed_value_checksum,metadata_json
-                ) VALUES ('wrong-frame','a','main','success-a',2,7,'p','ok','filesystem','x','script','v',
+                ) VALUES ('cross','b','main','success-a',3,3,'event-b',1,'p','ok','filesystem','x','script','v',
                           'pass','now','sum','{}')
                 """
             )
@@ -566,10 +782,24 @@ async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_p
             db.execute(
                 """
                 INSERT INTO evidence_refs(
-                    id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                    id,task_id,branch_id,success_node_id,success_node_frame_version,frame_version,
+                    observed_head_event_id,observed_head_sequence,predicate_id,
+                    expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
+                    verification_status,observed_at,observed_value_checksum,metadata_json
+                ) VALUES ('wrong-frame','a','main','success-a',2,3,'event-a',1,'p','ok','filesystem','x','script','v',
+                          'pass','now','sum','{}')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO evidence_refs(
+                    id,task_id,branch_id,success_node_id,success_node_frame_version,frame_version,
+                    observed_head_event_id,observed_head_sequence,predicate_id,
                     expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
                     verification_status,observed_at,observed_value_checksum,invalidated_at,metadata_json
-                ) VALUES ('partial-invalidation','a','main','success-a',3,7,'p','ok','filesystem','x','script','v',
+                ) VALUES ('partial-invalidation','a','main','success-a',3,3,'event-a',1,'p','ok','filesystem',
+                          'x','script','v',
                           'pass','now','sum','now','{}')
                 """
             )
@@ -577,13 +807,132 @@ async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_p
             db.execute(
                 """
                 INSERT INTO evidence_refs(
-                    id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                    id,task_id,branch_id,success_node_id,success_node_frame_version,frame_version,
+                    observed_head_event_id,observed_head_sequence,predicate_id,
                     expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
                     verification_status,observed_at,observed_value_checksum,metadata_json
-                ) VALUES ('bad-status','a','main','success-a',3,7,'p','ok','filesystem','x','script','v',
+                ) VALUES ('bad-status','a','main','success-a',3,3,'event-a',1,'p','ok','filesystem','x','script','v',
                           'unverified','now','sum','{}')
                 """
             )
+
+
+@pytest.mark.asyncio
+async def test_completion_evidence_rejects_nonexistent_wrong_kind_and_invisible_lineage(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('lineage','Lineage','verifying','child',3,'now','now')"
+        )
+        db.execute(
+            "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) "
+            "VALUES ('lineage','main','active','now')"
+        )
+        db.execute(
+            "INSERT INTO workbench_branches(task_id,branch_id,parent_branch_id,forked_from_sequence,"
+            "forked_from_frame_version,status,created_at) VALUES "
+            "('lineage','child','main',3,3,'active','now'),"
+            "('lineage','sibling','main',1,3,'active','now')"
+        )
+        events = (
+            ("main-success-event", 1, 2, "frame.success.confirmed", "main", "{}"),
+            ("sibling-event", 2, 3, "frame.success.confirmed", "sibling", "{}"),
+            ("visible-source-event", 3, 3, "evidence.source.captured", "main", "{}"),
+            ("child-head-event", 4, 3, "evidence.observed", "child", "{}"),
+            ("late-main-event", 5, 3, "frame.success.confirmed", "main", "{}"),
+            ("child-invalidation-event", 6, 3, "evidence.invalidated", "child", "{}"),
+            ("sibling-invalidation-event", 7, 3, "evidence.invalidated", "sibling", "{}"),
+        )
+        event_sequences = {event_id: sequence for event_id, sequence, _, _, _, _ in events}
+        for event_id, sequence, event_frame_version, event_type, branch_id, payload in events:
+            db.execute(
+                """
+                INSERT INTO workbench_events(
+                    event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,
+                    command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,
+                    checksum,created_at
+                    ) VALUES (?,?,?,?,1,'service','verifier',?,?,1,?, ?,?,?,?,'now')
+                """,
+                (
+                    event_id, "lineage", sequence, event_type, branch_id, f"cmd-{event_id}",
+                    event_frame_version, payload,
+                    f"idem-{event_id}", f"prior-{sequence}", f"sum-{sequence}",
+                ),
+            )
+        nodes = (
+            ("success-main", "main", 2, "success-main", "success", "main-success-event"),
+            ("wrong-kind", "child", 3, "wrong-kind", "action", "child-head-event"),
+            ("success-sibling", "sibling", 3, "success-sibling", "success", "sibling-event"),
+            ("success-late-main", "main", 3, "success-late-main", "success", "late-main-event"),
+            ("success-unanchored", "child", 3, "success-unanchored", "success", None),
+        )
+        for node_id, branch_id, node_frame_version, node_key, kind, created_by in nodes:
+            db.execute(
+                """
+                INSERT INTO frame_nodes(
+                    node_id,task_id,branch_id,frame_version,node_key,kind,text,status,provenance_json,
+                    created_by_event_id,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,'node','confirmed','{}',?,'now','now')
+                """,
+                (node_id, "lineage", branch_id, node_frame_version, node_key, kind, created_by),
+            )
+        db.execute(
+            "INSERT INTO service_runs(run_id,task_id,service,role,frame_version,branch_id,state,updated_at) "
+            "VALUES ('lineage-run','lineage','codex','verifier',3,'child','verifying','now')"
+        )
+
+        def insert_evidence(
+            evidence_id: str,
+            node_id: str = "success-main",
+            success_node_frame_version: int = 2,
+            head_event_id: str = "child-head-event",
+            head_sequence: int = 4,
+            source_event_id: str = "visible-source-event",
+            invalidated_event_id: str | None = None,
+        ) -> None:
+            db.execute(
+                """
+                INSERT INTO evidence_refs(
+                    id,task_id,branch_id,success_node_id,success_node_frame_version,frame_version,
+                    observed_head_event_id,observed_head_sequence,predicate_id,
+                    predicate_text,expected_outcome,authority_kind,authority_locator,verifier_kind,
+                    verifier_identity,verification_status,observed_at,observed_value_checksum,source_event_id,
+                    source_event_sequence,producing_run_id,invalidated_at,invalidated_event_id,
+                    invalidated_event_sequence,invalidation_reason,metadata_json
+                ) VALUES (?,?,?,?,?,3,?,?,'predicate','exists','present','filesystem','proof','script','verifier',
+                          'pass','now','sum',?,?,'lineage-run',?,?,?,?,'{}')
+                """,
+                (
+                    evidence_id, "lineage", "child", node_id, success_node_frame_version,
+                    head_event_id, head_sequence, source_event_id, event_sequences[source_event_id],
+                    "later" if invalidated_event_id else None, invalidated_event_id,
+                    event_sequences[invalidated_event_id] if invalidated_event_id else None,
+                    "superseded" if invalidated_event_id else None,
+                ),
+            )
+
+        insert_evidence("valid-ancestor")
+        insert_evidence("valid-invalidation", invalidated_event_id="child-invalidation-event")
+        for evidence_id, node_id, node_frame, head_event, head, source, invalidation in (
+            ("nonexistent-head", "success-main", 2, "child-head-event", 99, "visible-source-event", None),
+            ("wrong-head-branch", "success-main", 2, "sibling-event", 2, "visible-source-event", None),
+            ("wrong-kind", "wrong-kind", 3, "child-head-event", 4, "visible-source-event", None),
+            ("sibling-node", "success-sibling", 3, "child-head-event", 4, "visible-source-event", None),
+            ("late-ancestor-node", "success-late-main", 3, "child-head-event", 4, "visible-source-event", None),
+            ("unanchored-node", "success-unanchored", 3, "child-head-event", 4, "visible-source-event", None),
+            ("sibling-source", "success-main", 2, "child-head-event", 4, "sibling-event", None),
+            ("late-ancestor-source", "success-main", 2, "child-head-event", 4, "late-main-event", None),
+            ("source-after-head", "success-main", 2, "child-head-event", 4, "child-invalidation-event", None),
+            ("sibling-invalidation", "success-main", 2, "child-head-event", 4, "visible-source-event", "sibling-invalidation-event"),
+            ("early-invalidation", "success-main", 2, "child-head-event", 4, "visible-source-event", "visible-source-event"),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                insert_evidence(evidence_id, node_id, node_frame, head_event, head, source, invalidation)
 
 
 @pytest.mark.asyncio
@@ -591,13 +940,98 @@ async def test_quarantine_stages_before_activation_and_requires_replacement_proo
     settings = settings_for(tmp_path)
     await StateStore(settings).initialize()
     with sqlite3.connect(settings.state_path) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute(
+            "INSERT INTO workbench_tasks(id,title,state,active_branch_id,current_frame_version,created_at,updated_at) "
+            "VALUES ('quarantine-task','Quarantine','repairing','main',1,'now','now')"
+        )
+        db.execute(
+            "INSERT INTO workbench_branches(task_id,branch_id,status,created_at) "
+            "VALUES ('quarantine-task','main','active','now')"
+        )
+        stage_payload = json.dumps(
+            {
+                "component_type": "scheduled_task",
+                "component_id": "legacy-pinger",
+                "replacement_build_id": "build-2",
+                "manifest_checksum": "manifest-sum",
+            },
+            sort_keys=True,
+        )
+        proof_fields = {
+            "proof_id": "proof-1",
+            "receipt_id": "receipt-1",
+            "component_type": "scheduled_task",
+            "component_id": "legacy-pinger",
+            "replacement_build_id": "build-2",
+            "proof_kind": "live_bootstrap",
+            "status": "succeeded",
+            "proof_checksum": "proof-sum",
+            "authority_kind": "runtime",
+            "authority_locator": "receipt://one",
+            "verifier_kind": "script",
+            "verifier_identity": "verifier",
+        }
+        proof_payload = json.dumps(proof_fields, sort_keys=True)
+        wrong_type_fields = dict(proof_fields)
+        wrong_type_fields.update(
+            proof_id="wrong-type-proof", receipt_id="wrong-type", proof_checksum="wrong-sum",
+            authority_locator="receipt://wrong",
+        )
+        wrong_type_payload = json.dumps(wrong_type_fields, sort_keys=True)
+        activation_fields = {
+            key: proof_fields[key]
+            for key in (
+                "proof_id", "receipt_id", "component_type", "component_id", "replacement_build_id",
+                "proof_checksum",
+            )
+        }
+        activation_payload = json.dumps(activation_fields, sort_keys=True)
+        wrong_activation_payload = json.dumps(
+            {
+                **activation_fields,
+                "replacement_build_id": "wrong-build",
+            },
+            sort_keys=True,
+        )
+        q2_stage_payload = json.dumps(
+            {
+                "component_type": "scheduled_task",
+                "component_id": "legacy-pinger",
+                "replacement_build_id": "build-2",
+                "manifest_checksum": "sum-2",
+            },
+            sort_keys=True,
+        )
+        for event_id, sequence, event_type, payload in (
+            ("stage-event", 1, "component.quarantine_staged", stage_payload),
+            ("proof-event", 2, "component.replacement_bootstrap_succeeded", proof_payload),
+            ("wrong-proof-event", 3, "component.health_observed", wrong_type_payload),
+            ("activation-event", 4, "component.quarantine_activated", activation_payload),
+            ("wrong-activation-event", 5, "component.quarantine_activated", wrong_activation_payload),
+            ("q2-stage-event", 6, "component.quarantine_staged", q2_stage_payload),
+        ):
+            db.execute(
+                """
+                INSERT INTO workbench_events(
+                    event_id,task_id,sequence,event_type,event_schema_version,actor_kind,actor_id,branch_id,
+                    command_id,command_sequence,frame_version,payload_json,idempotency_key,prior_checksum,
+                    checksum,created_at
+                ) VALUES (?,?,?,?,1,'service','repairer','main',?,1,1,?,?,?,?, 'now')
+                """,
+                (
+                    event_id, "quarantine-task", sequence, event_type, f"cmd-{event_id}", payload,
+                    f"idem-{event_id}", f"prior-{sequence}", f"sum-{sequence}",
+                ),
+            )
         db.execute(
             """
             INSERT INTO quarantined_components(
-                id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
-                preserved_read,metadata_json
-            ) VALUES ('q1','scheduled_task','legacy-pinger','periodically pings a UI','candidate',
-                      '{"action":"disable_after_proof"}','manifest-sum','now',1,'{}')
+                id,task_id,branch_id,component_type,component_id,replacement_build_id,behavior,state,
+                manifest_json,manifest_checksum,staged_at,staged_event_id,preserved_read,metadata_json
+            ) VALUES ('q1','quarantine-task','main','scheduled_task','legacy-pinger','build-2',
+                      'periodically pings a UI','candidate','{"action":"disable_after_proof"}',
+                      'manifest-sum','now','stage-event',1,'{}')
             """
         )
         assert db.execute("SELECT state FROM quarantined_components WHERE id='q1'").fetchone() == ("candidate",)
@@ -605,53 +1039,150 @@ async def test_quarantine_stages_before_activation_and_requires_replacement_proo
             db.execute(
                 """
                 INSERT INTO quarantined_components(
-                    id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
+                    id,task_id,branch_id,component_type,component_id,replacement_build_id,behavior,state,
+                    manifest_json,manifest_checksum,staged_at,staged_event_id,preserved_read,metadata_json
+                ) VALUES ('duplicate','quarantine-task','main','scheduled_task','legacy-pinger','build-2',
+                          'duplicate','candidate','{}','sum','now','stage-event',1,'{}')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "UPDATE quarantined_components SET state='released',released_at='now',release_reason='skip' "
+                "WHERE id='q1'"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO quarantined_components(
+                    id,task_id,branch_id,component_type,component_id,replacement_build_id,behavior,state,
+                    manifest_json,manifest_checksum,staged_at,staged_event_id,replacement_bootstrap_proof_id,
+                    replacement_bootstrap_receipt_id,activated_at,activated_event_id,activated_event_sequence,
                     preserved_read,metadata_json
-                ) VALUES ('q2','scheduled_task','legacy-pinger','duplicate','shadow_readonly','{}','sum','now',1,'{}')
-                """
-            )
-        db.execute(
-            "UPDATE quarantined_components SET state='released',released_at='now',release_reason='superseded' WHERE id='q1'"
-        )
-        db.execute(
-            """
-            INSERT INTO quarantined_components(
-                id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
-                preserved_read,metadata_json
-            ) VALUES ('q2','scheduled_task','legacy-pinger','shadow replacement','shadow_readonly','{}','sum','now',1,'{}')
-            """
-        )
-        with pytest.raises(sqlite3.IntegrityError):
-            db.execute("UPDATE quarantined_components SET state='active' WHERE id='q2'")
-        with pytest.raises(sqlite3.IntegrityError):
-            db.execute(
-                """
-                INSERT INTO quarantined_components(
-                    id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
-                    replacement_bootstrap_receipt_id,activated_at,activated_event_id,preserved_read,metadata_json
-                ) VALUES ('direct-active','scheduled_task','other-pinger','skipped staging','active','{}','sum','now',
-                          'receipt-1','now','event-proof',1,'{}')
+                ) VALUES ('direct-active','quarantine-task','main','scheduled_task','other-pinger','build-2',
+                          'skipped staging','active','{}','sum','now','stage-event','proof-1','receipt-1','now',
+                          'activation-event',4,1,'{}')
                 """
             )
         with pytest.raises(sqlite3.IntegrityError):
             db.execute(
                 """
                 INSERT INTO quarantined_components(
-                    id,component_type,component_id,behavior,state,manifest_json,manifest_checksum,staged_at,
-                    legacy_data_store,preserved_read,metadata_json
-                ) VALUES ('legacy-missing-proof','sqlite_store','legacy-db','legacy rows','candidate','{}','sum','now',
-                          1,1,'{}')
+                    id,task_id,branch_id,component_type,component_id,replacement_build_id,behavior,state,
+                    manifest_json,manifest_checksum,staged_at,staged_event_id,legacy_data_store,
+                    preserved_read,metadata_json
+                ) VALUES ('legacy-missing-proof','quarantine-task','main','sqlite_store','legacy-db','build-2',
+                          'legacy rows','candidate','{}','sum','now','stage-event',1,1,'{}')
+                """
+            )
+        db.execute("UPDATE quarantined_components SET state='shadow_readonly' WHERE id='q1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE quarantined_components SET state='active' WHERE id='q1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO replacement_bootstrap_proofs(
+                    proof_id,receipt_id,task_id,branch_id,component_type,component_id,replacement_build_id,
+                    proof_kind,status,
+                    authority_kind,authority_locator,verifier_kind,verifier_identity,proof_event_id,
+                    proof_event_sequence,proof_json,proof_checksum,created_at
+                ) VALUES ('wrong-type-proof','wrong-type','quarantine-task','main','scheduled_task',
+                          'legacy-pinger','build-2','live_bootstrap','succeeded','runtime','receipt://wrong','script','verifier',
+                          'wrong-proof-event',3,'{}','wrong-sum','now')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO replacement_bootstrap_proofs(
+                    proof_id,receipt_id,task_id,branch_id,component_type,component_id,replacement_build_id,
+                    proof_kind,status,
+                    authority_kind,authority_locator,verifier_kind,verifier_identity,proof_event_id,
+                    proof_event_sequence,proof_json,proof_checksum,created_at
+                ) VALUES ('wrong-build-proof','receipt-1','quarantine-task','main','scheduled_task',
+                          'legacy-pinger','other-build','live_bootstrap','succeeded','runtime','receipt://one','script','verifier',
+                          'proof-event',2,'{}','wrong-build-sum','now')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO replacement_bootstrap_proofs(
+                    proof_id,receipt_id,task_id,branch_id,component_type,component_id,replacement_build_id,
+                    proof_kind,status,
+                    authority_kind,authority_locator,verifier_kind,verifier_identity,proof_event_id,
+                    proof_event_sequence,proof_json,proof_checksum,created_at
+                ) VALUES ('failed-proof','receipt-1','quarantine-task','main','scheduled_task',
+                          'legacy-pinger','build-2','live_bootstrap','failed','runtime','receipt://one','script','verifier',
+                          'proof-event',2,'{}','failed-sum','now')
+                """
+            )
+        db.execute(
+            """
+            INSERT INTO replacement_bootstrap_proofs(
+                proof_id,receipt_id,task_id,branch_id,component_type,component_id,replacement_build_id,
+                proof_kind,status,
+                authority_kind,authority_locator,verifier_kind,verifier_identity,proof_event_id,
+                proof_event_sequence,proof_json,proof_checksum,created_at
+            ) VALUES ('proof-1','receipt-1','quarantine-task','main','scheduled_task','legacy-pinger','build-2',
+                      'live_bootstrap','succeeded','runtime','receipt://one','script','verifier','proof-event',2,
+                      '{"validated":true}','proof-sum','now')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                UPDATE quarantined_components
+                SET replacement_bootstrap_proof_id='proof-1',replacement_bootstrap_receipt_id='receipt-1',
+                    activated_at='now',activated_event_id='wrong-activation-event',activated_event_sequence=5,
+                    state='active'
+                WHERE id='q1'
                 """
             )
         db.execute(
             """
             UPDATE quarantined_components
-            SET replacement_bootstrap_receipt_id='receipt-2',activated_at='now',activated_event_id='event-proof',
-                state='active'
-            WHERE id='q2'
+            SET replacement_bootstrap_proof_id='proof-1',replacement_bootstrap_receipt_id='receipt-1',
+                activated_at='now',activated_event_id='activation-event',activated_event_sequence=4,state='active'
+            WHERE id='q1'
             """
         )
-        assert db.execute("SELECT state FROM quarantined_components WHERE id='q2'").fetchone() == ("active",)
+        assert db.execute("SELECT state FROM quarantined_components WHERE id='q1'").fetchone() == ("active",)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE quarantined_components SET replacement_bootstrap_receipt_id='other' WHERE id='q1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE quarantined_components SET manifest_checksum='changed' WHERE id='q1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE quarantined_components SET state='shadow_readonly' WHERE id='q1'")
+        db.execute(
+            "UPDATE quarantined_components SET state='released',released_at='now',release_reason='cutover complete' "
+            "WHERE id='q1'"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE quarantined_components SET state='candidate' WHERE id='q1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE replacement_bootstrap_proofs SET proof_checksum='changed' WHERE proof_id='proof-1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("DELETE FROM replacement_bootstrap_proofs WHERE proof_id='proof-1'")
+        db.execute(
+            """
+            INSERT INTO quarantined_components(
+                id,task_id,branch_id,component_type,component_id,replacement_build_id,behavior,state,
+                manifest_json,manifest_checksum,staged_at,staged_event_id,preserved_read,metadata_json
+            ) VALUES ('q2','quarantine-task','main','scheduled_task','legacy-pinger','build-2','new candidate',
+                      'candidate','{}','sum-2','later','q2-stage-event',1,'{}')
+            """
+        )
+        db.execute("UPDATE quarantined_components SET state='shadow_readonly' WHERE id='q2'")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                UPDATE quarantined_components
+                SET replacement_bootstrap_proof_id='proof-1',replacement_bootstrap_receipt_id='receipt-1',
+                    activated_at='later',activated_event_id='activation-event',activated_event_sequence=4,
+                    state='active'
+                WHERE id='q2'
+                """
+            )
 
 
 def test_migration_two_contains_no_transcript_content_storage() -> None:

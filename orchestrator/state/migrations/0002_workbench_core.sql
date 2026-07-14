@@ -45,6 +45,7 @@ CREATE TABLE workbench_events (
     checksum TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (task_id, event_id),
+    UNIQUE (task_id, event_id, sequence),
     UNIQUE (task_id, sequence),
     UNIQUE (task_id, idempotency_key),
     UNIQUE (task_id, command_id, command_sequence),
@@ -278,14 +279,39 @@ CREATE TABLE service_runs (
         (
             native_session_id IS NULL AND native_thread_id IS NULL AND native_turn_id IS NULL
             AND native_request_id IS NULL AND native_tool_use_id IS NULL AND native_question_group_id IS NULL
+            AND native_handle_json IS NULL
         )
         OR (
-            adapter_provider IS NOT NULL AND adapter_contract_revision IS NOT NULL
-            AND account_id IS NOT NULL AND profile_id IS NOT NULL AND model_id IS NOT NULL
-            AND capability_inventory_revision IS NOT NULL AND transport_generation IS NOT NULL
-            AND native_session_id IS NOT NULL AND native_thread_id IS NOT NULL AND launch_origin IS NOT NULL
+            adapter_provider IS NOT NULL AND length(trim(adapter_provider)) > 0
+            AND adapter_contract_revision IS NOT NULL AND length(trim(adapter_contract_revision)) > 0
+            AND account_id IS NOT NULL AND length(trim(account_id)) > 0
+            AND profile_id IS NOT NULL AND length(trim(profile_id)) > 0
+            AND model_id IS NOT NULL AND length(trim(model_id)) > 0
+            AND capability_inventory_revision IS NOT NULL AND length(trim(capability_inventory_revision)) > 0
+            AND transport_generation IS NOT NULL AND length(trim(transport_generation)) > 0
+            AND native_session_id IS NOT NULL AND length(trim(native_session_id)) > 0
+            AND native_thread_id IS NOT NULL AND length(trim(native_thread_id)) > 0
+            AND launch_origin IS NOT NULL AND length(trim(launch_origin)) > 0
         )
     ),
+    CHECK (
+        native_request_id IS NULL
+        OR (native_turn_id IS NOT NULL AND length(trim(native_turn_id)) > 0)
+    ),
+    CHECK (
+        native_tool_use_id IS NULL
+        OR (native_request_id IS NOT NULL AND length(trim(native_request_id)) > 0)
+    ),
+    CHECK (
+        native_question_group_id IS NULL
+        OR (native_request_id IS NOT NULL AND length(trim(native_request_id)) > 0)
+    ),
+    CHECK (native_session_id IS NULL OR length(trim(native_session_id)) > 0),
+    CHECK (native_thread_id IS NULL OR length(trim(native_thread_id)) > 0),
+    CHECK (native_turn_id IS NULL OR length(trim(native_turn_id)) > 0),
+    CHECK (native_request_id IS NULL OR length(trim(native_request_id)) > 0),
+    CHECK (native_tool_use_id IS NULL OR length(trim(native_tool_use_id)) > 0),
+    CHECK (native_question_group_id IS NULL OR length(trim(native_question_group_id)) > 0),
     FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
     FOREIGN KEY (task_id, receipt_event_id) REFERENCES workbench_events(task_id, event_id)
 );
@@ -293,20 +319,29 @@ CREATE TABLE service_runs (
 CREATE INDEX idx_service_runs_task_branch_state
 ON service_runs(task_id, branch_id, state);
 
-CREATE UNIQUE INDEX idx_service_runs_native_session_identity
+CREATE INDEX idx_service_runs_native_session_identity
 ON service_runs(adapter_provider, account_id, profile_id, native_session_id)
 WHERE native_session_id IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_service_runs_native_request_identity
-ON service_runs(adapter_provider, account_id, profile_id, native_thread_id, native_turn_id, native_request_id)
+ON service_runs(
+    adapter_provider, account_id, profile_id, native_session_id, native_thread_id, native_turn_id,
+    native_request_id
+)
 WHERE native_request_id IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_service_runs_native_tool_identity
-ON service_runs(adapter_provider, account_id, profile_id, native_thread_id, native_tool_use_id)
+ON service_runs(
+    adapter_provider, account_id, profile_id, native_session_id, native_thread_id, native_turn_id,
+    native_request_id, native_tool_use_id
+)
 WHERE native_tool_use_id IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_service_runs_native_question_identity
-ON service_runs(adapter_provider, account_id, profile_id, native_thread_id, native_question_group_id)
+ON service_runs(
+    adapter_provider, account_id, profile_id, native_session_id, native_thread_id, native_turn_id,
+    native_request_id, native_question_group_id
+)
 WHERE native_question_group_id IS NOT NULL;
 
 CREATE INDEX idx_service_runs_open_native_request
@@ -339,7 +374,9 @@ CREATE TABLE evidence_refs (
     task_id TEXT NOT NULL REFERENCES workbench_tasks(id) ON DELETE CASCADE,
     branch_id TEXT NOT NULL,
     success_node_id TEXT NOT NULL,
+    success_node_frame_version INTEGER NOT NULL CHECK (success_node_frame_version >= 0),
     frame_version INTEGER NOT NULL CHECK (frame_version >= 0),
+    observed_head_event_id TEXT NOT NULL,
     observed_head_sequence INTEGER NOT NULL CHECK (observed_head_sequence >= 0),
     predicate_id TEXT NOT NULL,
     predicate_text TEXT,
@@ -355,24 +392,219 @@ CREATE TABLE evidence_refs (
     observed_value_checksum TEXT NOT NULL,
     content_checksum TEXT,
     source_event_id TEXT,
+    source_event_sequence INTEGER CHECK (source_event_sequence IS NULL OR source_event_sequence > 0),
     producing_run_id TEXT,
     invalidated_at TEXT,
     invalidated_event_id TEXT,
+    invalidated_event_sequence INTEGER CHECK (invalidated_event_sequence IS NULL OR invalidated_event_sequence > 0),
     invalidation_reason TEXT,
     metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
     CHECK (predicate_text IS NOT NULL OR predicate_json IS NOT NULL),
     CHECK (
-        (invalidated_at IS NULL AND invalidated_event_id IS NULL AND invalidation_reason IS NULL)
-        OR (invalidated_at IS NOT NULL AND invalidated_event_id IS NOT NULL AND invalidation_reason IS NOT NULL)
+        (source_event_id IS NULL AND source_event_sequence IS NULL)
+        OR (source_event_id IS NOT NULL AND source_event_sequence IS NOT NULL)
+    ),
+    CHECK (
+        (invalidated_at IS NULL AND invalidated_event_id IS NULL AND invalidated_event_sequence IS NULL
+            AND invalidation_reason IS NULL)
+        OR (invalidated_at IS NOT NULL AND invalidated_event_id IS NOT NULL
+            AND invalidated_event_sequence IS NOT NULL AND invalidation_reason IS NOT NULL)
     ),
     FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
-    FOREIGN KEY (task_id, success_node_id, frame_version)
+    FOREIGN KEY (task_id, success_node_id, success_node_frame_version)
         REFERENCES frame_nodes(task_id, node_id, frame_version),
-    FOREIGN KEY (task_id, source_event_id) REFERENCES workbench_events(task_id, event_id),
+    FOREIGN KEY (task_id, observed_head_event_id, observed_head_sequence)
+        REFERENCES workbench_events(task_id, event_id, sequence),
+    FOREIGN KEY (task_id, source_event_id, source_event_sequence)
+        REFERENCES workbench_events(task_id, event_id, sequence),
     FOREIGN KEY (task_id, producing_run_id, branch_id, frame_version)
         REFERENCES service_runs(task_id, run_id, branch_id, frame_version),
-    FOREIGN KEY (task_id, invalidated_event_id) REFERENCES workbench_events(task_id, event_id)
+    FOREIGN KEY (task_id, invalidated_event_id, invalidated_event_sequence)
+        REFERENCES workbench_events(task_id, event_id, sequence)
 );
+
+CREATE TRIGGER evidence_refs_validate_insert
+BEFORE INSERT ON evidence_refs
+BEGIN
+    SELECT CASE WHEN NOT EXISTS (
+        WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
+            SELECT NEW.branch_id, NEW.observed_head_sequence, NEW.frame_version
+            UNION ALL
+            SELECT child.parent_branch_id,
+                   min(lineage.sequence_cap, child.forked_from_sequence),
+                   min(lineage.frame_cap, child.forked_from_frame_version)
+            FROM lineage
+            JOIN workbench_branches child
+              ON child.task_id = NEW.task_id AND child.branch_id = lineage.branch_id
+            WHERE child.parent_branch_id IS NOT NULL
+              AND child.forked_from_sequence IS NOT NULL
+              AND child.forked_from_frame_version IS NOT NULL
+        )
+        SELECT 1
+        FROM workbench_events head
+        JOIN lineage ON lineage.branch_id = head.branch_id
+        WHERE head.task_id = NEW.task_id
+          AND head.event_id = NEW.observed_head_event_id
+          AND head.sequence = NEW.observed_head_sequence
+          AND head.frame_version = NEW.frame_version
+          AND head.sequence <= lineage.sequence_cap
+          AND head.frame_version <= lineage.frame_cap
+    ) THEN RAISE(ABORT, 'observed head must be an exact visible event at the observation frame') END;
+
+    SELECT CASE WHEN NOT EXISTS (
+        WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
+            SELECT NEW.branch_id, NEW.observed_head_sequence, NEW.frame_version
+            UNION ALL
+            SELECT child.parent_branch_id,
+                   min(lineage.sequence_cap, child.forked_from_sequence),
+                   min(lineage.frame_cap, child.forked_from_frame_version)
+            FROM lineage
+            JOIN workbench_branches child
+              ON child.task_id = NEW.task_id AND child.branch_id = lineage.branch_id
+            WHERE child.parent_branch_id IS NOT NULL
+              AND child.forked_from_sequence IS NOT NULL
+              AND child.forked_from_frame_version IS NOT NULL
+        )
+        SELECT 1
+        FROM frame_nodes node
+        JOIN workbench_events created
+          ON created.task_id = node.task_id
+         AND created.event_id = node.created_by_event_id
+         AND created.branch_id = node.branch_id
+        JOIN lineage ON lineage.branch_id = node.branch_id
+        WHERE node.task_id = NEW.task_id
+          AND node.node_id = NEW.success_node_id
+          AND node.frame_version = NEW.success_node_frame_version
+          AND node.kind = 'success'
+          AND node.frame_version <= lineage.frame_cap
+          AND created.sequence <= lineage.sequence_cap
+          AND created.sequence <= NEW.observed_head_sequence
+          AND created.frame_version = node.frame_version
+          AND created.frame_version <= lineage.frame_cap
+    ) THEN RAISE(ABORT, 'success evidence must reference a visible anchored success-node revision') END;
+
+    SELECT CASE WHEN NEW.source_event_id IS NOT NULL AND NOT EXISTS (
+        WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
+            SELECT NEW.branch_id, NEW.observed_head_sequence, NEW.frame_version
+            UNION ALL
+            SELECT child.parent_branch_id,
+                   min(lineage.sequence_cap, child.forked_from_sequence),
+                   min(lineage.frame_cap, child.forked_from_frame_version)
+            FROM lineage
+            JOIN workbench_branches child
+              ON child.task_id = NEW.task_id AND child.branch_id = lineage.branch_id
+            WHERE child.parent_branch_id IS NOT NULL
+              AND child.forked_from_sequence IS NOT NULL
+              AND child.forked_from_frame_version IS NOT NULL
+        )
+        SELECT 1
+        FROM workbench_events source
+        JOIN lineage ON lineage.branch_id = source.branch_id
+        WHERE source.task_id = NEW.task_id
+          AND source.event_id = NEW.source_event_id
+          AND source.sequence = NEW.source_event_sequence
+          AND source.sequence <= NEW.observed_head_sequence
+          AND source.sequence <= lineage.sequence_cap
+          AND source.frame_version <= lineage.frame_cap
+    ) THEN RAISE(ABORT, 'source event must be visible at the observation head') END;
+
+    SELECT CASE WHEN NEW.invalidated_event_id IS NOT NULL AND NOT EXISTS (
+        WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
+            SELECT NEW.branch_id, 9223372036854775807, 9223372036854775807
+            UNION ALL
+            SELECT child.parent_branch_id,
+                   min(lineage.sequence_cap, child.forked_from_sequence),
+                   min(lineage.frame_cap, child.forked_from_frame_version)
+            FROM lineage
+            JOIN workbench_branches child
+              ON child.task_id = NEW.task_id AND child.branch_id = lineage.branch_id
+            WHERE child.parent_branch_id IS NOT NULL
+              AND child.forked_from_sequence IS NOT NULL
+              AND child.forked_from_frame_version IS NOT NULL
+        )
+        SELECT 1
+        FROM workbench_events invalidation
+        JOIN lineage ON lineage.branch_id = invalidation.branch_id
+        WHERE invalidation.task_id = NEW.task_id
+          AND invalidation.event_id = NEW.invalidated_event_id
+          AND invalidation.sequence = NEW.invalidated_event_sequence
+          AND invalidation.sequence > NEW.observed_head_sequence
+          AND invalidation.sequence <= lineage.sequence_cap
+          AND invalidation.frame_version <= lineage.frame_cap
+    ) THEN RAISE(ABORT, 'invalidation event must be later and visible on the evidence branch') END;
+END;
+
+CREATE TRIGGER evidence_refs_only_complete_invalidation_update
+BEFORE UPDATE ON evidence_refs
+WHEN OLD.invalidated_at IS NOT NULL
+  OR NEW.invalidated_at IS NULL
+  OR NEW.invalidated_event_id IS NULL
+  OR NEW.invalidated_event_sequence IS NULL
+  OR NEW.invalidation_reason IS NULL
+  OR NEW.id IS NOT OLD.id
+  OR NEW.task_id IS NOT OLD.task_id
+  OR NEW.branch_id IS NOT OLD.branch_id
+  OR NEW.success_node_id IS NOT OLD.success_node_id
+  OR NEW.success_node_frame_version IS NOT OLD.success_node_frame_version
+  OR NEW.frame_version IS NOT OLD.frame_version
+  OR NEW.observed_head_event_id IS NOT OLD.observed_head_event_id
+  OR NEW.observed_head_sequence IS NOT OLD.observed_head_sequence
+  OR NEW.predicate_id IS NOT OLD.predicate_id
+  OR NEW.predicate_text IS NOT OLD.predicate_text
+  OR NEW.predicate_json IS NOT OLD.predicate_json
+  OR NEW.expected_outcome IS NOT OLD.expected_outcome
+  OR NEW.authority_kind IS NOT OLD.authority_kind
+  OR NEW.authority_locator IS NOT OLD.authority_locator
+  OR NEW.verifier_kind IS NOT OLD.verifier_kind
+  OR NEW.verifier_identity IS NOT OLD.verifier_identity
+  OR NEW.verification_status IS NOT OLD.verification_status
+  OR NEW.observed_at IS NOT OLD.observed_at
+  OR NEW.valid_until IS NOT OLD.valid_until
+  OR NEW.observed_value_checksum IS NOT OLD.observed_value_checksum
+  OR NEW.content_checksum IS NOT OLD.content_checksum
+  OR NEW.source_event_id IS NOT OLD.source_event_id
+  OR NEW.source_event_sequence IS NOT OLD.source_event_sequence
+  OR NEW.producing_run_id IS NOT OLD.producing_run_id
+  OR NEW.metadata_json IS NOT OLD.metadata_json
+BEGIN
+    SELECT RAISE(ABORT, 'evidence is immutable except for one complete invalidation transition');
+END;
+
+CREATE TRIGGER evidence_refs_validate_invalidation_update
+BEFORE UPDATE OF invalidated_at, invalidated_event_id, invalidated_event_sequence, invalidation_reason
+ON evidence_refs
+BEGIN
+    SELECT CASE WHEN NOT EXISTS (
+        WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
+            SELECT NEW.branch_id, 9223372036854775807, 9223372036854775807
+            UNION ALL
+            SELECT child.parent_branch_id,
+                   min(lineage.sequence_cap, child.forked_from_sequence),
+                   min(lineage.frame_cap, child.forked_from_frame_version)
+            FROM lineage
+            JOIN workbench_branches child
+              ON child.task_id = NEW.task_id AND child.branch_id = lineage.branch_id
+            WHERE child.parent_branch_id IS NOT NULL
+              AND child.forked_from_sequence IS NOT NULL
+              AND child.forked_from_frame_version IS NOT NULL
+        )
+        SELECT 1
+        FROM workbench_events invalidation
+        JOIN lineage ON lineage.branch_id = invalidation.branch_id
+        WHERE invalidation.task_id = NEW.task_id
+          AND invalidation.event_id = NEW.invalidated_event_id
+          AND invalidation.sequence = NEW.invalidated_event_sequence
+          AND invalidation.sequence > NEW.observed_head_sequence
+          AND invalidation.sequence <= lineage.sequence_cap
+          AND invalidation.frame_version <= lineage.frame_cap
+    ) THEN RAISE(ABORT, 'invalidation event must be later and visible on the evidence branch') END;
+END;
+
+CREATE TRIGGER evidence_refs_no_delete
+BEFORE DELETE ON evidence_refs
+BEGIN
+    SELECT RAISE(ABORT, 'evidence records cannot be deleted');
+END;
 
 CREATE INDEX idx_evidence_refs_current_success
 ON evidence_refs(task_id, branch_id, success_node_id, verification_status, valid_until, observed_at)
@@ -392,19 +624,100 @@ CREATE TABLE learning_proposals (
     decided_at TEXT
 );
 
-CREATE TABLE quarantined_components (
-    id TEXT PRIMARY KEY,
+CREATE TABLE replacement_bootstrap_proofs (
+    proof_id TEXT PRIMARY KEY,
+    receipt_id TEXT NOT NULL,
+    task_id TEXT NOT NULL REFERENCES workbench_tasks(id) ON DELETE CASCADE,
+    branch_id TEXT NOT NULL,
     component_type TEXT NOT NULL,
     component_id TEXT NOT NULL,
+    replacement_build_id TEXT NOT NULL,
+    proof_kind TEXT NOT NULL CHECK (proof_kind = 'live_bootstrap'),
+    status TEXT NOT NULL CHECK (status = 'succeeded'),
+    authority_kind TEXT NOT NULL,
+    authority_locator TEXT NOT NULL,
+    verifier_kind TEXT NOT NULL,
+    verifier_identity TEXT NOT NULL,
+    proof_event_id TEXT NOT NULL,
+    proof_event_sequence INTEGER NOT NULL CHECK (proof_event_sequence > 0),
+    proof_json TEXT NOT NULL CHECK (json_valid(proof_json)),
+    proof_checksum TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (length(trim(proof_id)) > 0),
+    CHECK (length(trim(receipt_id)) > 0),
+    CHECK (length(trim(component_type)) > 0),
+    CHECK (length(trim(component_id)) > 0),
+    CHECK (length(trim(replacement_build_id)) > 0),
+    CHECK (length(trim(authority_kind)) > 0),
+    CHECK (length(trim(authority_locator)) > 0),
+    CHECK (length(trim(verifier_kind)) > 0),
+    CHECK (length(trim(verifier_identity)) > 0),
+    CHECK (length(trim(proof_checksum)) > 0),
+    UNIQUE (task_id, proof_event_id),
+    UNIQUE (
+        proof_id, receipt_id, task_id, branch_id, component_type, component_id, replacement_build_id
+    ),
+    FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
+    FOREIGN KEY (task_id, proof_event_id, proof_event_sequence)
+        REFERENCES workbench_events(task_id, event_id, sequence)
+);
+
+CREATE TRIGGER replacement_bootstrap_proofs_validate_insert
+BEFORE INSERT ON replacement_bootstrap_proofs
+BEGIN
+    SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM workbench_events event
+        WHERE event.task_id = NEW.task_id
+          AND event.branch_id = NEW.branch_id
+          AND event.event_id = NEW.proof_event_id
+          AND event.sequence = NEW.proof_event_sequence
+          AND event.event_type = 'component.replacement_bootstrap_succeeded'
+          AND json_extract(event.payload_json, '$.receipt_id') = NEW.receipt_id
+          AND json_extract(event.payload_json, '$.component_type') = NEW.component_type
+          AND json_extract(event.payload_json, '$.component_id') = NEW.component_id
+          AND json_extract(event.payload_json, '$.replacement_build_id') = NEW.replacement_build_id
+          AND json_extract(event.payload_json, '$.proof_id') = NEW.proof_id
+          AND json_extract(event.payload_json, '$.proof_kind') = NEW.proof_kind
+          AND json_extract(event.payload_json, '$.status') = NEW.status
+          AND json_extract(event.payload_json, '$.proof_checksum') = NEW.proof_checksum
+          AND json_extract(event.payload_json, '$.authority_kind') = NEW.authority_kind
+          AND json_extract(event.payload_json, '$.authority_locator') = NEW.authority_locator
+          AND json_extract(event.payload_json, '$.verifier_kind') = NEW.verifier_kind
+          AND json_extract(event.payload_json, '$.verifier_identity') = NEW.verifier_identity
+    ) THEN RAISE(ABORT, 'replacement proof must match a successful typed bootstrap event') END;
+END;
+
+CREATE TRIGGER replacement_bootstrap_proofs_no_update
+BEFORE UPDATE ON replacement_bootstrap_proofs
+BEGIN
+    SELECT RAISE(ABORT, 'replacement bootstrap proofs are immutable');
+END;
+
+CREATE TRIGGER replacement_bootstrap_proofs_no_delete
+BEFORE DELETE ON replacement_bootstrap_proofs
+BEGIN
+    SELECT RAISE(ABORT, 'replacement bootstrap proofs cannot be deleted');
+END;
+
+CREATE TABLE quarantined_components (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES workbench_tasks(id) ON DELETE CASCADE,
+    branch_id TEXT NOT NULL,
+    component_type TEXT NOT NULL,
+    component_id TEXT NOT NULL,
+    replacement_build_id TEXT NOT NULL,
     behavior TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('candidate','shadow_readonly','active','released')),
     manifest_json TEXT NOT NULL CHECK (json_valid(manifest_json)),
     manifest_checksum TEXT NOT NULL,
     staged_at TEXT NOT NULL,
-    staged_event_id TEXT REFERENCES workbench_events(event_id),
+    staged_event_id TEXT NOT NULL,
+    replacement_bootstrap_proof_id TEXT,
     replacement_bootstrap_receipt_id TEXT,
     activated_at TEXT,
-    activated_event_id TEXT REFERENCES workbench_events(event_id),
+    activated_event_id TEXT,
+    activated_event_sequence INTEGER CHECK (activated_event_sequence IS NULL OR activated_event_sequence > 0),
     preserved_read INTEGER NOT NULL CHECK (preserved_read IN (0,1)),
     legacy_data_store INTEGER NOT NULL DEFAULT 0 CHECK (legacy_data_store IN (0,1)),
     baseline_row_count INTEGER CHECK (baseline_row_count IS NULL OR baseline_row_count >= 0),
@@ -414,14 +727,27 @@ CREATE TABLE quarantined_components (
     released_at TEXT,
     release_reason TEXT,
     metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
+    UNIQUE (task_id, staged_event_id),
+    UNIQUE (replacement_bootstrap_proof_id),
+    UNIQUE (task_id, activated_event_id),
     CHECK (
-        state <> 'active' OR (
-            replacement_bootstrap_receipt_id IS NOT NULL
+        (state IN ('candidate','shadow_readonly')
+            AND replacement_bootstrap_proof_id IS NULL
+            AND replacement_bootstrap_receipt_id IS NULL
+            AND activated_at IS NULL
+            AND activated_event_id IS NULL
+            AND activated_event_sequence IS NULL)
+        OR (state IN ('active','released')
+            AND replacement_bootstrap_proof_id IS NOT NULL
+            AND replacement_bootstrap_receipt_id IS NOT NULL
             AND activated_at IS NOT NULL
             AND activated_event_id IS NOT NULL
-        )
+            AND activated_event_sequence IS NOT NULL)
     ),
-    CHECK (state <> 'released' OR (released_at IS NOT NULL AND release_reason IS NOT NULL)),
+    CHECK (
+        (state <> 'released' AND released_at IS NULL AND release_reason IS NULL)
+        OR (state = 'released' AND released_at IS NOT NULL AND release_reason IS NOT NULL)
+    ),
     CHECK (
         baseline_row_count IS NULL OR (
             baseline_content_digest IS NOT NULL
@@ -436,25 +762,116 @@ CREATE TABLE quarantined_components (
             AND validated_backup_path IS NOT NULL
             AND validated_backup_checksum IS NOT NULL
         )
+    ),
+    FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
+    FOREIGN KEY (task_id, staged_event_id) REFERENCES workbench_events(task_id, event_id),
+    FOREIGN KEY (task_id, activated_event_id, activated_event_sequence)
+        REFERENCES workbench_events(task_id, event_id, sequence),
+    FOREIGN KEY (
+        replacement_bootstrap_proof_id, replacement_bootstrap_receipt_id, task_id, branch_id,
+        component_type, component_id, replacement_build_id
+    ) REFERENCES replacement_bootstrap_proofs(
+        proof_id, receipt_id, task_id, branch_id, component_type, component_id, replacement_build_id
     )
 );
 
 CREATE UNIQUE INDEX idx_quarantined_components_nonreleased
-ON quarantined_components(component_type, component_id)
+ON quarantined_components(task_id, component_type, component_id)
 WHERE state <> 'released';
 
-CREATE TRIGGER quarantined_components_no_direct_activation
+CREATE TRIGGER quarantined_components_candidate_insert_only
 BEFORE INSERT ON quarantined_components
-WHEN NEW.state = 'active'
+WHEN NEW.state <> 'candidate'
 BEGIN
-    SELECT RAISE(ABORT, 'component must be staged before activation');
+    SELECT RAISE(ABORT, 'quarantine components must begin as candidates');
 END;
 
-CREATE TRIGGER quarantined_components_activation_transition
-BEFORE UPDATE OF state ON quarantined_components
-WHEN NEW.state = 'active' AND OLD.state NOT IN ('candidate','shadow_readonly')
+CREATE TRIGGER quarantined_components_validate_stage
+BEFORE INSERT ON quarantined_components
 BEGIN
-    SELECT RAISE(ABORT, 'only a staged component can be activated');
+    SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM workbench_events event
+        WHERE event.task_id = NEW.task_id
+          AND event.branch_id = NEW.branch_id
+          AND event.event_id = NEW.staged_event_id
+          AND event.event_type = 'component.quarantine_staged'
+          AND json_extract(event.payload_json, '$.component_type') = NEW.component_type
+          AND json_extract(event.payload_json, '$.component_id') = NEW.component_id
+          AND json_extract(event.payload_json, '$.replacement_build_id') = NEW.replacement_build_id
+          AND json_extract(event.payload_json, '$.manifest_checksum') = NEW.manifest_checksum
+    ) THEN RAISE(ABORT, 'quarantine stage must match a typed component staging event') END;
+END;
+
+CREATE TRIGGER quarantined_components_monotonic_transition
+BEFORE UPDATE OF state ON quarantined_components
+WHEN NEW.state <> OLD.state AND NOT (
+    (OLD.state = 'candidate' AND NEW.state = 'shadow_readonly')
+    OR (OLD.state = 'shadow_readonly' AND NEW.state = 'active')
+    OR (OLD.state = 'active' AND NEW.state = 'released')
+)
+BEGIN
+    SELECT RAISE(ABORT, 'quarantine state transitions must be monotonic and staged');
+END;
+
+CREATE TRIGGER quarantined_components_validate_activation
+BEFORE UPDATE OF state ON quarantined_components
+WHEN OLD.state = 'shadow_readonly' AND NEW.state = 'active'
+BEGIN
+    SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM workbench_events event
+        JOIN replacement_bootstrap_proofs proof
+          ON proof.proof_id = NEW.replacement_bootstrap_proof_id
+         AND proof.receipt_id = NEW.replacement_bootstrap_receipt_id
+         AND proof.task_id = NEW.task_id
+         AND proof.branch_id = NEW.branch_id
+         AND proof.component_type = NEW.component_type
+         AND proof.component_id = NEW.component_id
+         AND proof.replacement_build_id = NEW.replacement_build_id
+        WHERE event.task_id = NEW.task_id
+          AND event.branch_id = NEW.branch_id
+          AND event.event_id = NEW.activated_event_id
+          AND event.sequence = NEW.activated_event_sequence
+          AND event.event_type = 'component.quarantine_activated'
+          AND event.sequence > proof.proof_event_sequence
+          AND json_extract(event.payload_json, '$.proof_id') = proof.proof_id
+          AND json_extract(event.payload_json, '$.proof_checksum') = proof.proof_checksum
+          AND json_extract(event.payload_json, '$.receipt_id') = NEW.replacement_bootstrap_receipt_id
+          AND json_extract(event.payload_json, '$.component_type') = NEW.component_type
+          AND json_extract(event.payload_json, '$.component_id') = NEW.component_id
+          AND json_extract(event.payload_json, '$.replacement_build_id') = NEW.replacement_build_id
+    ) THEN RAISE(ABORT, 'activation must match a typed component activation event') END;
+END;
+
+CREATE TRIGGER quarantined_components_freeze_after_activation
+BEFORE UPDATE ON quarantined_components
+WHEN OLD.state IN ('active','released') AND (
+       NEW.id IS NOT OLD.id
+    OR NEW.task_id IS NOT OLD.task_id
+    OR NEW.branch_id IS NOT OLD.branch_id
+    OR NEW.component_type IS NOT OLD.component_type
+    OR NEW.component_id IS NOT OLD.component_id
+    OR NEW.replacement_build_id IS NOT OLD.replacement_build_id
+    OR NEW.behavior IS NOT OLD.behavior
+    OR NEW.manifest_json IS NOT OLD.manifest_json
+    OR NEW.manifest_checksum IS NOT OLD.manifest_checksum
+    OR NEW.staged_at IS NOT OLD.staged_at
+    OR NEW.staged_event_id IS NOT OLD.staged_event_id
+    OR NEW.replacement_bootstrap_proof_id IS NOT OLD.replacement_bootstrap_proof_id
+    OR NEW.replacement_bootstrap_receipt_id IS NOT OLD.replacement_bootstrap_receipt_id
+    OR NEW.activated_at IS NOT OLD.activated_at
+    OR NEW.activated_event_id IS NOT OLD.activated_event_id
+    OR NEW.activated_event_sequence IS NOT OLD.activated_event_sequence
+    OR NEW.preserved_read IS NOT OLD.preserved_read
+    OR NEW.legacy_data_store IS NOT OLD.legacy_data_store
+    OR NEW.baseline_row_count IS NOT OLD.baseline_row_count
+    OR NEW.baseline_content_digest IS NOT OLD.baseline_content_digest
+    OR NEW.validated_backup_path IS NOT OLD.validated_backup_path
+    OR NEW.validated_backup_checksum IS NOT OLD.validated_backup_checksum
+)
+BEGIN
+    SELECT RAISE(ABORT, 'activated component identity and proof are frozen');
 END;
 
 CREATE TRIGGER schema_migrations_checksum_required
