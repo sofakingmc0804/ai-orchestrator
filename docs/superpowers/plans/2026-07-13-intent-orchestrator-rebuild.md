@@ -211,6 +211,8 @@ The public API is:
 
 **Reopened foundation gate:** adversarial Task-2 deletion proved that event ordinals alone cannot preserve original command cardinality. Keep accepted migration 2 frozen. Before Task 2 can complete, separately reviewed `0003_workbench_command_manifests.sql` must add the immutable, endpoint-bound, checksummed command authority defined in `.superpowers/sdd/task-1-command-manifest-addendum.md`. Verification must bind manifests and events bidirectionally before retry, append, snapshot, replay, or rebuild. Task 2 remains paused during that repair.
 
+**Foundation integration status:** migration 3 is approved for integration after strict type-affinity and registry-vector repairs, 45 focused tests, 20/20 concurrency, an independent controller run, and two reviewer approvals. Task 2 is active again. Acceptance still requires manifest-first writer integration, staged in-transaction semantic verification, corruption negative controls, and the full repository gate.
+
 **Files:**
 - Create: `orchestrator/workbench/models.py`
 - Create: `orchestrator/workbench/events.py`
