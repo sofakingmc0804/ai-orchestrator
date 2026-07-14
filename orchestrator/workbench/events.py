@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from orchestrator.workbench.models import (
     EventDraft,
@@ -37,12 +37,26 @@ class TaskCreatedPayload(_Payload):
     title: str = Field(min_length=1)
     initial_branch_id: str = Field(min_length=1)
 
+    @field_validator("title", "initial_branch_id")
+    @classmethod
+    def _nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("task title and initial branch must not be blank")
+        return value
+
 
 class BranchForkedPayload(_Payload):
     new_branch_id: str = Field(min_length=1)
     parent_branch_id: str = Field(min_length=1)
     forked_from_sequence: int = Field(ge=1)
     forked_from_frame_version: int = Field(ge=0)
+
+    @field_validator("new_branch_id", "parent_branch_id")
+    @classmethod
+    def _nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("branch identities must not be blank")
+        return value
 
 
 Reducer = Callable[[dict[str, Any], Any], dict[str, Any]]
@@ -149,22 +163,29 @@ def _reduce_branch_forked(state: dict[str, Any], event: Any) -> dict[str, Any]:
     return result
 
 
-def _reject_non_finite(value: Any) -> None:
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError("canonical JSON numbers must be finite")
+def _validate_json_domain(value: Any) -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("canonical JSON numbers must be finite")
+        return
     if isinstance(value, Mapping):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError("canonical JSON object keys must be strings")
-            _reject_non_finite(item)
-    elif isinstance(value, (list, tuple)):
+            _validate_json_domain(item)
+        return
+    if isinstance(value, list):
         for item in value:
-            _reject_non_finite(item)
+            _validate_json_domain(item)
+        return
+    raise TypeError(f"unsupported canonical JSON value: {type(value).__name__}")
 
 
 def canonical_json_bytes(value: Any) -> bytes:
     """Return the sole canonical JSON representation used by the ledger."""
-    _reject_non_finite(value)
+    _validate_json_domain(value)
     try:
         encoded = json.dumps(
             value,
