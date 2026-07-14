@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -53,6 +54,17 @@ class _FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+class EventCause(str, Enum):
+    OWNER_REQUEST = "owner_request"
+    SERVICE_RESULT = "service_result"
+    CORRECTION = "correction"
+    DEPENDENCY_CHANGE = "dependency_change"
+    RECOVERY = "recovery"
+    VERIFICATION = "verification"
+    EXTERNAL_OBSERVATION = "external_observation"
+    SYSTEM_TRANSITION = "system_transition"
+
+
 class EventActor(_FrozenModel):
     kind: Literal["owner", "service", "system", "automation"]
     actor_id: str = Field(min_length=1)
@@ -69,16 +81,12 @@ class EventDraft(_FrozenModel):
     event_type: str = Field(min_length=1)
     actor: EventActor
     payload: dict[str, Any]
-    idempotency_key: str = Field(min_length=1)
     branch_id: str = Field(default="main", min_length=1)
     event_schema_version: int = Field(default=1, ge=1)
-    cause: str | None = None
+    cause: EventCause | None = None
     caused_by: str | None = None
-    expected_frame_version: int | None = Field(default=None, ge=0)
-    event_id: str | None = None
-    created_at: str | None = None
 
-    @field_validator("event_type", "idempotency_key", "branch_id")
+    @field_validator("event_type", "branch_id")
     @classmethod
     def _nonblank_identity(cls, value: str) -> str:
         if not value.strip():
@@ -94,7 +102,7 @@ class WorkbenchEvent(_FrozenModel):
     event_type: str
     actor: EventActor
     branch_id: str
-    cause: str | None
+    cause: EventCause | None
     caused_by: str | None
     command_id: str
     command_sequence: int = Field(gt=0)
