@@ -21,9 +21,51 @@ CREATE TABLE workbench_branches (
     status TEXT NOT NULL CHECK (status IN ('active','merged','abandoned')),
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, branch_id),
+    CHECK (
+        (parent_branch_id IS NULL AND forked_from_sequence IS NULL AND forked_from_frame_version IS NULL)
+        OR (parent_branch_id IS NOT NULL AND forked_from_sequence IS NOT NULL
+            AND forked_from_frame_version IS NOT NULL)
+    ),
+    CHECK (parent_branch_id IS NULL OR parent_branch_id <> branch_id),
     FOREIGN KEY (task_id, parent_branch_id) REFERENCES workbench_branches(task_id, branch_id),
     FOREIGN KEY (task_id, created_by_event_id) REFERENCES workbench_events(task_id, event_id)
 );
+
+CREATE TRIGGER workbench_branches_no_cycle
+BEFORE INSERT ON workbench_branches
+WHEN NEW.parent_branch_id IS NOT NULL
+BEGIN
+    SELECT CASE WHEN EXISTS (
+        WITH RECURSIVE ancestors(branch_id) AS (
+            SELECT NEW.parent_branch_id
+            UNION
+            SELECT branch.parent_branch_id
+            FROM workbench_branches branch
+            JOIN ancestors ON branch.task_id = NEW.task_id AND branch.branch_id = ancestors.branch_id
+            WHERE branch.parent_branch_id IS NOT NULL
+        )
+        SELECT 1 FROM ancestors WHERE branch_id = NEW.branch_id
+    ) THEN RAISE(ABORT, 'branch ancestry cannot contain a cycle') END;
+END;
+
+CREATE TRIGGER workbench_branches_identity_immutable
+BEFORE UPDATE ON workbench_branches
+WHEN NEW.task_id IS NOT OLD.task_id
+  OR NEW.branch_id IS NOT OLD.branch_id
+  OR NEW.parent_branch_id IS NOT OLD.parent_branch_id
+  OR NEW.forked_from_sequence IS NOT OLD.forked_from_sequence
+  OR NEW.forked_from_frame_version IS NOT OLD.forked_from_frame_version
+  OR NEW.created_by_event_id IS NOT OLD.created_by_event_id
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN
+    SELECT RAISE(ABORT, 'branch ancestry and identity are immutable');
+END;
+
+CREATE TRIGGER workbench_branches_no_delete
+BEFORE DELETE ON workbench_branches
+BEGIN
+    SELECT RAISE(ABORT, 'workbench branches cannot be deleted');
+END;
 
 CREATE TABLE workbench_events (
     event_id TEXT PRIMARY KEY,
@@ -400,6 +442,20 @@ CREATE TABLE evidence_refs (
     invalidation_reason TEXT,
     metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
     CHECK (predicate_text IS NOT NULL OR predicate_json IS NOT NULL),
+    CHECK (length(trim(predicate_id)) > 0),
+    CHECK (length(trim(expected_outcome)) > 0),
+    CHECK (length(trim(authority_kind)) > 0),
+    CHECK (length(trim(authority_locator)) > 0),
+    CHECK (length(trim(verifier_kind)) > 0),
+    CHECK (length(trim(verifier_identity)) > 0),
+    CHECK (
+        length(observed_value_checksum) = 64
+        AND observed_value_checksum NOT GLOB '*[^0-9a-f]*'
+    ),
+    CHECK (
+        content_checksum IS NULL
+        OR (length(content_checksum) = 64 AND content_checksum NOT GLOB '*[^0-9a-f]*')
+    ),
     CHECK (
         (source_event_id IS NULL AND source_event_sequence IS NULL)
         OR (source_event_id IS NOT NULL AND source_event_sequence IS NOT NULL)
@@ -429,7 +485,7 @@ BEGIN
     SELECT CASE WHEN NOT EXISTS (
         WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
             SELECT NEW.branch_id, NEW.observed_head_sequence, NEW.frame_version
-            UNION ALL
+            UNION
             SELECT child.parent_branch_id,
                    min(lineage.sequence_cap, child.forked_from_sequence),
                    min(lineage.frame_cap, child.forked_from_frame_version)
@@ -454,7 +510,7 @@ BEGIN
     SELECT CASE WHEN NOT EXISTS (
         WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
             SELECT NEW.branch_id, NEW.observed_head_sequence, NEW.frame_version
-            UNION ALL
+            UNION
             SELECT child.parent_branch_id,
                    min(lineage.sequence_cap, child.forked_from_sequence),
                    min(lineage.frame_cap, child.forked_from_frame_version)
@@ -486,7 +542,7 @@ BEGIN
     SELECT CASE WHEN NEW.source_event_id IS NOT NULL AND NOT EXISTS (
         WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
             SELECT NEW.branch_id, NEW.observed_head_sequence, NEW.frame_version
-            UNION ALL
+            UNION
             SELECT child.parent_branch_id,
                    min(lineage.sequence_cap, child.forked_from_sequence),
                    min(lineage.frame_cap, child.forked_from_frame_version)
@@ -511,7 +567,7 @@ BEGIN
     SELECT CASE WHEN NEW.invalidated_event_id IS NOT NULL AND NOT EXISTS (
         WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
             SELECT NEW.branch_id, 9223372036854775807, 9223372036854775807
-            UNION ALL
+            UNION
             SELECT child.parent_branch_id,
                    min(lineage.sequence_cap, child.forked_from_sequence),
                    min(lineage.frame_cap, child.forked_from_frame_version)
@@ -577,7 +633,7 @@ BEGIN
     SELECT CASE WHEN NOT EXISTS (
         WITH RECURSIVE lineage(branch_id, sequence_cap, frame_cap) AS (
             SELECT NEW.branch_id, 9223372036854775807, 9223372036854775807
-            UNION ALL
+            UNION
             SELECT child.parent_branch_id,
                    min(lineage.sequence_cap, child.forked_from_sequence),
                    min(lineage.frame_cap, child.forked_from_frame_version)
@@ -640,7 +696,7 @@ CREATE TABLE replacement_bootstrap_proofs (
     verifier_identity TEXT NOT NULL,
     proof_event_id TEXT NOT NULL,
     proof_event_sequence INTEGER NOT NULL CHECK (proof_event_sequence > 0),
-    proof_json TEXT NOT NULL CHECK (json_valid(proof_json)),
+    proof_json TEXT NOT NULL CHECK (json_valid(proof_json) AND proof_json = json(proof_json)),
     proof_checksum TEXT NOT NULL,
     created_at TEXT NOT NULL,
     CHECK (length(trim(proof_id)) > 0),
@@ -652,7 +708,7 @@ CREATE TABLE replacement_bootstrap_proofs (
     CHECK (length(trim(authority_locator)) > 0),
     CHECK (length(trim(verifier_kind)) > 0),
     CHECK (length(trim(verifier_identity)) > 0),
-    CHECK (length(trim(proof_checksum)) > 0),
+    CHECK (length(proof_checksum) = 64 AND proof_checksum NOT GLOB '*[^0-9a-f]*'),
     UNIQUE (task_id, proof_event_id),
     UNIQUE (
         proof_id, receipt_id, task_id, branch_id, component_type, component_id, replacement_build_id
@@ -680,6 +736,7 @@ BEGIN
           AND json_extract(event.payload_json, '$.proof_id') = NEW.proof_id
           AND json_extract(event.payload_json, '$.proof_kind') = NEW.proof_kind
           AND json_extract(event.payload_json, '$.status') = NEW.status
+          AND json_extract(event.payload_json, '$.proof_json') = json(NEW.proof_json)
           AND json_extract(event.payload_json, '$.proof_checksum') = NEW.proof_checksum
           AND json_extract(event.payload_json, '$.authority_kind') = NEW.authority_kind
           AND json_extract(event.payload_json, '$.authority_locator') = NEW.authority_locator
@@ -713,6 +770,7 @@ CREATE TABLE quarantined_components (
     manifest_checksum TEXT NOT NULL,
     staged_at TEXT NOT NULL,
     staged_event_id TEXT NOT NULL,
+    staged_event_sequence INTEGER NOT NULL CHECK (staged_event_sequence > 0),
     replacement_bootstrap_proof_id TEXT,
     replacement_bootstrap_receipt_id TEXT,
     activated_at TEXT,
@@ -749,11 +807,20 @@ CREATE TABLE quarantined_components (
         OR (state = 'released' AND released_at IS NOT NULL AND release_reason IS NOT NULL)
     ),
     CHECK (
-        baseline_row_count IS NULL OR (
-            baseline_content_digest IS NOT NULL
+        (baseline_row_count IS NULL
+            AND baseline_content_digest IS NULL
+            AND validated_backup_path IS NULL
+            AND validated_backup_checksum IS NULL)
+        OR (baseline_row_count IS NOT NULL
+            AND baseline_row_count >= 0
+            AND baseline_content_digest IS NOT NULL
+            AND length(baseline_content_digest) = 64
+            AND baseline_content_digest NOT GLOB '*[^0-9a-f]*'
             AND validated_backup_path IS NOT NULL
+            AND length(trim(validated_backup_path)) > 0
             AND validated_backup_checksum IS NOT NULL
-        )
+            AND length(validated_backup_checksum) = 64
+            AND validated_backup_checksum NOT GLOB '*[^0-9a-f]*')
     ),
     CHECK (
         legacy_data_store = 0 OR (
@@ -764,7 +831,8 @@ CREATE TABLE quarantined_components (
         )
     ),
     FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
-    FOREIGN KEY (task_id, staged_event_id) REFERENCES workbench_events(task_id, event_id),
+    FOREIGN KEY (task_id, staged_event_id, staged_event_sequence)
+        REFERENCES workbench_events(task_id, event_id, sequence),
     FOREIGN KEY (task_id, activated_event_id, activated_event_sequence)
         REFERENCES workbench_events(task_id, event_id, sequence),
     FOREIGN KEY (
@@ -775,9 +843,8 @@ CREATE TABLE quarantined_components (
     )
 );
 
-CREATE UNIQUE INDEX idx_quarantined_components_nonreleased
-ON quarantined_components(task_id, component_type, component_id)
-WHERE state <> 'released';
+CREATE UNIQUE INDEX idx_quarantined_components_global_identity
+ON quarantined_components(component_type, component_id);
 
 CREATE TRIGGER quarantined_components_candidate_insert_only
 BEFORE INSERT ON quarantined_components
@@ -795,6 +862,7 @@ BEGIN
         WHERE event.task_id = NEW.task_id
           AND event.branch_id = NEW.branch_id
           AND event.event_id = NEW.staged_event_id
+          AND event.sequence = NEW.staged_event_sequence
           AND event.event_type = 'component.quarantine_staged'
           AND json_extract(event.payload_json, '$.component_type') = NEW.component_type
           AND json_extract(event.payload_json, '$.component_id') = NEW.component_id
@@ -834,6 +902,7 @@ BEGIN
           AND event.event_id = NEW.activated_event_id
           AND event.sequence = NEW.activated_event_sequence
           AND event.event_type = 'component.quarantine_activated'
+          AND NEW.staged_event_sequence < proof.proof_event_sequence
           AND event.sequence > proof.proof_event_sequence
           AND json_extract(event.payload_json, '$.proof_id') = proof.proof_id
           AND json_extract(event.payload_json, '$.proof_checksum') = proof.proof_checksum
@@ -842,6 +911,30 @@ BEGIN
           AND json_extract(event.payload_json, '$.component_id') = NEW.component_id
           AND json_extract(event.payload_json, '$.replacement_build_id') = NEW.replacement_build_id
     ) THEN RAISE(ABORT, 'activation must match a typed component activation event') END;
+END;
+
+CREATE TRIGGER quarantined_components_stage_immutable
+BEFORE UPDATE ON quarantined_components
+WHEN    NEW.id IS NOT OLD.id
+    OR NEW.task_id IS NOT OLD.task_id
+    OR NEW.branch_id IS NOT OLD.branch_id
+    OR NEW.component_type IS NOT OLD.component_type
+    OR NEW.component_id IS NOT OLD.component_id
+    OR NEW.replacement_build_id IS NOT OLD.replacement_build_id
+    OR NEW.behavior IS NOT OLD.behavior
+    OR NEW.manifest_json IS NOT OLD.manifest_json
+    OR NEW.manifest_checksum IS NOT OLD.manifest_checksum
+    OR NEW.staged_at IS NOT OLD.staged_at
+    OR NEW.staged_event_id IS NOT OLD.staged_event_id
+    OR NEW.staged_event_sequence IS NOT OLD.staged_event_sequence
+    OR NEW.preserved_read IS NOT OLD.preserved_read
+    OR NEW.legacy_data_store IS NOT OLD.legacy_data_store
+    OR NEW.baseline_row_count IS NOT OLD.baseline_row_count
+    OR NEW.baseline_content_digest IS NOT OLD.baseline_content_digest
+    OR NEW.validated_backup_path IS NOT OLD.validated_backup_path
+    OR NEW.validated_backup_checksum IS NOT OLD.validated_backup_checksum
+BEGIN
+    SELECT RAISE(ABORT, 'quarantine stage identity, behavior, manifest, baseline, and backup are frozen');
 END;
 
 CREATE TRIGGER quarantined_components_freeze_after_activation
@@ -858,6 +951,7 @@ WHEN OLD.state IN ('active','released') AND (
     OR NEW.manifest_checksum IS NOT OLD.manifest_checksum
     OR NEW.staged_at IS NOT OLD.staged_at
     OR NEW.staged_event_id IS NOT OLD.staged_event_id
+    OR NEW.staged_event_sequence IS NOT OLD.staged_event_sequence
     OR NEW.replacement_bootstrap_proof_id IS NOT OLD.replacement_bootstrap_proof_id
     OR NEW.replacement_bootstrap_receipt_id IS NOT OLD.replacement_bootstrap_receipt_id
     OR NEW.activated_at IS NOT OLD.activated_at
@@ -872,6 +966,23 @@ WHEN OLD.state IN ('active','released') AND (
 )
 BEGIN
     SELECT RAISE(ABORT, 'activated component identity and proof are frozen');
+END;
+
+CREATE TRIGGER quarantined_components_release_immutable
+BEFORE UPDATE ON quarantined_components
+WHEN OLD.state = 'released' AND (
+       NEW.released_at IS NOT OLD.released_at
+    OR NEW.release_reason IS NOT OLD.release_reason
+    OR NEW.metadata_json IS NOT OLD.metadata_json
+)
+BEGIN
+    SELECT RAISE(ABORT, 'released component evidence is frozen');
+END;
+
+CREATE TRIGGER quarantined_components_no_delete
+BEFORE DELETE ON quarantined_components
+BEGIN
+    SELECT RAISE(ABORT, 'quarantined components cannot be deleted');
 END;
 
 CREATE TRIGGER schema_migrations_checksum_required

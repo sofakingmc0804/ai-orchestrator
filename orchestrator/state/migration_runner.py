@@ -125,14 +125,21 @@ class MigrationRunner:
         try:
             await asyncio.shield(commit_task)
         except asyncio.CancelledError as cancellation:
+            commit_error: BaseException | None = None
             while not commit_task.done():
                 try:
                     await asyncio.shield(commit_task)
                 except asyncio.CancelledError:
                     continue
-            try:
-                commit_task.result()
-            except BaseException as commit_error:
+                except BaseException as error:
+                    commit_error = error
+                    break
+            if commit_error is None:
+                try:
+                    commit_task.result()
+                except BaseException as error:
+                    commit_error = error
+            if commit_error is not None:
                 cancellation.add_note(f"compatibility commit completed with {type(commit_error).__name__}: {commit_error}")
                 raise cancellation from commit_error
             raise cancellation
@@ -286,14 +293,20 @@ class MigrationRunner:
             await self._record_repair(db, version, exc, backup_path)
 
         cleanup_task = asyncio.create_task(cleanup())
-        cancellation: asyncio.CancelledError | None = None
-        try:
-            await asyncio.shield(cleanup_task)
-        except asyncio.CancelledError as exc:
-            cancellation = exc
-            await cleanup_task
-        if cancellation is not None:
-            raise cancellation
+        later_cancellation: asyncio.CancelledError | None = None
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as interruption:
+                # The caller's original cancellation remains authoritative.  If
+                # cleanup was entered for another failure, preserve the first
+                # cancellation that arrives while still draining cleanup.
+                if not isinstance(exc, asyncio.CancelledError) and later_cancellation is None:
+                    later_cancellation = interruption
+                continue
+        cleanup_task.result()
+        if later_cancellation is not None:
+            raise later_cancellation
 
     async def _record_repair(
         self,
@@ -304,14 +317,24 @@ class MigrationRunner:
     ) -> None:
         backup_published = backup_path is not None
         backup_retained = bool(backup_path is not None and backup_path.is_file())
+        cause = exc.__cause__
+        notes = list(getattr(exc, "__notes__", ()))
+        cause_type = type(cause).__name__ if cause is not None else None
+        cause_error = str(cause) if cause is not None else None
         fingerprint = hashlib.sha256(
-            f"{version}|{type(exc).__name__}|{exc}".encode("utf-8", errors="replace")
+            f"{version}|{type(exc).__name__}|{exc}|{cause_type}|{cause_error}|{notes}".encode(
+                "utf-8", errors="replace"
+            )
         ).hexdigest()[:24]
         detail = json.dumps(
             {
                 "version": version,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
+                "cause_type": cause_type,
+                "cause": cause_error,
+                "cause_error": cause_error,
+                "notes": notes,
                 "backup_path": str(backup_path) if backup_path is not None else None,
                 "backup_published": backup_published,
                 "backup_retained": backup_retained,
