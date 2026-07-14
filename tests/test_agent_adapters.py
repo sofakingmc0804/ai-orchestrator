@@ -7,27 +7,84 @@ import pytest
 
 import orchestrator.adapters.builtins as builtins
 import orchestrator.process.recovery as recovery
-from orchestrator.adapters.builtins import CodexExecAdapter, HermesAgentAdapter, LmStudioAdapter, OpenClawGatewayAdapter
+from orchestrator.adapters.builtins import CodexExecAdapter, HermesAgentAdapter, LmStudioAdapter, OllamaHttpAdapter, OpenClawGatewayAdapter
 from orchestrator.config import Settings
 from orchestrator.models import HealthState
 from orchestrator.state.store import StateStore
 
 
 @pytest.mark.asyncio
-async def test_hermes_adapter_dispatch_is_retired_as_downstream_target(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, list[str], float]] = []
+async def test_hermes_health_uses_governed_desktop_runtime_and_configured_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, list[str], dict[str, str] | None]] = []
 
-    async def fake_run(command: str, args: list[str], timeout: float = 30) -> dict[str, Any]:
-        calls.append((command, args, timeout))
-        return {"ok": True, "stdout": "HERMES_OK", "stderr": "", "returncode": 0}
+    async def fake_run(
+        command: str,
+        args: list[str],
+        timeout: float = 30,
+        env: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, Any]:
+        calls.append((command, args, env))
+        return {
+            "ok": True,
+            "stdout": "Model: deepseek-v4-pro\r\nProvider: Ollama Cloud\r\n",
+            "stderr": "",
+            "returncode": 0,
+        }
 
     monkeypatch.setattr(builtins, "_run_bounded", fake_run)
-    result = await HermesAgentAdapter().dispatch({"intent": {"raw_text": "smoke"}})
-    assert result["ok"] is False
-    assert result["terminal_state"] == "blocked_after_repair_attempt"
-    assert "upstream" in result["error"].lower()
-    assert "route" in result["repair_action"].lower()
-    assert calls == []
+
+    info = await HermesAgentAdapter().health_probe()
+
+    assert calls[0][0:2] == ("hermes", ["status"])
+    assert calls[0][2] is not None
+    assert calls[0][2]["HERMES_HOME"] == str(builtins.HERMES_DESKTOP_HOME)
+    assert info.health_state == HealthState.HEALTHY
+    assert info.detail is None
+
+
+@pytest.mark.asyncio
+async def test_hermes_dispatch_uses_desktop_oneshot_and_usage_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, list[str], dict[str, str] | None]] = []
+    timeouts: list[float] = []
+
+    async def fake_run(
+        command: str,
+        args: list[str],
+        timeout: float = 30,
+        env: dict[str, str] | None = None,
+        **_kwargs: object,
+    ) -> dict[str, Any]:
+        calls.append((command, args, env))
+        timeouts.append(timeout)
+        usage_path = Path(args[args.index("--usage-file") + 1])
+        usage_path.parent.mkdir(parents=True, exist_ok=True)
+        usage_path.write_text('{"tokens_in": 11, "tokens_out": 7}', encoding="utf-8")
+        return {"ok": True, "stdout": "desktop work result", "stderr": "", "returncode": 0}
+
+    monkeypatch.setattr(builtins, "_run_bounded", fake_run)
+    monkeypatch.setattr(builtins, "HERMES_USAGE_DIR", tmp_path)
+
+    result = await HermesAgentAdapter().dispatch({"intent": {"raw_text": "Inspect the source task."}})
+
+    assert result["ok"] is True
+    assert result["text"] == "desktop work result"
+    assert calls[0][0] == "hermes"
+    assert calls[0][1][0] == "-z"
+    assert "--usage-file" in calls[0][1]
+    assert calls[0][2] is not None
+    assert calls[0][2]["HERMES_HOME"] == str(builtins.HERMES_DESKTOP_HOME)
+    assert timeouts == [900]
+    assert result["raw"]["usage"]["tokens_out"] == 7
+
+
+def test_governed_hermes_shim_sets_desktop_home() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    shim = repo_root / ".runtime" / "ai-resource-governor" / "bin" / "hermes.ps1"
+
+    text = shim.read_text(encoding="utf-8")
+
+    assert '$env:HERMES_HOME = "C:\\Users\\Couch\\AppData\\Local\\hermes"' in text
 
 
 def test_governed_command_resolution_prefers_resource_governor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -38,6 +95,18 @@ def test_governed_command_resolution_prefers_resource_governor(monkeypatch: pyte
     monkeypatch.setattr(builtins, "GOVERNOR_BIN", fake_bin)
     monkeypatch.setattr(builtins.shutil, "which", lambda command: f"C:/unsafe/{command}.cmd")
     assert builtins._resolve_command("openclaw") == str(shim)
+
+
+def test_governed_hermes_resolution_prefers_powershell_over_cmd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake_bin = tmp_path / ".ai-resource-governor" / "bin"
+    fake_bin.mkdir(parents=True)
+    cmd = fake_bin / "hermes.cmd"
+    ps1 = fake_bin / "hermes.ps1"
+    cmd.write_text("@echo off", encoding="utf-8")
+    ps1.write_text("exit 0", encoding="utf-8")
+    monkeypatch.setattr(builtins, "GOVERNOR_BIN", fake_bin)
+
+    assert builtins._resolve_command("hermes") == str(ps1)
 
 
 def test_lms_command_resolution_prefers_headless_user_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -53,6 +122,10 @@ def test_lms_command_resolution_prefers_headless_user_cli(monkeypatch: pytest.Mo
 
 def test_terminal_output_cleaner_removes_ansi_sequences() -> None:
     assert builtins._clean_terminal_text("assi\x1b[4D\x1b[K\nassistance") == "assi\nassistance"
+
+
+def test_ollama_http_targets_current_localhost_server() -> None:
+    assert OllamaHttpAdapter().base_url == "http://localhost:11434"
 
 
 @pytest.mark.asyncio
@@ -99,6 +172,34 @@ async def test_lm_studio_health_requires_http_server(monkeypatch: pytest.MonkeyP
 
     assert info.install_path
     assert info.health_state == HealthState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_ollama_health_requires_the_dispatch_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeResponse:
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+
+    class FakeClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> FakeResponse:
+            return FakeResponse(200 if url.endswith("/api/tags") else 404)
+
+    monkeypatch.setattr(builtins.httpx, "AsyncClient", FakeClient)
+
+    info = await OllamaHttpAdapter().health_probe()
+
+    assert info.health_state == HealthState.DEGRADED
+    assert info.detail is not None
+    assert "/api/chat" in info.detail
 
 
 @pytest.mark.asyncio
@@ -198,7 +299,7 @@ async def test_recovery_records_lm_studio_first_run_blocker(monkeypatch: pytest.
 
     result = await recovery.repair_lm_studio_local_server(store)
 
-    assert result["state"] == "blocked_after_repair_attempt"
+    assert result["state"] == "continuation_required"
     assert Path(str(result["packet"])).exists()
     repairs = await store.list_repair_queue()
     assert repairs

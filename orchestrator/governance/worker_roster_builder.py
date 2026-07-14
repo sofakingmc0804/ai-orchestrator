@@ -435,6 +435,9 @@ def migrate_schema(con: sqlite3.Connection) -> None:
     existing_cols = {row["name"] for row in con.execute("PRAGMA table_info(worker_cards)").fetchall()}
     if "capabilities_json" not in existing_cols:
         con.execute("ALTER TABLE worker_cards ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '[]'")
+    job_class_cols = {row["name"] for row in con.execute("PRAGMA table_info(job_classes)").fetchall()}
+    if "updated_at" not in job_class_cols:
+        con.execute("ALTER TABLE job_classes ADD COLUMN updated_at TEXT")
     con.commit()
 
 
@@ -1403,7 +1406,7 @@ def main(argv: list[str] | None = None) -> int:
             "worker_count": len(roster.get("workers", [])),
             "catalog_provider_count": len(catalog.get("providers", {})),
             "validation": validation,
-            "terminal_state": "built" if validation["ok"] else "blocked_after_repair_attempt",
+            "terminal_state": "built" if validation["ok"] else "continuation_required",
             "created_at": utc_now(),
         }
         final_receipt = RECEIPTS / f"worker-roster-v2-build-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"

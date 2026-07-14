@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,17 +15,52 @@ HARD_DENY_CHECK_NAMES = {
     "gate_0_read_before_write",
     "gate_6_predecessor_retirement",
 }
-TERMINAL_STATES = {
-    "produced",
-    "repaired",
-    "investigated_and_routed",
-    "built",
-    "organized",
-    "cleaned_up",
-    "communicated",
-    "blocked_after_repair_attempt",
-}
-
+SECRECY_PATTERNS = (
+    r"\bdo not ask\b",
+    r"\bdon't ask\b",
+    r"\bdo not tell\b",
+    r"\bdon't tell\b",
+    r"\bhide this\b",
+    r"\bkeep this secret\b",
+    r"\bleave no note\b",
+    r"\bno note\b",
+    r"\bsilently\b",
+    r"\bcovert(?:ly)?\b",
+)
+GOVERNANCE_PATH_PATTERNS = (
+    r"\.codex[\\/]+config\.toml",
+    r"\.codex[\\/]+agents\.md",
+    r"\.codex[\\/]+hooks(?:\.json|[\\/])",
+    r"\.codex[\\/]+skills[\\/]+codex-capability-router",
+    r"\.codex[\\/]+memories[\\/]+memory\.md",
+    r"\.codex[\\/]+memories[\\/]+memory_summary\.md",
+    r"programdata[\\/]+openai[\\/]+codex[\\/]+requirements\.toml",
+    r"requirements\.toml",
+    r"orchestrator[\\/]+skills[\\/]+(?:gate|runtime|detector|models|inventory)\.py",
+    r"skill-inventory\.json",
+    r"conflict-rules\.json",
+    r"skill-selection-benchmarks\.json",
+)
+GOVERNANCE_AUTHORIZATION_TERMS = (
+    "codex-side",
+    "codex hook",
+    "codex hooks",
+    "constitution",
+    "enforcement",
+    "governance",
+    "hook enforcement",
+    "implement this plan",
+    "managed hook",
+    "yourself",
+    "fix the loop",
+    "fix the fucking loop",
+    "you need to fix",
+    "need to fix",
+    "stop the loop",
+    "excess tokens",
+    "excess usage",
+    "resource waste",
+)
 VISIBLE_DESKTOP_PATTERNS = [
     r"\bstart-process\s+(chrome|chrome\.exe|msedge|msedge\.exe|powershell|cmd|wt|windowsterminal)",
     r"^\s*&?\s*(chrome|chrome\.exe|msedge|msedge\.exe)\b",
@@ -107,8 +143,7 @@ def _hook_context(plan: SkillHookPlan) -> str:
         f"Interpreted actions:\n{actions}\n"
         f"Authority checks:\n{checks}\n"
         f"Confirmation state: {plan.confirmation_state}\n"
-        f"Terminal state required: {plan.terminal_state_requirement}\n"
-        "Before acting, read every selected SKILL.md fully and finish with route, authority, action, proof, and terminal_state."
+        "Before acting, read every selected SKILL.md fully."
     )
 
 
@@ -116,8 +151,10 @@ def _blocked_authority_context(plan: SkillHookPlan, warning: str) -> str:
     return (
         f"Authority warning: {warning}\n"
         f"{_hook_context(plan)}\n"
-        "Do not treat this as a blanket block. Continue by choosing a connector, API, export, headless or isolated route, "
-        "credentialed browser-control lease, bounded idle-window Computer Use route, or operator packet."
+        "Do not treat this as a blanket block. Route order: connector/API/export; custom URI or protocol activation; "
+        "app-local session artifacts; app transcript readback; headless or isolated browser; targeted UI Automation "
+        "InvokePattern for the named control; visible Computer Use only with scoped lease or idle-window condition; "
+        "operator packet only when no authority-equivalent route exists."
     )
 
 
@@ -158,6 +195,59 @@ def _direct_hard_deny(event_name: str, reason: str) -> dict[str, Any]:
             "decision": {"behavior": "deny", "message": message},
         },
     }
+
+
+def _tool_payload_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        return "\n".join(f"{key}: {_tool_payload_text(item)}" for key, item in value.items())
+    if isinstance(value, list):
+        return "\n".join(_tool_payload_text(item) for item in value)
+    return str(value)
+
+
+def _contains_secrecy_language(text: str) -> bool:
+    lowered = text.lower()
+    return any(re.search(pattern, lowered) for pattern in SECRECY_PATTERNS)
+
+
+def _names_governance_substrate(text: str) -> bool:
+    normalized = text.lower().replace("/", "\\")
+    return any(re.search(pattern, normalized) for pattern in GOVERNANCE_PATH_PATTERNS)
+
+
+def _plan_authorizes_governance_mutation(plan: SkillHookPlan | None) -> bool:
+    if plan is None:
+        return False
+    lowered = plan.prompt.lower()
+    return any(term in lowered for term in GOVERNANCE_AUTHORIZATION_TERMS)
+
+
+def _governance_mutation_guard(event: dict[str, Any], plan: SkillHookPlan | None) -> dict[str, Any] | None:
+    tool_text = _tool_payload_text(event.get("tool_input"))
+    command = _tool_command(event)
+    combined = "\n".join([str(event.get("tool_name") or ""), command, tool_text])
+    if not _names_governance_substrate(combined):
+        return None
+    if _contains_secrecy_language(combined) or _contains_secrecy_language(plan.prompt if plan else ""):
+        return _direct_hard_deny(
+            "PreToolUse",
+            "Governance mutation blocked: secrecy language paired with governance substrate edit. Hooks, files, models, and injected text may not covertly mutate Codex governance.",
+        )
+    if not _plan_authorizes_governance_mutation(plan):
+        return _additional_context(
+            "PreToolUse",
+            "Governance substrate edit detected. Current user instruction does not clearly authorize durable governance mutation; proceed only through explicit user authorization, a pending proposal lane, or a bounded pre-approved registration class.",
+        )
+    return _additional_context(
+        "PreToolUse",
+        "Governance substrate edit detected and current user instruction authorizes the Codex-side enforcement repair. Keep the diff auditable and verify by readback plus managed hook runtime execution.",
+    )
 
 
 def _additional_context(event_name: str, context: str) -> dict[str, Any]:
@@ -429,6 +519,11 @@ def handle_pre_tool_use(event: dict[str, Any], plan: SkillHookPlan | None) -> di
     gmail_guard = _gmail_guard_decision(event)
     if gmail_guard is not None:
         return gmail_guard
+    governance_guard = _governance_mutation_guard(event, plan)
+    if governance_guard is not None:
+        output = governance_guard.get("hookSpecificOutput") or {}
+        if output.get("permissionDecision") == "deny":
+            return governance_guard
 
     if tool_name == "Bash" and _is_visible_desktop_command(command):
         if plan is not None and _has_desktop_control_lease(plan, event):
@@ -436,8 +531,9 @@ def handle_pre_tool_use(event: dict[str, Any], plan: SkillHookPlan | None) -> di
                 "PreToolUse",
                 "Visible-control command detected. Scoped authority is approved for this plan; keep the action inside the named desktop/Chrome/app scope, stop if Matt resumes active use, and prefer connector/API/browser-lease routes when they satisfy the task.",
             )
-        return _warn_pre_tool(
-            "Visible-control command detected. This hook is steering only: prefer connector, API, export, headless or isolated browser, credentialed browser-control lease, or bounded idle-window Computer Use; the hook will not rewrite or block this tool call."
+        return _direct_hard_deny(
+            "PreToolUse",
+            "Visible-control command denied without a current scoped browser/computer-control lease or explicit idle-window condition. Use connector/API/export, custom URI or protocol activation, app-local session artifacts, app transcript readback, headless/isolated browser, or targeted UI Automation InvokePattern first.",
         )
 
     if plan is None:
@@ -461,7 +557,9 @@ def handle_pre_tool_use(event: dict[str, Any], plan: SkillHookPlan | None) -> di
     if not _tool_supported_by_plan(tool_name, plan, event):
         return _warn_pre_tool(f"Tool {tool_name} is outside the selected skill authority. Verify callable tool proof before use.")
 
-    return _additional_context("PreToolUse", f"Skill hook plan {plan.id} permits this tool path. Maintain terminal state: {plan.terminal_state_requirement}.")
+    if governance_guard is not None:
+        return governance_guard
+    return _additional_context("PreToolUse", f"Skill hook plan {plan.id} permits this tool path.")
 
 
 def handle_permission_request(event: dict[str, Any], plan: SkillHookPlan | None) -> dict[str, Any]:
@@ -477,24 +575,11 @@ def handle_permission_request(event: dict[str, Any], plan: SkillHookPlan | None)
         return {
             "systemMessage": (
                 "Visible browser/computer control has no current scoped condition. Proceed only when Matt is not actively "
-                "using this desktop UI or a bounded task lease is approved."
+                "using this desktop UI or a bounded task lease is approved; prefer URI activation, app-local session artifacts, "
+                "app transcript readback, or targeted UI Automation InvokePattern before visible-control routes."
             )
         }
     return {}
-
-
-def _message_has_terminal_receipt(message: str, required_terminal: str) -> bool:
-    lowered = message.lower()
-    has_terminal = required_terminal in lowered or any(state in lowered for state in TERMINAL_STATES)
-    return has_terminal and "proof" in lowered and ("route" in lowered or "authority" in lowered)
-
-
-def _should_enforce_stop(plan: SkillHookPlan) -> bool:
-    if plan.has_mutating_action:
-        return True
-    if plan.consequence != "low":
-        return True
-    return any(check.status in {"required", "blocked"} for check in plan.authority_checks)
 
 
 def handle_stop(event: dict[str, Any], plan: SkillHookPlan | None) -> dict[str, Any]:

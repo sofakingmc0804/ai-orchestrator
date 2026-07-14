@@ -269,7 +269,9 @@ async def _record_receipt(settings: Settings, event: dict[str, Any], plan: Skill
     await store.initialize()
     hook_output = decision.get("hookSpecificOutput") or {}
     hook_decision = hook_output.get("decision")
-    if isinstance(hook_decision, dict):
+    if event.get("hook_event_name") == "Stop" and decision.get("decision"):
+        recorded_decision = decision.get("decision")
+    elif isinstance(hook_decision, dict):
         recorded_decision = hook_decision.get("behavior")
     else:
         recorded_decision = decision.get("decision") or hook_output.get("permissionDecision")
@@ -295,8 +297,6 @@ async def _record_receipt(settings: Settings, event: dict[str, Any], plan: Skill
             "created_at": iso(),
         }
     )
-
-
 async def run_hook_event(event: dict[str, Any], settings: Settings | None = None, record: bool = True) -> dict[str, Any]:
     settings = settings or Settings.load()
     event_name = str(event.get("hook_event_name") or "")
@@ -339,6 +339,12 @@ async def run_hook_event(event: dict[str, Any], settings: Settings | None = None
     return decision
 
 
+def _public_hook_decision(decision: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+    if event.get("hook_event_name") == "Stop" and decision.get("decision") == "block":
+        return {"decision": "block", "reason": str(decision.get("reason") or "")}
+    return decision
+
+
 def main() -> None:
     raw = sys.stdin.read()
     try:
@@ -347,7 +353,7 @@ def main() -> None:
         print(json.dumps(_advisory_context("Unknown", f"Invalid hook JSON: {exc}")))
         return
     decision = asyncio.run(run_hook_event(event))
-    print(json.dumps(decision or {}, separators=(",", ":")))
+    print(json.dumps(_public_hook_decision(decision or {}, event), separators=(",", ":")))
 
 
 if __name__ == "__main__":

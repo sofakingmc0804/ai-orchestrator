@@ -114,6 +114,21 @@ CHROME_CONTROL_TERMS = (
     "codex chrome",
     "logged-in chrome",
 )
+NON_INTERRUPTING_APP_ROUTE_TERMS = (
+    "app-local session",
+    "app transcript",
+    "app-owned transcript",
+    "claude desktop",
+    "custom uri",
+    "local-agent",
+    "local agent",
+    "non-active task chat",
+    "non active task chat",
+    "non-foreground",
+    "not interrupting",
+    "without interrupting",
+    "without taking over",
+)
 HARD_DENY_CHECK_NAMES = {
     "forbidden_metered_route",
     "unapproved_external_send",
@@ -198,6 +213,12 @@ def _requests_visible_desktop_or_chrome_authority(text: str) -> bool:
     return any(term in text for term in ("visible chrome", "visible browser", "active tab", "foreground window"))
 
 
+def _requests_non_interrupting_app_route(text: str) -> bool:
+    return _contains_any(text, NON_INTERRUPTING_APP_ROUTE_TERMS) and any(
+        term in text for term in ("app", "claude", "desktop", "task chat", "transcript", "ui")
+    )
+
+
 def _verb_for_text(text: str) -> str:
     stripped = text.strip()
     if not stripped:
@@ -233,6 +254,8 @@ def _selected(name: str, inventory: SkillInventory, reason: str) -> SelectedSkil
 def _domain_for_text(lowered: str, read_only_discovery: bool = False) -> str:
     if read_only_discovery:
         return "discovery"
+    if _requests_non_interrupting_app_route(lowered):
+        return "browser"
     if any(term in lowered for term in ("gmail", "email", "calendar", "drive", "docs", "sheet", "canva", "github")):
         return "connected_app"
     if _requests_chrome_control(lowered) or _requests_computer_control(lowered):
@@ -289,6 +312,18 @@ def _confirmation_state(lowered: str, domain: str, mutates: bool, confidence: fl
 def _authority_checks(lowered: str, inventory: SkillInventory, mutates: bool, confirmation_state: str) -> list[AuthorityCheck]:
     checks = [_inventory_check(inventory)]
     checks.extend(_hard_deny_authority_checks(lowered))
+    if _requests_non_interrupting_app_route(lowered):
+        checks.append(
+            AuthorityCheck(
+                name="non_interrupting_app_route_order",
+                status="required",
+                reason=(
+                    "App UI/runtime proof must try connector/API/export, custom URI or protocol activation, app-local "
+                    "session artifacts, app transcript readback, headless or isolated browser, and targeted UI Automation "
+                    "InvokePattern before visible Computer Use. Visible control requires a scoped lease or explicit idle-window condition."
+                ),
+            )
+        )
     if _requests_visible_desktop_or_chrome_authority(lowered):
         checks.append(
             AuthorityCheck(
@@ -369,6 +404,8 @@ def _append_if_missing(selected: list[SelectedSkill], name: str, inventory: Skil
 
 def _select_domain_skills(lowered: str, domain: str, selected: list[SelectedSkill], inventory: SkillInventory) -> None:
     if domain == "browser":
+        if _requests_non_interrupting_app_route(lowered):
+            return
         if any(term in lowered for term in ("regression", "screenshot", "snapshot", "playwright")):
             _append_if_missing(selected, "playwright", inventory, "Browser regression or screenshot proof requires terminal-driven Playwright authority.")
         elif "localhost" in lowered or "page renders" in lowered or "render" in lowered:

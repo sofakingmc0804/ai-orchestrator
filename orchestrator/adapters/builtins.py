@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +23,18 @@ GOVERNOR_HOME = Path(os.getenv("AI_RESOURCE_GOVERNOR_HOME", REPO_ROOT / ".runtim
 GOVERNOR_BIN = GOVERNOR_HOME / "bin"
 GOVERNED_COMMANDS = {"hermes", "openclaw"}
 ANSI_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+HERMES_DESKTOP_HOME = Path(
+    os.getenv("HERMES_DESKTOP_HOME", str(Path.home() / "AppData" / "Local" / "hermes"))
+).expanduser()
+HERMES_DESKTOP_EXE = HERMES_DESKTOP_HOME / "hermes-agent" / "venv" / "Scripts" / "hermes.exe"
+HERMES_USAGE_DIR = Path(
+    os.getenv("ORCHESTRATOR_HERMES_USAGE_DIR", str(GOVERNOR_HOME / "receipts" / "hermes-desktop"))
+).expanduser()
 
 
 def _resolve_command(command: str) -> str | None:
     if command.lower() in GOVERNED_COMMANDS:
-        for suffix in (".cmd", ".ps1", ".exe"):
+        for suffix in (".ps1", ".cmd", ".exe"):
             candidate = GOVERNOR_BIN / f"{command}{suffix}"
             if candidate.exists():
                 return str(candidate)
@@ -41,7 +49,13 @@ def _resolve_command(command: str) -> str | None:
     return shutil.which(command)
 
 
-async def _run_bounded(command: str, args: list[str], timeout: float = 30, env: dict[str, str] | None = None) -> dict[str, Any]:
+async def _run_bounded(
+    command: str,
+    args: list[str],
+    timeout: float = 30,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
     resolved = _resolve_command(command)
     if not resolved:
         return {"ok": False, "error": f"{command} not found"}
@@ -55,6 +69,7 @@ async def _run_bounded(command: str, args: list[str], timeout: float = 30, env: 
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env={**os.environ, **env} if env else None,
+            cwd=str(cwd) if cwd else None,
         )
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
@@ -193,18 +208,28 @@ class OllamaHttpAdapter(StaticCliAdapter):
             capabilities=["classify_text", "summarize_text", "ocr_document", "embed_text", "local_chat"],
             consequence_max=ConsequenceTier.MEDIUM,
         )
-        self.base_url = "http://127.0.0.1:11434"
+        self.base_url = "http://localhost:11434"
 
     async def health_probe(self) -> ServiceInfo:
         info = await super().health_probe()
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.get(f"{self.base_url}/api/tags")
-                if r.status_code == 200:
+                tags = await client.get(f"{self.base_url}/api/tags")
+                chat = await client.get(f"{self.base_url}/api/chat")
+                if tags.status_code == 200 and chat.status_code != 404:
                     info.health_state = HealthState.HEALTHY
+                elif tags.status_code == 200:
+                    info.health_state = HealthState.DEGRADED
+                    info.detail = "Ollama answers /api/tags but does not expose the /api/chat dispatch route."
+                    info.repair_action = "Restart Ollama so the running server matches the installed client, then refresh service discovery."
+                else:
+                    info.health_state = HealthState.DEGRADED
+                    info.detail = f"Ollama model inventory returned HTTP {tags.status_code}."
+                    info.repair_action = "Repair the local Ollama HTTP server and refresh service discovery."
         except httpx.HTTPError:
-            if info.health_state != HealthState.HEALTHY:
-                info.health_state = HealthState.STOPPED
+            info.health_state = HealthState.DEGRADED if info.health_state == HealthState.HEALTHY else HealthState.STOPPED
+            info.detail = "Ollama executable or process is present, but its HTTP service did not answer the dispatch health probe."
+            info.repair_action = "Start or restart Ollama, then refresh service discovery."
         return info
 
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
@@ -301,63 +326,78 @@ class HermesAgentAdapter(StaticCliAdapter):
 
     async def health_probe(self) -> ServiceInfo:
         info = await super().health_probe()
-        status = await _run_bounded("hermes", ["status"], timeout=20)
+        info.install_path = str(HERMES_DESKTOP_EXE) if HERMES_DESKTOP_EXE.is_file() else None
+        status = await _run_bounded(
+            "hermes",
+            ["status"],
+            timeout=20,
+            env={"HERMES_HOME": str(HERMES_DESKTOP_HOME)},
+        )
         stdout = str(status.get("stdout", "") or "")
         stderr = str(status.get("stderr", "") or "")
         text = _clean_terminal_text(f"{stdout}\n{stderr}")
-        route_hint = (
-            "Hermes is upstream of the orchestrator brain; route work with "
-            "`python -m orchestrator.cli.main route` or POST /api/route."
-        )
-        if status.get("ok") and "Provider:" in text and "Custom endpoint" in text:
+        model_match = re.search(r"(?mi)^\s*Model:\s*(?P<value>[^\r\n]+)", text)
+        provider_match = re.search(r"(?mi)^\s*Provider:\s*(?P<value>[^\r\n]+)", text)
+        model = model_match.group("value").strip() if model_match else ""
+        provider = provider_match.group("value").strip() if provider_match else ""
+        if status.get("ok") and model and provider:
             info.health_state = HealthState.HEALTHY
             info.detail = None
             info.repair_action = None
         elif status.get("ok"):
-            # The CLI ran but did not advertise a configured upstream model.
             info.health_state = HealthState.DEGRADED
             info.detail = (
-                "`hermes status` succeeded but did not report a configured Provider and "
-                "Custom endpoint, so Hermes is not fully wired to its upstream model."
+                "Desktop Hermes status did not report both a configured Model and Provider."
                 + (f" Output: {text[:200]}" if text else "")
             )
-            info.repair_action = (
-                "Reconfigure the Hermes provider and custom endpoint (e.g. `hermes config` or "
-                "`hermes auth add nous --type oauth` in an owner-approved login lane), then re-probe. "
-                + route_hint
-            )
+            info.repair_action = "Use the Desktop Hermes model settings to configure a model/provider pair, then re-probe."
         elif status.get("timeout"):
             info.health_state = HealthState.DEGRADED
-            info.detail = "`hermes status` did not respond within 20s; the Hermes gateway is unresponsive."
-            info.repair_action = "Restart the Hermes gateway, then re-probe. " + route_hint
-        elif "not found" in str(status.get("error", "")).lower():
-            # Critical fix: previously this path fell through and inherited the base
-            # HEALTHY state (the base probe matches a running python.exe), so a missing
-            # Hermes binary was reported as healthy. Report STOPPED with a reason instead.
+            info.detail = "Desktop Hermes status did not respond within 20s."
+            info.repair_action = "Restart the Desktop Hermes backend, then re-probe."
+        elif any(marker in str(status.get("error", "")).lower() for marker in ("missing", "not found")):
             info.health_state = HealthState.STOPPED
-            info.detail = "The `hermes` executable is not installed or not on PATH."
-            info.repair_action = "Install the Hermes CLI and ensure `hermes` resolves on PATH, then re-probe."
+            info.detail = str(status.get("error"))
+            info.repair_action = "Restore the Desktop Hermes runtime at its configured Windows home, then re-probe."
         else:
             info.health_state = HealthState.DEGRADED
             rc = status.get("returncode")
             info.detail = (
-                "`hermes status` exited with an error"
+                "Desktop Hermes status exited with an error"
                 + (f" (rc={rc})" if rc is not None else "")
                 + (f": {text[:200]}" if text else ".")
             )
-            info.repair_action = "Inspect the Hermes error above and restart or repair the Hermes gateway. " + route_hint
+            info.repair_action = "Inspect the Desktop Hermes error above and repair its configured runtime."
         return info
 
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
         prompt = str(envelope.get("intent", {}).get("raw_text") or envelope.get("prompt") or "").strip()
         if not prompt:
             return {"ok": False, "error": "No prompt supplied to Hermes adapter."}
-        return {
-            "ok": False,
-            "terminal_state": "blocked_after_repair_attempt",
-            "error": "Hermes is upstream of the orchestrator brain and is retired as a downstream dispatch target.",
-            "repair_action": "Call `python -m orchestrator.cli.main route` or POST /api/route, then let the Hermes shim execute the selected worker.",
-        }
+        project_root_text = str(envelope.get("project_root") or envelope.get("intent", {}).get("project_root") or "")
+        project_root = Path(project_root_text) if project_root_text else None
+        HERMES_USAGE_DIR.mkdir(parents=True, exist_ok=True)
+        usage_path = HERMES_USAGE_DIR / f"hermes-{uuid.uuid4().hex[:16]}.json"
+        response = await _run_bounded(
+            "hermes",
+            ["-z", prompt, "--usage-file", str(usage_path), "--orchestrator-job-class", "repo_coding"],
+            timeout=900,
+            env={"HERMES_HOME": str(HERMES_DESKTOP_HOME)},
+            cwd=project_root if project_root and project_root.is_dir() else None,
+        )
+        text = _clean_terminal_text(str(response.get("stdout", "") or ""))
+        try:
+            usage = json.loads(usage_path.read_text(encoding="utf-8")) if usage_path.is_file() else {}
+        except json.JSONDecodeError:
+            usage = {}
+        raw = {"usage_path": str(usage_path), "usage": usage, "stderr": response.get("stderr")}
+        if not response.get("ok"):
+            return {
+                "ok": False,
+                "error": str(response.get("error") or response.get("stderr") or "Desktop Hermes dispatch failed."),
+                "raw": raw,
+            }
+        return {"ok": True, "model": "desktop-hermes", "text": text, "raw": raw}
 
 
 class OpenClawGatewayAdapter(StaticCliAdapter):
@@ -397,7 +437,7 @@ class OpenClawGatewayAdapter(StaticCliAdapter):
             return {"ok": False, "error": "No prompt supplied to OpenClaw adapter."}
         return {
             "ok": False,
-            "terminal_state": "blocked_after_repair_attempt",
+            "terminal_state": "continuation_required",
             "error": "OpenClaw was retired during the 2026-06-16 consolidation and is no longer a downstream dispatch target.",
             "repair_action": "Use `python -m orchestrator.cli.main route` or POST /api/route; archived OpenClaw state is under C:\\Users\\Couch\\Archive\\openclaw-retired-2026-06-16.",
             "model": model or "openclaw-retired",

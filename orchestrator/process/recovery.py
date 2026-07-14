@@ -49,7 +49,7 @@ def _write_lm_studio_repair_packet(store: StateStore, detail: str) -> Path:
             [
                 "# LM Studio CLI Server Repair Packet",
                 "",
-                "Terminal state: blocked_after_repair_attempt",
+                "Terminal state: continuation_required",
                 "",
                 "Consequence: the orchestrator cannot prove the `lm-studio` adapter without a no-touch local server or CLI.",
                 "",
@@ -126,7 +126,7 @@ async def repair_lm_studio_local_server(store: StateStore) -> dict[str, Any]:
     )
     return {
         "service": "lm-studio",
-        "state": "blocked_after_repair_attempt",
+        "state": "continuation_required",
         "repair_id": repair_id,
         "packet": str(packet_path),
         "status": status,

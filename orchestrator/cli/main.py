@@ -11,6 +11,7 @@ from typing import Any
 
 from orchestrator.autopilot.watchers import scan_autopilot_roots_once
 from orchestrator.benchmarks.latency import run_selection_latency_benchmark
+from orchestrator.cli.delegation import register_delegation_cli
 from orchestrator.cli.governance import register_governance_cli
 from orchestrator.cli.budget_cli import register_budget_cli
 from orchestrator.config import Settings
@@ -301,7 +302,18 @@ def _infer_hermes_job_class(argv: list[str]) -> str | None:
     return None
 
 
-async def _hermes_route(settings: Settings, text: str, job_class: str | None, argv_json: str | None, argv_b64: str | None = None) -> dict[str, object]:
+async def _hermes_route(
+    settings: Settings,
+    text: str | None,
+    job_class: str | None,
+    argv_json: str | None,
+    argv_b64: str | None = None,
+    text_b64: str | None = None,
+) -> dict[str, object]:
+    if text_b64:
+        text = base64.b64decode(text_b64.encode("ascii")).decode("utf-8")
+    if not text:
+        raise ValueError("hermes-route requires --text or --text-b64")
     argv: list[str] = []
     if argv_b64:
         argv_json = base64.b64decode(argv_b64.encode("ascii")).decode("utf-8")
@@ -371,7 +383,8 @@ def main() -> None:
     skill_route.add_argument("--text", required=True)
     skill_route.add_argument("--cwd", default=None)
     hermes_route = sub.add_parser("hermes-route")
-    hermes_route.add_argument("--text", required=True)
+    hermes_route.add_argument("--text", default=None)
+    hermes_route.add_argument("--text-b64", default=None)
     hermes_route.add_argument("--job-class", default=None)
     hermes_route.add_argument("--argv-json", default=None)
     hermes_route.add_argument("--argv-b64", default=None)
@@ -435,6 +448,9 @@ def main() -> None:
     # Budget CLI commands (Phase 3)
     register_budget_cli(sub)
 
+    # Capacity-aware delegated work controls
+    register_delegation_cli(sub)
+
     args = parser.parse_args()
 
     settings = Settings.load()
@@ -468,7 +484,7 @@ def main() -> None:
     elif args.cmd == "skill-route":
         result = asyncio.run(_skill_route(settings, args.text, args.cwd))
     elif args.cmd == "hermes-route":
-        result = asyncio.run(_hermes_route(settings, args.text, args.job_class, args.argv_json, args.argv_b64))
+        result = asyncio.run(_hermes_route(settings, args.text, args.job_class, args.argv_json, args.argv_b64, args.text_b64))
     elif args.cmd == "hook-gate":
         result = asyncio.run(_hook_gate(settings))
     elif args.cmd == "skill-hook-receipts":

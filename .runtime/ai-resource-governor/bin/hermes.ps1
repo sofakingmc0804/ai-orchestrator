@@ -1,7 +1,8 @@
 $ErrorActionPreference = "Stop"
 $root = "C:\Users\Couch\dev\ai-orchestrator\.runtime\ai-resource-governor"
 $python = "C:\Python313\python.exe"
-$actual = "C:\Users\Couch\AppData\Roaming\Python\Python313\Scripts\hermes.exe"
+$actual = "C:\Users\Couch\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe"
+$env:HERMES_HOME = "C:\Users\Couch\AppData\Local\hermes"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $orchestratorHome = Join-Path $repoRoot ".runtime\orchestrator"
 $env:PYTHONPATH = "$repoRoot;$root"
@@ -74,6 +75,16 @@ function Remove-HermesOrchestratorArgs {
     $clean += $Argv[$i]
   }
   return $clean
+}
+
+function ConvertTo-HermesArgvJson {
+  param([object[]]$Argv)
+  $items = @(
+    @($Argv) | ForEach-Object {
+      ConvertTo-Json -InputObject ([string]$_) -Compress
+    }
+  )
+  return "[" + ($items -join ",") + "]"
 }
 
 $receipt = @{
@@ -154,9 +165,10 @@ if ($args.Count -gt 0 -and (@("ask","chat","run","prompt","complete") -contains 
   }
   $knownJobClass = Get-HermesKnownJobClass -Argv @($args)
   $args = @(Remove-HermesOrchestratorArgs -Argv @($args))
-  $argvJson = @($args) | ConvertTo-Json -Compress
+  $argvJson = ConvertTo-HermesArgvJson -Argv @($args)
   $argvB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($argvJson))
-  $routeArgs = @("-m", "orchestrator.cli.main", "hermes-route", "--text", $promptText, "--argv-b64", $argvB64)
+  $promptB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($promptText))
+  $routeArgs = @("-m", "orchestrator.cli.main", "hermes-route", "--text-b64", $promptB64, "--argv-b64", $argvB64)
   if ($knownJobClass) {
     $routeArgs += @("--job-class", $knownJobClass)
   }
@@ -189,5 +201,7 @@ if ($args.Count -gt 0 -and (@("ask","chat","run","prompt","complete") -contains 
   }
 }
 
-& $actual @args
+$finalArgvJson = ConvertTo-HermesArgvJson -Argv @($args)
+$finalArgvB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($finalArgvJson))
+& $python -m orchestrator.governance.hermes_exec --executable $actual --argv-b64 $finalArgvB64
 exit $LASTEXITCODE

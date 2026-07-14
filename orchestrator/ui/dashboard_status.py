@@ -21,7 +21,8 @@ REQUESTED_DASHBOARD_LOGS = [
     "dashboard_watchdog.log",
 ]
 ROUTE_PANEL_IDS = ["routeText", "routeJobClass", "routeSubmit", "routeResult", "routeLadderList"]
-FAILURE_STATES = {"blocked_after_repair_attempt", "failed", "error", "down"}
+FAILURE_STATES = {"continuation_required", "blocked_after_repair_attempt", "failed", "error", "down"}
+SUPERVISOR_RECEIPT_SCAN_LIMIT = 128
 
 
 def _now_utc() -> datetime:
@@ -91,56 +92,58 @@ def _receipt_summary(path: Path, payload: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _recent_supervisor_receipt_paths(supervisor_dir: Path) -> list[Path]:
+    """Return only the newest receipt candidates without parsing the full history.
+
+    Supervisor receipt names begin with a sortable UTC timestamp.  The UI polls
+    this path repeatedly, so parsing every historical receipt turns accumulated
+    evidence into a synchronous request-time cost.
+    """
+    if not supervisor_dir.exists():
+        return []
+    return sorted(
+        (path for path in supervisor_dir.glob("*.json") if path.is_file()),
+        key=lambda path: path.name,
+        reverse=True,
+    )[:SUPERVISOR_RECEIPT_SCAN_LIMIT]
+
+
 def _latest_supervisor_receipts(settings: Settings) -> dict[str, object]:
     supervisor_dir = settings.home / "supervisor"
     result: dict[str, object] = {"directory": str(supervisor_dir), "latest_start": None, "latest_watchdog": None, "latest_tick": None}
-    if not supervisor_dir.exists():
-        return result
-
-    receipts: list[tuple[Path, dict[str, Any]]] = []
-    for path in supervisor_dir.glob("*.json"):
+    for path in _recent_supervisor_receipt_paths(supervisor_dir):
         payload = _read_json(path)
         if payload is not None:
-            receipts.append((path, payload))
-    receipts.sort(key=lambda item: item[0].stat().st_mtime, reverse=True)
-
-    for path, payload in receipts:
-        event = str(payload.get("event") or "")
-        name = path.name
-        if result["latest_start"] is None and "-start-" in name:
-            result["latest_start"] = _receipt_summary(path, payload)
-        if result["latest_watchdog"] is None and ("watchdog" in event or "watchdog" in name):
-            result["latest_watchdog"] = _receipt_summary(path, payload)
-        if result["latest_tick"] is None and event == "supervisor_tick":
-            result["latest_tick"] = _receipt_summary(path, payload)
-        if all(result[key] is not None for key in ["latest_start", "latest_watchdog", "latest_tick"]):
-            break
+            event = str(payload.get("event") or "")
+            name = path.name
+            if result["latest_start"] is None and "-start-" in name:
+                result["latest_start"] = _receipt_summary(path, payload)
+            if result["latest_watchdog"] is None and ("watchdog" in event or "watchdog" in name):
+                result["latest_watchdog"] = _receipt_summary(path, payload)
+            if result["latest_tick"] is None and event == "supervisor_tick":
+                result["latest_tick"] = _receipt_summary(path, payload)
+            if all(result[key] is not None for key in ["latest_start", "latest_watchdog", "latest_tick"]):
+                break
     return result
 
 
 def _latest_failure(settings: Settings) -> dict[str, object] | None:
     supervisor_dir = settings.home / "supervisor"
-    if supervisor_dir.exists():
-        receipts: list[Path] = sorted(
-            [path for path in supervisor_dir.glob("*.json") if path.is_file()],
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        for path in receipts:
-            payload = _read_json(path)
-            if payload is None:
-                continue
-            state = str(payload.get("state") or "").lower()
-            healthy = payload.get("healthy")
-            error = str(payload.get("error") or "").strip()
-            if state in FAILURE_STATES or healthy is False or error:
-                return {
-                    "source": str(path),
-                    "event": payload.get("event"),
-                    "state": payload.get("state"),
-                    "message": error or f"{payload.get('event') or path.name} reported {payload.get('state') or 'unhealthy'}",
-                    "at": _receipt_time(payload, path),
-                }
+    for path in _recent_supervisor_receipt_paths(supervisor_dir):
+        payload = _read_json(path)
+        if payload is None:
+            continue
+        state = str(payload.get("state") or "").lower()
+        healthy = payload.get("healthy")
+        error = str(payload.get("error") or "").strip()
+        if state in FAILURE_STATES or healthy is False or error:
+            return {
+                "source": str(path),
+                "event": payload.get("event"),
+                "state": payload.get("state"),
+                "message": error or f"{payload.get('event') or path.name} reported {payload.get('state') or 'unhealthy'}",
+                "at": _receipt_time(payload, path),
+            }
 
     for path_payload in [
         _latest_file(settings.log_dir, "*.err.log"),
@@ -341,6 +344,7 @@ FRESHNESS_LIMITS = {
     "business_snapshot": 6 * 3600,
     "subscriptions": 12 * 3600,
 }
+BLOCKING_FRESHNESS_SOURCES = {"subscriptions"}
 LARGE_STATE_DB_BYTES = 200 * 1024 * 1024
 WORK_PROOF_STALE_SECONDS = 3 * 3600
 
@@ -394,6 +398,8 @@ def _freshness_component(data_sources: dict[str, object] | None, now: datetime) 
     if not data_sources:
         return {"state": "not_checked", "reason": "no data-source timestamps supplied"}
     stale: list[dict[str, object]] = []
+    blocking_stale: list[dict[str, object]] = []
+    advisories: list[dict[str, object]] = []
     checked: list[dict[str, object]] = []
     for name, value in data_sources.items():
         limit = FRESHNESS_LIMITS.get(name, 12 * 3600)
@@ -401,10 +407,19 @@ def _freshness_component(data_sources: dict[str, object] | None, now: datetime) 
         entry: dict[str, object] = {"source": name, "age_seconds": age, "limit_seconds": limit, "checked_at": value}
         checked.append(entry)
         if age is None:
-            stale.append({**entry, "reason": "no timestamp / never refreshed"})
+            stale_entry = {**entry, "reason": "no timestamp / never refreshed"}
+            stale.append(stale_entry)
+            (blocking_stale if name in BLOCKING_FRESHNESS_SOURCES else advisories).append(stale_entry)
         elif age > limit:
             stale.append(entry)
-    return {"state": "stale" if stale else "fresh", "sources": checked, "stale": stale}
+            (blocking_stale if name in BLOCKING_FRESHNESS_SOURCES else advisories).append(entry)
+    return {
+        "state": "stale" if stale else "fresh",
+        "sources": checked,
+        "stale": stale,
+        "blocking_stale": blocking_stale,
+        "advisories": advisories,
+    }
 
 
 def _db_integrity_component(settings: Settings) -> dict[str, object]:
@@ -465,9 +480,9 @@ def _aggregate_health(control_plane: str, components: dict[str, dict[str, object
     for problem in components.get("fleet", {}).get("problems") or []:
         downgraded = True
         reasons.append(f"service '{problem.get('service')}' is {problem.get('health_state')}")
-    if components.get("data_freshness", {}).get("state") == "stale":
+    if components.get("data_freshness", {}).get("blocking_stale"):
         downgraded = True
-        for item in components["data_freshness"].get("stale") or []:
+        for item in components["data_freshness"].get("blocking_stale") or []:
             reasons.append(f"data source '{item.get('source')}' is stale")
     if components.get("db_integrity", {}).get("state") == "corrupt":
         downgraded = True

@@ -624,6 +624,311 @@ class StateStore:
                 selections.append(item)
             return selections
 
+    @staticmethod
+    def _delegated_work_item_from_row(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
+        item = dict(row)
+        for source, target, default in (
+            ("operation_task_json", "operation_task", {}),
+            ("validation_json", "validation", {}),
+        ):
+            try:
+                parsed = json.loads(str(item.get(source) or "{}"))
+            except json.JSONDecodeError:
+                parsed = default
+            item[target] = parsed if isinstance(parsed, dict) else default
+        return item
+
+    async def enqueue_delegated_work_item(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_text = str(payload.get("raw_text") or "").strip()
+        consumer = str(payload.get("consumer") or "").strip()
+        job_class = str(payload.get("job_class") or "").strip()
+        mode = str(payload.get("mode") or "immediate").strip().lower()
+        operation_task = payload.get("operation_task")
+        if not raw_text:
+            raise ValueError("delegated work item requires raw_text")
+        if not consumer:
+            raise ValueError("delegated work item requires a named consumer")
+        if not job_class:
+            raise ValueError("delegated work item requires job_class")
+        if mode not in {"immediate", "discretionary"}:
+            raise ValueError("delegated work item mode must be immediate or discretionary")
+        if not isinstance(operation_task, dict) or not operation_task:
+            raise ValueError("delegated work item requires an operation_task validator")
+        min_quality_score = float(payload.get("min_quality_score", 1.0))
+        if not 0.0 <= min_quality_score <= 1.0:
+            raise ValueError("min_quality_score must be between 0 and 1")
+
+        now = iso()
+        item = {
+            "id": f"wrk_{uuid.uuid4().hex[:16]}",
+            "source": str(payload.get("source") or "owner"),
+            "raw_text": raw_text,
+            "consumer": consumer,
+            "job_class": job_class,
+            "project_root": str(payload.get("project_root") or "") or None,
+            "mode": mode,
+            "operation_task_json": json.dumps(operation_task, sort_keys=True),
+            "min_quality_score": min_quality_score,
+            "state": "queued",
+            "dispatch_id": None,
+            "output_path": None,
+            "receipt_path": None,
+            "validation_json": None,
+            "error": None,
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": None,
+        }
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO delegated_work_items(
+                    id, source, raw_text, consumer, job_class, project_root, mode,
+                    operation_task_json, min_quality_score, state, dispatch_id,
+                    output_path, receipt_path, validation_json, error, created_at,
+                    updated_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(item.values()),
+            )
+            await self._audit_in_db(db, "delegated_work", "work_item_enqueued", item["id"], {
+                "consumer": consumer,
+                "job_class": job_class,
+                "mode": mode,
+                "min_quality_score": min_quality_score,
+            })
+            await db.commit()
+        return self._delegated_work_item_from_row(item)
+
+    async def list_delegated_work_items(
+        self,
+        states: set[str] | None = None,
+        limit: int = 100,
+        newest_first: bool = False,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 1000))
+        query = "SELECT * FROM delegated_work_items"
+        params: list[Any] = []
+        if states:
+            normalized = sorted({str(state) for state in states})
+            query += " WHERE state IN (" + ",".join("?" for _ in normalized) + ")"
+            params.extend(normalized)
+        query += " ORDER BY created_at " + ("DESC" if newest_first else "ASC") + " LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(query, tuple(params))).fetchall()
+            return [self._delegated_work_item_from_row(row) for row in rows]
+
+    async def get_delegated_work_item(self, item_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM delegated_work_items WHERE id = ?", (item_id,))).fetchone()
+            return self._delegated_work_item_from_row(row) if row is not None else None
+
+    async def update_delegated_work_item(
+        self,
+        item_id: str,
+        state: str,
+        *,
+        dispatch_id: str | None = None,
+        output_path: str | None = None,
+        receipt_path: str | None = None,
+        validation: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any] | None:
+        allowed_states = {"queued", "running", "held", "awaiting_approval", "completed", "failed"}
+        if state not in allowed_states:
+            raise ValueError(f"unsupported delegated work state: {state}")
+        now = iso()
+        completed_at = now if state in {"completed", "failed"} else None
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                """
+                UPDATE delegated_work_items
+                SET state = ?, dispatch_id = COALESCE(?, dispatch_id),
+                    output_path = COALESCE(?, output_path), receipt_path = COALESCE(?, receipt_path),
+                    validation_json = COALESCE(?, validation_json), error = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (
+                    state,
+                    dispatch_id,
+                    output_path,
+                    receipt_path,
+                    json.dumps(validation, sort_keys=True) if validation is not None else None,
+                    error,
+                    now,
+                    completed_at,
+                    item_id,
+                ),
+            )
+            row = await (await db.execute("SELECT * FROM delegated_work_items WHERE id = ?", (item_id,))).fetchone()
+            if row is None:
+                return None
+            await self._audit_in_db(db, "delegated_work", "work_item_state_changed", item_id, {
+                "state": state,
+                "dispatch_id": dispatch_id,
+                "error": error,
+            })
+            await db.commit()
+            return self._delegated_work_item_from_row(row)
+
+    @staticmethod
+    def _discovered_work_item_from_row(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
+        item = dict(row)
+        try:
+            payload = json.loads(str(item.get("payload_json") or "{}"))
+        except json.JSONDecodeError:
+            payload = {}
+        item["payload"] = payload if isinstance(payload, dict) else {}
+        return item
+
+    async def upsert_discovered_work_item(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        required = ("fingerprint", "kind", "source_path", "project_root", "title", "description", "source_status")
+        missing = [key for key in required if not str(candidate.get(key) or "").strip()]
+        if missing:
+            raise ValueError(f"discovered work item missing required fields: {', '.join(missing)}")
+        now = iso()
+        payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            existing = await (
+                await db.execute("SELECT * FROM discovered_work_items WHERE fingerprint = ?", (str(candidate["fingerprint"]),))
+            ).fetchone()
+            if existing is None:
+                item = {
+                    "id": f"bkl_{uuid.uuid4().hex[:16]}",
+                    "fingerprint": str(candidate["fingerprint"]),
+                    "kind": str(candidate["kind"]),
+                    "source_path": str(candidate["source_path"]),
+                    "source_line": candidate.get("source_line"),
+                    "source_task_id": str(candidate.get("source_task_id") or "") or None,
+                    "project_root": str(candidate["project_root"]),
+                    "title": str(candidate["title"]),
+                    "description": str(candidate["description"]),
+                    "source_status": str(candidate["source_status"]),
+                    "priority": str(candidate.get("priority") or "") or None,
+                    "state": str(candidate.get("state") or "discovered"),
+                    "delegated_work_id": None,
+                    "error": str(candidate.get("error") or "") or None,
+                    "payload_json": json.dumps(payload, sort_keys=True),
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                await db.execute(
+                    """
+                    INSERT INTO discovered_work_items(
+                        id, fingerprint, kind, source_path, source_line, source_task_id,
+                        project_root, title, description, source_status, priority, state,
+                        delegated_work_id, error, payload_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    tuple(item.values()),
+                )
+                await self._audit_in_db(db, "backlog_discovery", "candidate_discovered", item["id"], {
+                    "source_path": item["source_path"],
+                    "source_task_id": item["source_task_id"],
+                    "kind": item["kind"],
+                })
+            else:
+                existing_item = dict(existing)
+                next_state = str(existing_item.get("state") or "discovered")
+                next_delegated_work_id = existing_item.get("delegated_work_id")
+                next_error = str(candidate.get("error") or "") or None
+                if next_state == "promoted" and next_delegated_work_id:
+                    delegated = await (
+                        await db.execute(
+                            "SELECT state, error FROM delegated_work_items WHERE id = ?",
+                            (str(next_delegated_work_id),),
+                        )
+                    ).fetchone()
+                    if delegated is not None and str(delegated["state"] or "") == "failed":
+                        next_state = "discovered"
+                        next_delegated_work_id = None
+                        failure = str(delegated["error"] or "runtime_failure")
+                        next_error = f"retry_after_delegated_failure:{failure}"
+                await db.execute(
+                    """
+                    UPDATE discovered_work_items
+                    SET title = ?, description = ?, source_status = ?, priority = ?,
+                        state = ?, delegated_work_id = ?, error = ?, payload_json = ?, updated_at = ?
+                    WHERE fingerprint = ?
+                    """,
+                    (
+                        str(candidate["title"]),
+                        str(candidate["description"]),
+                        str(candidate["source_status"]),
+                        str(candidate.get("priority") or "") or None,
+                        next_state,
+                        next_delegated_work_id,
+                        next_error,
+                        json.dumps(payload, sort_keys=True),
+                        now,
+                        str(candidate["fingerprint"]),
+                    ),
+                )
+                if next_state == "discovered" and existing_item.get("delegated_work_id"):
+                    await self._audit_in_db(
+                        db,
+                        "backlog_discovery",
+                        "candidate_requeued_after_runtime_failure",
+                        str(existing_item["id"]),
+                        {"previous_delegated_work_id": existing_item["delegated_work_id"], "error": next_error},
+                    )
+                item = existing_item
+                item.update(
+                    {
+                        "title": str(candidate["title"]),
+                        "description": str(candidate["description"]),
+                        "source_status": str(candidate["source_status"]),
+                        "priority": str(candidate.get("priority") or "") or None,
+                        "state": next_state,
+                        "delegated_work_id": next_delegated_work_id,
+                        "error": next_error,
+                        "payload_json": json.dumps(payload, sort_keys=True),
+                        "updated_at": now,
+                    }
+                )
+            await db.commit()
+            return self._discovered_work_item_from_row(item)
+
+    async def list_discovered_work_items(
+        self,
+        states: set[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 1000))
+        query = "SELECT * FROM discovered_work_items"
+        params: list[Any] = []
+        if states:
+            normalized = sorted({str(state) for state in states})
+            query += " WHERE state IN (" + ",".join("?" for _ in normalized) + ")"
+            params.extend(normalized)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(query, tuple(params))).fetchall()
+            return [self._discovered_work_item_from_row(row) for row in rows]
+
+    async def mark_discovered_work_promoted(self, item_id: str, delegated_work_id: str) -> dict[str, Any] | None:
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "UPDATE discovered_work_items SET state = 'promoted', delegated_work_id = ?, updated_at = ? WHERE id = ?",
+                (delegated_work_id, now, item_id),
+            )
+            row = await (await db.execute("SELECT * FROM discovered_work_items WHERE id = ?", (item_id,))).fetchone()
+            if row is None:
+                return None
+            await self._audit_in_db(db, "backlog_discovery", "candidate_promoted", item_id, {"delegated_work_id": delegated_work_id})
+            await db.commit()
+            return self._discovered_work_item_from_row(row)
+
     async def create_intent(self, intent: Intent) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
@@ -1031,6 +1336,149 @@ class StateStore:
                 ),
             )
             await self._audit_in_db(db, "skill_hook_gate", "skill_hook_receipt", str(receipt["id"]), receipt)
+            await db.commit()
+
+    async def record_contract_evaluation(
+        self,
+        *,
+        contract_run_id: str,
+        plan_id: str | None,
+        session_id: str | None,
+        turn_id: str | None,
+        hook_event_name: str,
+        prompt: str,
+        evaluation: Any,
+        decision: str,
+        evidence_items: list[dict[str, Any]] | None = None,
+    ) -> None:
+        now = iso()
+        numeric_json = json.dumps(evaluation.numeric_dict(), sort_keys=True)
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO contract_runs(
+                    id, plan_id, session_id, turn_id, prompt, axis_version,
+                    possibility_space_count, terminal_state, numeric_result_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    possibility_space_count=excluded.possibility_space_count,
+                    terminal_state=excluded.terminal_state,
+                    numeric_result_json=excluded.numeric_result_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    contract_run_id,
+                    plan_id,
+                    session_id,
+                    turn_id,
+                    prompt,
+                    "axes_v1",
+                    evaluation.possibility_space_count,
+                    evaluation.terminal_state,
+                    numeric_json,
+                    now,
+                    now,
+                ),
+            )
+            await db.execute("DELETE FROM possibility_items WHERE contract_run_id = ?", (contract_run_id,))
+            await db.execute("DELETE FROM equivalence_classes WHERE contract_run_id = ?", (contract_run_id,))
+            await db.execute("DELETE FROM evidence_items WHERE contract_run_id = ?", (contract_run_id,))
+            await db.execute("DELETE FROM counterexamples WHERE contract_run_id = ?", (contract_run_id,))
+            for item in evaluation.possibility_items:
+                await db.execute(
+                    """
+                    INSERT INTO possibility_items(
+                        id, contract_run_id, axis_tuple_json, requirement_level,
+                        proof_level_required, equivalent_key, satisfaction_action, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"{contract_run_id}_{item.id}",
+                        contract_run_id,
+                        json.dumps(item.axis_tuple, sort_keys=True),
+                        item.requirement_level,
+                        item.proof_level_required,
+                        item.equivalent_key,
+                        item.axis_tuple.get("satisfaction_action"),
+                        now,
+                    ),
+                )
+            for item in evaluation.equivalence_classes:
+                await db.execute(
+                    """
+                    INSERT INTO equivalence_classes(
+                        id, contract_run_id, representative_id, member_ids_json,
+                        member_authority_surfaces_json, rule, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"{contract_run_id}_{item.id}",
+                        contract_run_id,
+                        item.representative_id,
+                        json.dumps(list(item.member_ids)),
+                        json.dumps(list(item.member_authority_surfaces)),
+                        item.rule,
+                        now,
+                    ),
+                )
+            for index, item in enumerate(evidence_items or [], start=1):
+                await db.execute(
+                    """
+                    INSERT INTO evidence_items(
+                        id, contract_run_id, evidence_class, authority_surface,
+                        subject, verified, detail, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"{contract_run_id}_ev_{index:05d}",
+                        contract_run_id,
+                        item.get("evidence_class"),
+                        item.get("authority_surface"),
+                        item.get("subject"),
+                        1 if item.get("verified", True) else 0,
+                        item.get("detail"),
+                        now,
+                    ),
+                )
+            for item in evaluation.counterexamples:
+                await db.execute(
+                    """
+                    INSERT INTO counterexamples(
+                        id, contract_run_id, axis_tuple_json, why_relevant,
+                        failed_predicate, required_resolution, consequence_if_ignored, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"{contract_run_id}_{item.counterexample_id}"[:240],
+                        contract_run_id,
+                        json.dumps(item.axis_tuple, sort_keys=True),
+                        item.why_relevant,
+                        item.failed_predicate,
+                        item.required_resolution,
+                        item.consequence_if_ignored,
+                        now,
+                    ),
+                )
+            await db.execute(
+                """
+                INSERT INTO contract_decisions(id, contract_run_id, hook_event_name, decision, numeric_result_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"{contract_run_id}_{hook_event_name.lower()}_{now.replace(':', '').replace('.', '')}",
+                    contract_run_id,
+                    hook_event_name,
+                    decision,
+                    numeric_json,
+                    now,
+                ),
+            )
+            await self._audit_in_db(db, "contract_evaluator", "contract_evaluation_recorded", contract_run_id, evaluation.numeric_dict())
             await db.commit()
 
     async def list_skill_hook_receipts(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -1752,6 +2200,15 @@ class StateStore:
                 (now_dt.isoformat(), next_run_at, now_dt.isoformat(), task_id),
             )
             await self._audit_in_db(db, "scheduler", "scheduler_task_ran", task_id, {"next_run_at": next_run_at})
+            await db.commit()
+
+    async def set_scheduler_task_next_run(self, task_id: str, next_run_at: str, reason: str) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE scheduler_tasks SET next_run_at = ?, updated_at = ? WHERE id = ?",
+                (next_run_at, iso(), task_id),
+            )
+            await self._audit_in_db(db, "scheduler", "scheduler_task_rescheduled", task_id, {"next_run_at": next_run_at, "reason": reason})
             await db.commit()
 
     async def migrate_standing_orders_to_scheduler_tasks(self) -> dict[str, Any]:

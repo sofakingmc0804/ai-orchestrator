@@ -12,13 +12,18 @@ from typing import Any
 
 from orchestrator.config import Settings
 from orchestrator.process.recovery import repair_core_services
+from orchestrator.scheduler.job_application_mailbox import ensure_job_application_mailbox_task
 from orchestrator.scheduler.tasks import run_due_scheduler_once
 from orchestrator.state.store import StateStore, iso
 
 
 BUDGET_PROBES_TASK_ID = "task_budget_probes_cron"
 BUDGET_PROBES_INTERVAL_SECONDS = 15 * 60
-SUPERVISOR_TICK_SECONDS = 5 * 60
+DELEGATED_WORK_TASK_ID = "task_delegated_work_cycle"
+DELEGATED_WORK_INTERVAL_SECONDS = 5 * 60
+BACKLOG_DISCOVERY_TASK_ID = "task_backlog_discovery"
+BACKLOG_DISCOVERY_INTERVAL_SECONDS = 15 * 60
+SUPERVISOR_TICK_SECONDS = 60.0
 
 
 def _stamp() -> str:
@@ -72,6 +77,72 @@ async def ensure_budget_probe_scheduler_task(store: StateStore) -> str:
     return BUDGET_PROBES_TASK_ID
 
 
+async def ensure_delegated_work_scheduler_task(store: StateStore) -> str:
+    existing = await store.get_scheduler_task(DELEGATED_WORK_TASK_ID)
+    if (
+        existing
+        and existing.get("task_type") == "delegated_work_cycle"
+        and int(existing.get("interval_seconds") or 0) == DELEGATED_WORK_INTERVAL_SECONDS
+        and bool(existing.get("enabled"))
+    ):
+        return DELEGATED_WORK_TASK_ID
+
+    await store.upsert_scheduler_task(
+        name="Capacity-aware delegated work cycle",
+        task_type="delegated_work_cycle",
+        target_ref="delegated_work_items",
+        payload={
+            "consumer": "delegated_work_queue",
+            "proof_kind": "live",
+            "limit": 1,
+            "min_surplus_percent": 70.0,
+            "surplus_window_seconds": 7_200,
+        },
+        schedule_kind="interval",
+        interval_seconds=DELEGATED_WORK_INTERVAL_SECONDS,
+        enabled=True,
+        task_id=DELEGATED_WORK_TASK_ID,
+        next_run_at=(
+            str(existing.get("next_run_at"))
+            if existing and existing.get("next_run_at")
+            else iso(datetime.now(timezone.utc) + timedelta(seconds=DELEGATED_WORK_INTERVAL_SECONDS))
+        ),
+    )
+    return DELEGATED_WORK_TASK_ID
+
+
+async def ensure_backlog_discovery_scheduler_task(store: StateStore) -> str:
+    existing = await store.get_scheduler_task(BACKLOG_DISCOVERY_TASK_ID)
+    if (
+        existing
+        and existing.get("task_type") == "backlog_discovery"
+        and int(existing.get("interval_seconds") or 0) == BACKLOG_DISCOVERY_INTERVAL_SECONDS
+        and bool(existing.get("enabled"))
+    ):
+        return BACKLOG_DISCOVERY_TASK_ID
+
+    await store.upsert_scheduler_task(
+        name="Source-backed unfinished-work intake",
+        task_type="backlog_discovery",
+        target_ref="discovered_work_items",
+        payload={
+            "consumer": "Matt project backlog",
+            "proof_kind": "live",
+            "limit": 3,
+        },
+        schedule_kind="interval",
+        interval_seconds=BACKLOG_DISCOVERY_INTERVAL_SECONDS,
+        enabled=True,
+        task_id=BACKLOG_DISCOVERY_TASK_ID,
+        next_run_at=(
+            str(existing.get("next_run_at"))
+            if existing and existing.get("next_run_at")
+            else iso(datetime.now(timezone.utc) + timedelta(seconds=BACKLOG_DISCOVERY_INTERVAL_SECONDS))
+        ),
+    )
+    return BACKLOG_DISCOVERY_TASK_ID
+
+
 async def run_supervisor_tick(
     settings: Settings,
     store: StateStore | None = None,
@@ -88,6 +159,9 @@ async def run_supervisor_tick(
     errors: list[dict[str, str]] = []
     recovered = await state.recover_interrupted_dispatches()
     budget_task_id = await ensure_budget_probe_scheduler_task(state)
+    backlog_discovery_task_id = await ensure_backlog_discovery_scheduler_task(state)
+    delegated_work_task_id = await ensure_delegated_work_scheduler_task(state)
+    job_application_mailbox_task_id = await ensure_job_application_mailbox_task(state)
 
     try:
         scheduler_result = await scheduler_once(settings, state)
@@ -114,7 +188,7 @@ async def run_supervisor_tick(
     receipt = {
         "id": f"sup_{uuid.uuid4().hex[:16]}",
         "event": "supervisor_tick",
-        "state": "produced" if not errors else "blocked_after_repair_attempt",
+        "state": "produced" if not errors else "continuation_required",
         "proof_kind": "live",
         "machine": platform.node(),
         "repo_root": str(settings.repo_root),
@@ -123,6 +197,11 @@ async def run_supervisor_tick(
         "completed_at": iso(),
         "budget_task_id": budget_task_id,
         "budget_task_interval_seconds": BUDGET_PROBES_INTERVAL_SECONDS,
+        "backlog_discovery_task_id": backlog_discovery_task_id,
+        "backlog_discovery_task_interval_seconds": BACKLOG_DISCOVERY_INTERVAL_SECONDS,
+        "delegated_work_task_id": delegated_work_task_id,
+        "delegated_work_task_interval_seconds": DELEGATED_WORK_INTERVAL_SECONDS,
+        "job_application_mailbox_task_id": job_application_mailbox_task_id,
         "recovered_dispatches_count": len(recovered),
         "recovered_dispatches": recovered,
         "scheduler": scheduler_result,
@@ -163,7 +242,7 @@ def start_supervisor_thread(
                     {
                         "id": f"sup_{uuid.uuid4().hex[:16]}",
                         "event": "supervisor_tick_crash",
-                        "state": "blocked_after_repair_attempt",
+                        "state": "continuation_required",
                         "proof_kind": "live",
                         "machine": platform.node(),
                         "repo_root": str(settings.repo_root),

@@ -5,11 +5,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from orchestrator.backlog.intake import intake_discovered_work
 from orchestrator.autopilot.watchers import scan_autopilot_folder_once
 from orchestrator.autopilot.policy_engine import parse_policy_yaml
 from orchestrator.config import Settings
+from orchestrator.delegation.work_cycle import run_delegated_work_cycle
 from orchestrator.evaluation.tournament import run_deterministic_tournament
 from orchestrator.scheduler.budget_probes_cron import run_budget_probes_once
+from orchestrator.scheduler.job_application_mailbox import run_job_application_mailbox_task
 from orchestrator.state.store import StateStore, iso
 
 
@@ -194,6 +197,87 @@ async def _run_budget_probes_task(
     return result
 
 
+async def _run_delegated_work_cycle_task(
+    settings: Settings,
+    store: StateStore,
+    task: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    try:
+        delegated_work = await run_delegated_work_cycle(
+            settings,
+            store,
+            limit=int(payload.get("limit") or 1),
+            min_surplus_percent=float(payload.get("min_surplus_percent") or 70.0),
+            surplus_window_seconds=int(payload.get("surplus_window_seconds") or 7_200),
+        )
+    except Exception as exc:
+        result["state"] = "failed"
+        result["reason"] = "delegated_work_cycle_failed"
+        result["error"] = str(exc)
+        result["completed_at"] = iso()
+        await store.add_repair_item(
+            "scheduler:delegated_work_cycle",
+            f"Delegated work cycle {task.get('id')} failed: {exc}",
+            "Repair the delegated work cycle and trigger task_delegated_work_cycle again.",
+        )
+        await store.audit("scheduler", "scheduler_task_failed", str(task.get("id") or ""), result)
+        return result
+
+    result.update(
+        {
+            "state": "completed",
+            "queued": int(delegated_work.get("completed") or 0),
+            "delegated_work": delegated_work,
+            "completed_at": iso(),
+        }
+    )
+    await store.mark_scheduler_task_run(str(task.get("id") or ""), int(task.get("interval_seconds") or 0))
+    await store.audit("scheduler", "scheduler_task_run", str(task.get("id") or ""), result)
+    return result
+
+
+async def _run_backlog_discovery_task(
+    settings: Settings,
+    store: StateStore,
+    task: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+    roots = [Path(str(value)) for value in payload.get("roots", []) if str(value).strip()] if isinstance(payload.get("roots"), list) else None
+    try:
+        backlog_discovery = await intake_discovered_work(
+            settings,
+            store,
+            roots=roots,
+            limit=int(payload.get("limit") or 3),
+        )
+    except Exception as exc:
+        result["state"] = "failed"
+        result["reason"] = "backlog_discovery_failed"
+        result["error"] = str(exc)
+        result["completed_at"] = iso()
+        await store.add_repair_item(
+            "scheduler:backlog_discovery",
+            f"Backlog discovery task {task.get('id')} failed: {exc}",
+            "Repair the source-backed backlog intake and rerun task_backlog_discovery.",
+        )
+        await store.audit("scheduler", "scheduler_task_failed", str(task.get("id") or ""), result)
+        return result
+    result.update(
+        {
+            "state": "completed",
+            "queued": int(backlog_discovery.get("promoted") or 0),
+            "backlog_discovery": backlog_discovery,
+            "completed_at": iso(),
+        }
+    )
+    await store.mark_scheduler_task_run(str(task.get("id") or ""), int(task.get("interval_seconds") or 0))
+    await store.audit("scheduler", "scheduler_task_run", str(task.get("id") or ""), result)
+    return result
+
+
 async def run_scheduler_task_once(
     settings: Settings,
     store: StateStore,
@@ -261,6 +345,15 @@ async def run_scheduler_task_once(
 
     if task_type == "budget_probes_cron":
         return await _run_budget_probes_task(settings, store, task, result)
+
+    if task_type == "delegated_work_cycle":
+        return await _run_delegated_work_cycle_task(settings, store, task, result)
+
+    if task_type == "backlog_discovery":
+        return await _run_backlog_discovery_task(settings, store, task, result)
+
+    if task_type == "job_application_mailbox":
+        return await run_job_application_mailbox_task(settings, store, task)
 
     result["state"] = "failed"
     result["reason"] = f"unsupported_task_type:{task_type}"

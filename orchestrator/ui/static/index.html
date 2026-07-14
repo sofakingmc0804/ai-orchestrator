@@ -443,11 +443,6 @@
                         <label for="routeJobClass">Job class</label>
                         <select id="routeJobClass">
                             <option value="">Auto</option>
-                            <option value="repo_coding">repo_coding</option>
-                            <option value="agentic_repair">agentic_repair</option>
-                            <option value="classification">classification</option>
-                            <option value="summarization">summarization</option>
-                            <option value="technical_analysis">technical_analysis</option>
                         </select>
                     </div>
                     <button class="route-submit" id="routeSubmit" type="button">Route</button>
@@ -794,6 +789,6 @@
         loadDashboard();
         setInterval(loadDashboard, 60000); // Refresh every minute
     </script>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=route-job-classes-v1" defer></script>
 </body>
 </html>
