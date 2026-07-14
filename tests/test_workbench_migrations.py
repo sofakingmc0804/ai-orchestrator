@@ -457,10 +457,21 @@ async def test_service_runs_store_exact_native_recovery_identity(tmp_path: Path)
             db.execute(
                 """
                 INSERT INTO service_runs(
-                    run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,account_id,
-                    profile_id,native_thread_id,native_turn_id,native_request_id,updated_at
-                ) VALUES ('run-duplicate','t','claude','reviewer',1,'main','running','anthropic','acct-1',
-                          'profile-1','thread-1','turn-1','request-1','now')
+                    run_id,task_id,service,role,frame_version,branch_id,state,adapter_provider,
+                    adapter_contract_revision,account_id,profile_id,model_id,capability_inventory_revision,
+                    transport_generation,native_session_id,native_thread_id,native_turn_id,native_request_id,
+                    launch_origin,updated_at
+                ) VALUES ('run-duplicate','t','claude','reviewer',1,'main','running','anthropic','contract-v3',
+                          'acct-1','profile-1','claude-opus','cap-v7','transport-v2','session-2','thread-1',
+                          'turn-1','request-1','governed','now')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO service_runs(
+                    run_id,task_id,service,role,frame_version,branch_id,state,native_request_id,updated_at
+                ) VALUES ('run-incomplete','t','claude','reviewer',1,'main','running','request-without-identity','now')
                 """
             )
         with pytest.raises(sqlite3.IntegrityError):
@@ -538,6 +549,28 @@ async def test_completion_evidence_is_structured_same_task_and_round_trips(tmp_p
                     expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
                     verification_status,observed_at,observed_value_checksum,metadata_json
                 ) VALUES ('cross','b','main','success-a',3,7,'p','ok','filesystem','x','script','v','pass','now','sum','{}')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO evidence_refs(
+                    id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                    expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
+                    verification_status,observed_at,observed_value_checksum,metadata_json
+                ) VALUES ('wrong-frame','a','main','success-a',2,7,'p','ok','filesystem','x','script','v',
+                          'pass','now','sum','{}')
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                """
+                INSERT INTO evidence_refs(
+                    id,task_id,branch_id,success_node_id,frame_version,observed_head_sequence,predicate_id,
+                    expected_outcome,authority_kind,authority_locator,verifier_kind,verifier_identity,
+                    verification_status,observed_at,observed_value_checksum,invalidated_at,metadata_json
+                ) VALUES ('partial-invalidation','a','main','success-a',3,7,'p','ok','filesystem','x','script','v',
+                          'pass','now','sum','now','{}')
                 """
             )
         with pytest.raises(sqlite3.IntegrityError):

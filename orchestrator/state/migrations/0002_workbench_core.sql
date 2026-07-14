@@ -113,6 +113,7 @@ CREATE TABLE frame_nodes (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (task_id, node_id),
+    UNIQUE (task_id, node_id, frame_version),
     UNIQUE (task_id, branch_id, frame_version, node_key),
     FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
     FOREIGN KEY (task_id, supersedes_node_id) REFERENCES frame_nodes(task_id, node_id),
@@ -272,13 +273,29 @@ CREATE TABLE service_runs (
     completed_at TEXT,
     UNIQUE (task_id, run_id),
     UNIQUE (task_id, run_id, frame_version),
-    UNIQUE (service, native_session_id),
+    UNIQUE (task_id, run_id, branch_id, frame_version),
+    CHECK (
+        (
+            native_session_id IS NULL AND native_thread_id IS NULL AND native_turn_id IS NULL
+            AND native_request_id IS NULL AND native_tool_use_id IS NULL AND native_question_group_id IS NULL
+        )
+        OR (
+            adapter_provider IS NOT NULL AND adapter_contract_revision IS NOT NULL
+            AND account_id IS NOT NULL AND profile_id IS NOT NULL AND model_id IS NOT NULL
+            AND capability_inventory_revision IS NOT NULL AND transport_generation IS NOT NULL
+            AND native_session_id IS NOT NULL AND native_thread_id IS NOT NULL AND launch_origin IS NOT NULL
+        )
+    ),
     FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
     FOREIGN KEY (task_id, receipt_event_id) REFERENCES workbench_events(task_id, event_id)
 );
 
 CREATE INDEX idx_service_runs_task_branch_state
 ON service_runs(task_id, branch_id, state);
+
+CREATE UNIQUE INDEX idx_service_runs_native_session_identity
+ON service_runs(adapter_provider, account_id, profile_id, native_session_id)
+WHERE native_session_id IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_service_runs_native_request_identity
 ON service_runs(adapter_provider, account_id, profile_id, native_thread_id, native_turn_id, native_request_id)
@@ -344,10 +361,16 @@ CREATE TABLE evidence_refs (
     invalidation_reason TEXT,
     metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
     CHECK (predicate_text IS NOT NULL OR predicate_json IS NOT NULL),
+    CHECK (
+        (invalidated_at IS NULL AND invalidated_event_id IS NULL AND invalidation_reason IS NULL)
+        OR (invalidated_at IS NOT NULL AND invalidated_event_id IS NOT NULL AND invalidation_reason IS NOT NULL)
+    ),
     FOREIGN KEY (task_id, branch_id) REFERENCES workbench_branches(task_id, branch_id),
-    FOREIGN KEY (task_id, success_node_id) REFERENCES frame_nodes(task_id, node_id),
+    FOREIGN KEY (task_id, success_node_id, frame_version)
+        REFERENCES frame_nodes(task_id, node_id, frame_version),
     FOREIGN KEY (task_id, source_event_id) REFERENCES workbench_events(task_id, event_id),
-    FOREIGN KEY (task_id, producing_run_id) REFERENCES service_runs(task_id, run_id),
+    FOREIGN KEY (task_id, producing_run_id, branch_id, frame_version)
+        REFERENCES service_runs(task_id, run_id, branch_id, frame_version),
     FOREIGN KEY (task_id, invalidated_event_id) REFERENCES workbench_events(task_id, event_id)
 );
 
