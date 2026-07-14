@@ -226,3 +226,59 @@ def event_checksum(envelope: Mapping[str, Any]) -> str:
     if "checksum" in envelope:
         raise ValueError("checksum is not part of its own immutable envelope")
     return hashlib.sha256(canonical_json_bytes(dict(envelope))).hexdigest()
+
+
+def draft_envelope(ordinal: int, item: ValidatedDraft) -> dict[str, Any]:
+    draft = item.draft
+    return {
+        "ordinal": ordinal,
+        "event_type": draft.event_type,
+        "event_schema_version": draft.event_schema_version,
+        "actor_kind": draft.actor.kind,
+        "actor_id": draft.actor.actor_id,
+        "branch_id": draft.branch_id,
+        "cause": draft.cause.value if draft.cause is not None else None,
+        "caused_by": draft.caused_by,
+        "payload": item.payload.model_dump(mode="json"),
+    }
+
+
+def drafts_checksum(
+    task_id: str,
+    command_id: str,
+    drafts: tuple[ValidatedDraft, ...] | list[ValidatedDraft],
+) -> str:
+    envelope = {
+        "domain": "workbench.command.drafts.v1",
+        "task_id": task_id,
+        "command_id": command_id,
+        "drafts": [draft_envelope(ordinal, item) for ordinal, item in enumerate(drafts, start=1)],
+    }
+    return hashlib.sha256(canonical_json_bytes(envelope)).hexdigest()
+
+
+_MANIFEST_FIELDS = {
+    "task_id",
+    "command_id",
+    "target_branch_id",
+    "event_count",
+    "first_sequence",
+    "last_sequence",
+    "first_event_id",
+    "last_event_id",
+    "starting_frame_version",
+    "expected_frame_version",
+    "confirm_ordinal",
+    "drafts_checksum",
+    "created_at",
+}
+
+
+def manifest_checksum(fields: Mapping[str, Any]) -> str:
+    values = dict(fields)
+    if set(values) != _MANIFEST_FIELDS:
+        missing = sorted(_MANIFEST_FIELDS - set(values))
+        extra = sorted(set(values) - _MANIFEST_FIELDS)
+        raise ValueError(f"manifest checksum fields mismatch; missing={missing}, extra={extra}")
+    envelope = {"domain": "workbench.command.manifest.v1", **values}
+    return hashlib.sha256(canonical_json_bytes(envelope)).hexdigest()

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import aiosqlite
 from pydantic import BaseModel, ConfigDict
 
 from orchestrator.config import Settings
@@ -19,7 +20,9 @@ from orchestrator.workbench.events import (
     GENESIS_CHECKSUM,
     TaskCreatedPayload,
     canonical_json_bytes,
+    drafts_checksum,
     event_checksum,
+    manifest_checksum,
     normalize_timestamp,
 )
 from orchestrator.workbench.models import (
@@ -50,6 +53,43 @@ def settings_for(tmp_path: Path) -> Settings:
         log_dir=home / "logs",
         repo_root=ROOT,
     )
+
+
+def sql_event_envelope(row: sqlite3.Row, **changes: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "event_schema_version": int(row["event_schema_version"]),
+        "event_id": str(row["event_id"]),
+        "task_id": str(row["task_id"]),
+        "sequence": int(row["sequence"]),
+        "event_type": str(row["event_type"]),
+        "actor_kind": str(row["actor_kind"]),
+        "actor_id": str(row["actor_id"]),
+        "branch_id": str(row["branch_id"]),
+        "cause": row["cause"],
+        "caused_by": row["caused_by"],
+        "command_id": str(row["command_id"]),
+        "command_sequence": int(row["command_sequence"]),
+        "frame_version": int(row["frame_version"]),
+        "payload": json.loads(str(row["payload_json"])),
+        "idempotency_key": str(row["idempotency_key"]),
+        "created_at": str(row["created_at"]),
+        "prior_checksum": str(row["prior_checksum"]),
+    }
+    values.update(changes)
+    return values
+
+
+def sql_manifest_fields(row: sqlite3.Row, **changes: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        key: row[key]
+        for key in (
+            "task_id", "command_id", "target_branch_id", "event_count", "first_sequence",
+            "last_sequence", "first_event_id", "last_event_id", "starting_frame_version",
+            "expected_frame_version", "confirm_ordinal", "drafts_checksum", "created_at",
+        )
+    }
+    values.update(changes)
+    return values
 
 
 def test_canonical_json_and_timestamp_are_stable_and_unicode_preserving() -> None:
@@ -99,6 +139,57 @@ def test_event_checksum_covers_the_full_immutable_envelope() -> None:
         changed = dict(envelope)
         changed[field] = "different"
         assert event_checksum(changed) != checksum
+
+
+def test_command_manifest_checksum_helpers_match_frozen_v1_vectors() -> None:
+    class NestedVector(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        count: int
+        note: str | None
+
+    class VectorPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        title: str
+        details: NestedVector
+
+    class ConfirmPayload(BaseModel):
+        model_config = ConfigDict(extra="forbid", frozen=True)
+        confirmed: bool
+        details: NestedVector
+
+    registry = EventRegistry()
+    registry.register(EventDefinition(
+        event_type="fixture.nested", event_schema_version=1, payload_model=VectorPayload,
+        frame_effect=FrameEffect.INHERIT, reducer=lambda state, event: state,
+    ))
+    registry.register(EventDefinition(
+        event_type="fixture.confirmed", event_schema_version=1, payload_model=ConfirmPayload,
+        frame_effect=FrameEffect.CONFIRM, reducer=lambda state, event: state,
+    ))
+    validated = (
+        registry.validate(EventDraft(
+            event_type="fixture.nested", actor=EventActor(kind="owner", actor_id="matt"),
+            payload={"title": "Café", "details": {"count": 1, "note": None}},
+        )),
+        registry.validate(EventDraft(
+            event_type="fixture.confirmed", actor=EventActor(kind="service", actor_id="codex"),
+            cause=EventCause.OWNER_REQUEST, caused_by="event-1",
+            payload={"confirmed": True, "details": {"count": 2, "note": "prêt"}},
+        )),
+    )
+    digest = drafts_checksum("task-Ω", "cmd-1", validated)
+    assert digest == "196c225b4ee2d3cc000abaded415649c6fb831cf5cd09fd0bca2e70f967d62c0"
+    manifest = {
+        "task_id": "task-Ω", "command_id": "cmd-1", "target_branch_id": "main",
+        "event_count": 2, "first_sequence": 1, "last_sequence": 2,
+        "first_event_id": "event-1", "last_event_id": "event-2",
+        "starting_frame_version": 0, "expected_frame_version": 0,
+        "confirm_ordinal": None, "drafts_checksum": digest,
+        "created_at": "2026-07-14T12:00:00.000000Z",
+    }
+    assert manifest_checksum(manifest) == "0c9b063cf6b4d4cc6661c0633252a5360e91b107bdccbd59889fbd801e4e2306"
+    manifest["confirm_ordinal"] = 2
+    assert manifest_checksum(manifest) == "eb16368cc351de06ff440dafae11f7a2f43cbae35d0c4d16838f5bb835f7f1e3"
 
 
 def test_event_draft_is_typed_frozen_and_rejects_unknown_fields() -> None:
@@ -191,6 +282,11 @@ class NestedPayload(BaseModel):
     nested: dict[str, str]
 
 
+class IntegerValuePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    value: int
+
+
 def fixture_registry(*, effect: FrameEffect = FrameEffect.INHERIT) -> EventRegistry:
     registry = EventRegistry.production().copy()
 
@@ -205,6 +301,26 @@ def fixture_registry(*, effect: FrameEffect = FrameEffect.INHERIT) -> EventRegis
             event_schema_version=1,
             payload_model=ValuePayload,
             frame_effect=effect,
+            reducer=reduce_value,
+        )
+    )
+    return registry
+
+
+def integer_fixture_registry() -> EventRegistry:
+    registry = EventRegistry.production().copy()
+
+    def reduce_value(state: dict[str, object], event: object) -> dict[str, object]:
+        result = dict(state)
+        result["value"] = getattr(event, "payload")["value"]
+        return result
+
+    registry.register(
+        EventDefinition(
+            event_type="fixture.integer",
+            event_schema_version=1,
+            payload_model=IntegerValuePayload,
+            frame_effect=FrameEffect.INHERIT,
             reducer=reduce_value,
         )
     )
@@ -257,6 +373,8 @@ async def test_single_append_exact_retry_changed_content_and_confirm_version(tmp
     assert event.frame_version == 1
     assert await store.append("task-1", "cmd-value", draft, expected_frame_version=0) == event
     with pytest.raises(IdempotencyConflict):
+        await store.append("task-1", "cmd-value", draft, expected_frame_version=1)
+    with pytest.raises(IdempotencyConflict):
         await store.append(
             "task-1",
             "cmd-value",
@@ -302,6 +420,19 @@ async def test_batch_is_contiguous_chained_atomic_and_whole_command_idempotent(t
             (2,),
             (3,),
         ]
+        assert db.execute(
+            """
+            SELECT event_count,first_sequence,last_sequence,first_event_id,last_event_id,
+                   starting_frame_version,expected_frame_version,confirm_ordinal,created_at
+            FROM workbench_command_manifests
+            WHERE task_id='task-1' AND command_id='cmd-batch'
+            """
+        ).fetchone() == (
+            2, 2, 3, events[0].event_id, events[1].event_id, 0, 0, None, events[0].created_at
+        )
+        assert db.execute(
+            "SELECT COUNT(DISTINCT created_at) FROM workbench_events WHERE command_id='cmd-batch'"
+        ).fetchone() == (1,)
 
 
 @pytest.mark.asyncio
@@ -395,6 +526,18 @@ async def test_fork_snapshot_stops_parent_at_cutoff_and_excludes_siblings(tmp_pa
             payload={"value": "child"},
         ),
     )
+    with pytest.raises(IdempotencyConflict):
+        await store.append(
+            "task-1",
+            "cmd-child",
+            EventDraft(
+                event_type="fixture.value",
+                actor=actor,
+                branch_id="main",
+                caused_by=parent_before.event_id,
+                payload={"value": "child"},
+            ),
+        )
     await store.fork_branch("task-1", "cmd-sibling", "main", "option-c", parent_after.sequence, actor)
     sibling = await store.append(
         "task-1",
@@ -585,6 +728,74 @@ async def test_cancellation_after_event_insert_rolls_back_event_and_projection(t
 
 
 @pytest.mark.asyncio
+async def test_repeated_cancellation_drains_rollback_and_preserves_original_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings, registry=fixture_registry())
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    with sqlite3.connect(settings.state_path) as db:
+        before = (
+            db.execute("SELECT COUNT(*) FROM workbench_events").fetchone(),
+            db.execute("SELECT COUNT(*) FROM workbench_command_manifests").fetchone(),
+            db.execute("SELECT COUNT(*) FROM projection_metadata").fetchone(),
+        )
+
+    publish_started = asyncio.Event()
+    rollback_started = asyncio.Event()
+    release_rollback = asyncio.Event()
+    original_publish = store._publish_snapshot
+    original_rollback = aiosqlite.Connection.rollback
+
+    async def paused_publish(db: object, snapshot: object, updated_at: str) -> None:
+        publish_started.set()
+        await asyncio.Future()
+
+    async def paused_rollback(connection: aiosqlite.Connection) -> None:
+        rollback_started.set()
+        await release_rollback.wait()
+        await original_rollback(connection)
+
+    store._publish_snapshot = paused_publish  # type: ignore[method-assign]
+    monkeypatch.setattr(aiosqlite.Connection, "rollback", paused_rollback)
+    task = asyncio.create_task(
+        store.append(
+            "task-1",
+            "cmd-double-cancel",
+            EventDraft(event_type="fixture.value", actor=actor, payload={"value": "cancel"}),
+        )
+    )
+    await asyncio.wait_for(publish_started.wait(), timeout=5)
+    task.cancel("first cancellation")
+    await asyncio.wait_for(rollback_started.wait(), timeout=5)
+    task.cancel("second cancellation")
+    await asyncio.sleep(0)
+    release_rollback.set()
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await asyncio.wait_for(task, timeout=5)
+    assert cancelled.value.args == ("first cancellation",)
+
+    monkeypatch.setattr(aiosqlite.Connection, "rollback", original_rollback)
+    store._publish_snapshot = original_publish  # type: ignore[method-assign]
+    with sqlite3.connect(settings.state_path) as db:
+        after = (
+            db.execute("SELECT COUNT(*) FROM workbench_events").fetchone(),
+            db.execute("SELECT COUNT(*) FROM workbench_command_manifests").fetchone(),
+            db.execute("SELECT COUNT(*) FROM projection_metadata").fetchone(),
+        )
+    assert after == before
+    assert (await store.verify_ledger("task-1")).valid is True
+    appended = await store.append(
+        "task-1",
+        "cmd-after-double-cancel",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "open"}),
+    )
+    assert appended.sequence == 2
+
+
+@pytest.mark.asyncio
 async def test_two_store_contention_keeps_global_sequence_contiguous_and_retry_exact(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
     await StateStore(settings).initialize()
@@ -615,6 +826,75 @@ async def test_two_store_contention_keeps_global_sequence_contiguous_and_retry_e
             (2,),
             (3,),
         ]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_multi_event_commands_have_one_atomic_manifest_each(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    registry = fixture_registry()
+    first = WorkbenchStore(settings, registry=registry)
+    second = WorkbenchStore(settings, registry=registry)
+    await first.create_task("task-1", "Build it", "cmd-create", actor)
+    drafts_a = tuple(
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": value})
+        for value in ("A1", "A2")
+    )
+    drafts_b = tuple(
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": value})
+        for value in ("B1", "B2")
+    )
+    result_a, result_b = await asyncio.gather(
+        first.append_batch("task-1", "cmd-a", drafts_a),
+        second.append_batch("task-1", "cmd-b", drafts_b),
+    )
+    assert [event.sequence for event in result_a] in ([2, 3], [4, 5])
+    assert [event.sequence for event in result_b] in ([2, 3], [4, 5])
+    assert result_a[0].sequence != result_b[0].sequence
+
+    retry_a, retry_b = await asyncio.gather(
+        first.append_batch("task-1", "cmd-a", drafts_a),
+        second.append_batch("task-1", "cmd-a", drafts_a),
+    )
+    assert retry_a == retry_b == result_a
+    with sqlite3.connect(settings.state_path) as db:
+        assert db.execute(
+            "SELECT command_id,event_count,first_sequence,last_sequence "
+            "FROM workbench_command_manifests WHERE task_id='task-1' ORDER BY first_sequence"
+        ).fetchall() == [
+            ("cmd-create", 1, 1, 1),
+            (result_a[0].command_id if result_a[0].sequence == 2 else result_b[0].command_id, 2, 2, 3),
+            (result_a[0].command_id if result_a[0].sequence == 4 else result_b[0].command_id, 2, 4, 5),
+        ]
+        assert db.execute(
+            "SELECT command_id,COUNT(*),MIN(sequence),MAX(sequence) "
+            "FROM workbench_events GROUP BY command_id ORDER BY MIN(sequence)"
+        ).fetchall() == [
+            ("cmd-create", 1, 1, 1),
+            (result_a[0].command_id if result_a[0].sequence == 2 else result_b[0].command_id, 2, 2, 3),
+            (result_a[0].command_id if result_a[0].sequence == 4 else result_b[0].command_id, 2, 4, 5),
+        ]
+    assert (await first.verify_ledger("task-1")).valid is True
+
+    await first.create_task("task-2", "Race it", "cmd-create-2", actor)
+    race_results = await asyncio.gather(
+        first.append_batch("task-2", "cmd-race", drafts_a),
+        second.append_batch("task-2", "cmd-race", drafts_b),
+        return_exceptions=True,
+    )
+    successes = [result for result in race_results if isinstance(result, tuple)]
+    conflicts = [result for result in race_results if isinstance(result, IdempotencyConflict)]
+    assert len(successes) == len(conflicts) == 1
+    with sqlite3.connect(settings.state_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM workbench_command_manifests "
+            "WHERE task_id='task-2' AND command_id='cmd-race'"
+        ).fetchone() == (1,)
+        assert db.execute(
+            "SELECT COUNT(*) FROM workbench_events "
+            "WHERE task_id='task-2' AND command_id='cmd-race'"
+        ).fetchone() == (2,)
 
 
 @pytest.mark.asyncio
@@ -1049,3 +1329,511 @@ async def test_reducer_cannot_mutate_nested_event_payload_during_any_replay_path
                 "SELECT payload_json FROM workbench_events WHERE command_id='cmd-valid-nested'"
             ).fetchone()[0]
         ) == {"nested": {"value": "original"}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted_ordinals", [(3,), (2,), (1, 2, 3)])
+async def test_deleted_tail_middle_or_whole_command_is_never_rebuilt_or_retried(
+    tmp_path: Path, deleted_ordinals: tuple[int, ...]
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    registry = fixture_registry()
+    store = WorkbenchStore(settings, registry=registry)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    drafts = tuple(
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": value})
+        for value in ("A", "B", "C")
+    )
+    await store.append_batch("task-1", "cmd-three", drafts)
+    with sqlite3.connect(settings.state_path) as db:
+        projection_before = db.execute("SELECT * FROM projection_metadata").fetchall()
+        db.execute("DROP TRIGGER workbench_events_no_delete")
+        placeholders = ",".join("?" for _ in deleted_ordinals)
+        db.execute(
+            f"DELETE FROM workbench_events WHERE task_id='task-1' AND command_id='cmd-three' "
+            f"AND command_sequence IN ({placeholders})",
+            deleted_ordinals,
+        )
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    with pytest.raises((LedgerCorruption, IdempotencyConflict, EventValidationError)):
+        await store.append_batch(
+            "task-1", "cmd-three", tuple(draft for index, draft in enumerate(drafts, 1) if index not in deleted_ordinals)
+        )
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1")
+    with pytest.raises(LedgerCorruption):
+        await Projector(registry).rebuild(store, "task-1")
+    with sqlite3.connect(settings.state_path) as db:
+        assert db.execute("SELECT * FROM projection_metadata").fetchall() == projection_before
+
+
+@pytest.mark.asyncio
+async def test_orphan_event_and_manifest_tamper_fail_before_projection(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings, registry=fixture_registry())
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    await store.append(
+        "task-1", "cmd-value",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "A"}),
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("DROP TRIGGER workbench_command_manifests_no_delete")
+        db.execute(
+            "DELETE FROM workbench_command_manifests WHERE task_id='task-1' AND command_id='cmd-value'"
+        )
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "manifest" in str(verification.reason)
+
+    other = settings_for(tmp_path / "other")
+    await StateStore(other).initialize()
+    other_store = WorkbenchStore(other, registry=fixture_registry())
+    await other_store.create_task("task-2", "Build it", "cmd-create", actor)
+    await other_store.append(
+        "task-2", "cmd-value",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "A"}),
+    )
+    with sqlite3.connect(other.state_path) as db:
+        db.execute("DROP TRIGGER workbench_command_manifests_no_update")
+        db.execute(
+            "UPDATE workbench_command_manifests SET drafts_checksum=? "
+            "WHERE task_id='task-2' AND command_id='cmd-value'",
+            ("0" * 64,),
+        )
+    tampered = await other_store.verify_ledger("task-2")
+    assert tampered.valid is False
+    assert "manifest checksum" in str(tampered.reason)
+
+
+@pytest.mark.asyncio
+async def test_missing_interior_event_fault_rolls_back_manifest_events_and_projection(tmp_path: Path) -> None:
+    class OmitInteriorStore(WorkbenchStore):
+        async def _insert_event(self, db: object, event: object) -> None:
+            if getattr(event, "command_id") == "cmd-three" and getattr(event, "command_sequence") == 2:
+                return
+            await super()._insert_event(db, event)  # type: ignore[arg-type]
+
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = OmitInteriorStore(settings, registry=fixture_registry())
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    with sqlite3.connect(settings.state_path) as db:
+        projection_before = db.execute("SELECT * FROM projection_metadata").fetchall()
+    drafts = tuple(
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": value})
+        for value in ("A", "B", "C")
+    )
+    with pytest.raises(LedgerCorruption):
+        await store.append_batch("task-1", "cmd-three", drafts)
+    with sqlite3.connect(settings.state_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM workbench_events WHERE command_id='cmd-three'"
+        ).fetchone() == (0,)
+        assert db.execute(
+            "SELECT COUNT(*) FROM workbench_command_manifests WHERE command_id='cmd-three'"
+        ).fetchone() == (0,)
+        assert db.execute("SELECT * FROM projection_metadata").fetchall() == projection_before
+
+
+@pytest.mark.asyncio
+async def test_coherently_rehashed_frame_tamper_fails_registry_transition_verification(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    registry = fixture_registry(effect=FrameEffect.CONFIRM)
+    store = WorkbenchStore(settings, registry=registry)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    event = await store.append(
+        "task-1", "cmd-confirm",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "confirmed"}),
+        expected_frame_version=0,
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("DROP TRIGGER workbench_events_no_update")
+        row = db.execute("SELECT * FROM workbench_events WHERE event_id=?", (event.event_id,)).fetchone()
+        assert row is not None
+        checksum = event_checksum(sql_event_envelope(row, frame_version=7))
+        db.execute(
+            "UPDATE workbench_events SET frame_version=7,checksum=? WHERE event_id=?",
+            (checksum, event.event_id),
+        )
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "frame transition" in str(verification.reason)
+    with pytest.raises(LedgerCorruption):
+        await Projector(registry).rebuild(store, "task-1")
+
+
+@pytest.mark.asyncio
+async def test_coherently_rehashed_post_fork_parent_cause_still_fails_visibility(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    registry = fixture_registry()
+    store = WorkbenchStore(settings, registry=registry)
+    created = await store.create_task("task-1", "Build it", "cmd-create", actor)
+    await store.fork_branch("task-1", "cmd-fork", "main", "child", created.sequence, actor)
+    parent_after = await store.append(
+        "task-1", "cmd-parent-after",
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "parent"}),
+    )
+    child = await store.append(
+        "task-1", "cmd-child",
+        EventDraft(
+            event_type="fixture.value", actor=actor, branch_id="child", payload={"value": "child"}
+        ),
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("DROP TRIGGER workbench_events_no_update")
+        db.execute("DROP TRIGGER workbench_command_manifests_no_update")
+        event_row = db.execute(
+            "SELECT * FROM workbench_events WHERE event_id=?", (child.event_id,)
+        ).fetchone()
+        assert event_row is not None
+        changed_event_checksum = event_checksum(
+            sql_event_envelope(event_row, caused_by=parent_after.event_id)
+        )
+        db.execute(
+            "UPDATE workbench_events SET caused_by=?,checksum=? WHERE event_id=?",
+            (parent_after.event_id, changed_event_checksum, child.event_id),
+        )
+        changed_draft = registry.validate(
+            EventDraft(
+                event_type="fixture.value",
+                actor=actor,
+                branch_id="child",
+                caused_by=parent_after.event_id,
+                payload={"value": "child"},
+            )
+        )
+        changed_drafts_checksum = drafts_checksum("task-1", "cmd-child", (changed_draft,))
+        manifest_row = db.execute(
+            "SELECT * FROM workbench_command_manifests WHERE task_id='task-1' AND command_id='cmd-child'"
+        ).fetchone()
+        assert manifest_row is not None
+        fields = sql_manifest_fields(manifest_row, drafts_checksum=changed_drafts_checksum)
+        db.execute(
+            "UPDATE workbench_command_manifests SET drafts_checksum=?,manifest_checksum=? "
+            "WHERE task_id='task-1' AND command_id='cmd-child'",
+            (changed_drafts_checksum, manifest_checksum(fields)),
+        )
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "cause is not visible" in str(verification.reason)
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1", "child")
+
+
+@pytest.mark.asyncio
+async def test_coherently_rehashed_intra_command_cause_is_not_visible_at_atomic_boundary(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    registry = fixture_registry()
+    store = WorkbenchStore(settings, registry=registry)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    drafts = (
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "A"}),
+        EventDraft(event_type="fixture.value", actor=actor, payload={"value": "B"}),
+    )
+    events = await store.append_batch("task-1", "cmd-batch", drafts)
+    with sqlite3.connect(settings.state_path) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("DROP TRIGGER workbench_events_no_update")
+        db.execute("DROP TRIGGER workbench_command_manifests_no_update")
+        second_row = db.execute(
+            "SELECT * FROM workbench_events WHERE event_id=?", (events[1].event_id,)
+        ).fetchone()
+        assert second_row is not None
+        changed_event_checksum = event_checksum(
+            sql_event_envelope(second_row, caused_by=events[0].event_id)
+        )
+        db.execute(
+            "UPDATE workbench_events SET caused_by=?,checksum=? WHERE event_id=?",
+            (events[0].event_id, changed_event_checksum, events[1].event_id),
+        )
+        changed = (
+            registry.validate(drafts[0]),
+            registry.validate(
+                EventDraft(
+                    event_type="fixture.value",
+                    actor=actor,
+                    caused_by=events[0].event_id,
+                    payload={"value": "B"},
+                )
+            ),
+        )
+        changed_drafts_checksum = drafts_checksum("task-1", "cmd-batch", changed)
+        manifest_row = db.execute(
+            "SELECT * FROM workbench_command_manifests "
+            "WHERE task_id='task-1' AND command_id='cmd-batch'"
+        ).fetchone()
+        assert manifest_row is not None
+        fields = sql_manifest_fields(manifest_row, drafts_checksum=changed_drafts_checksum)
+        db.execute(
+            "UPDATE workbench_command_manifests SET drafts_checksum=?,manifest_checksum=? "
+            "WHERE task_id='task-1' AND command_id='cmd-batch'",
+            (changed_drafts_checksum, manifest_checksum(fields)),
+        )
+
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "cause is not visible" in str(verification.reason)
+    with pytest.raises(LedgerCorruption):
+        await store.append_batch("task-1", "cmd-batch", drafts)
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1")
+    with pytest.raises(LedgerCorruption):
+        await Projector(registry).rebuild(store, "task-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "fractional_value"),
+    (("event_schema_version", 1.5), ("command_sequence", 1.5), ("frame_version", 0.5)),
+)
+async def test_fractional_event_integer_fields_fail_every_authority_surface(
+    tmp_path: Path, column: str, fractional_value: float
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    registry = fixture_registry()
+    store = WorkbenchStore(settings, registry=registry)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    draft = EventDraft(event_type="fixture.value", actor=actor, payload={"value": "A"})
+    event = await store.append("task-1", "cmd-value", draft)
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("DROP TRIGGER workbench_events_no_update")
+        db.execute(
+            f"UPDATE workbench_events SET {column}=? WHERE event_id=?",
+            (fractional_value, event.event_id),
+        )
+
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "integer storage" in str(verification.reason)
+    with pytest.raises(LedgerCorruption):
+        await store.append("task-1", "cmd-value", draft)
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1")
+    with pytest.raises(LedgerCorruption):
+        await Projector(registry).rebuild(store, "task-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_value", ("1", True))
+async def test_coercible_but_non_normalized_payload_fails_every_authority_surface(
+    tmp_path: Path, changed_value: object
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    registry = integer_fixture_registry()
+    store = WorkbenchStore(settings, registry=registry)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    draft = EventDraft(event_type="fixture.integer", actor=actor, payload={"value": 1})
+    event = await store.append("task-1", "cmd-value", draft)
+    with sqlite3.connect(settings.state_path) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("DROP TRIGGER workbench_events_no_update")
+        row = db.execute(
+            "SELECT * FROM workbench_events WHERE event_id=?", (event.event_id,)
+        ).fetchone()
+        assert row is not None
+        changed_payload = {"value": changed_value}
+        changed_checksum = event_checksum(sql_event_envelope(row, payload=changed_payload))
+        db.execute(
+            "UPDATE workbench_events SET payload_json=?,checksum=? WHERE event_id=?",
+            (canonical_json_bytes(changed_payload).decode("utf-8"), changed_checksum, event.event_id),
+        )
+
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "registry-normalized payload" in str(verification.reason)
+    with pytest.raises(LedgerCorruption):
+        await store.append("task-1", "cmd-value", draft)
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1", verify=False)
+    with pytest.raises(LedgerCorruption):
+        await Projector(registry).rebuild(store, "task-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corruption",
+    ("missing_task", "missing_root_branch", "missing_manifest", "missing_projection"),
+)
+async def test_create_task_retry_never_returns_from_incomplete_authority(
+    tmp_path: Path, corruption: str
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    with sqlite3.connect(settings.state_path) as db:
+        if corruption == "missing_task":
+            db.execute("DELETE FROM workbench_tasks WHERE id='task-1'")
+        elif corruption == "missing_root_branch":
+            db.execute("DROP TRIGGER workbench_branches_no_delete")
+            db.execute("DELETE FROM workbench_branches WHERE task_id='task-1'")
+        elif corruption == "missing_manifest":
+            db.execute("DROP TRIGGER workbench_command_manifests_no_delete")
+            db.execute("DELETE FROM workbench_command_manifests WHERE task_id='task-1'")
+        else:
+            db.execute("DELETE FROM projection_metadata WHERE task_id='task-1'")
+
+    with pytest.raises(LedgerCorruption):
+        await store.create_task("task-1", "Build it", "cmd-create", actor)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "fractional_value"),
+    (("forked_from_sequence", 1.5), ("forked_from_frame_version", 0.5)),
+)
+async def test_fractional_branch_topology_fields_fail_every_authority_surface(
+    tmp_path: Path, column: str, fractional_value: float
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings)
+    created = await store.create_task("task-1", "Build it", "cmd-create", actor)
+    await store.fork_branch(
+        "task-1", "cmd-fork", "main", "child", created.sequence, actor
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("DROP TRIGGER workbench_branches_identity_immutable")
+        db.execute(
+            f"UPDATE workbench_branches SET {column}=? "
+            "WHERE task_id='task-1' AND branch_id='child'",
+            (fractional_value,),
+        )
+
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "integer storage" in str(verification.reason)
+    with pytest.raises(LedgerCorruption):
+        await store.fork_branch(
+            "task-1", "cmd-fork", "main", "child", created.sequence, actor
+        )
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1", "child")
+    with pytest.raises(LedgerCorruption):
+        await Projector(store.registry).rebuild(store, "task-1")
+
+
+@pytest.mark.asyncio
+async def test_blob_text_alias_fails_every_authority_surface(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="b'matt'")
+    registry = fixture_registry()
+    store = WorkbenchStore(settings, registry=registry)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    draft = EventDraft(event_type="fixture.value", actor=actor, payload={"value": "A"})
+    event = await store.append("task-1", "cmd-value", draft)
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute("DROP TRIGGER workbench_events_no_update")
+        db.execute(
+            "UPDATE workbench_events SET actor_id=? WHERE event_id=?",
+            (sqlite3.Binary(b"matt"), event.event_id),
+        )
+
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "text storage" in str(verification.reason)
+    with pytest.raises(LedgerCorruption):
+        await store.append("task-1", "cmd-value", draft)
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1")
+    with pytest.raises(LedgerCorruption):
+        await Projector(registry).rebuild(store, "task-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "changed_value"),
+    (
+        ("title", "Changed"),
+        ("state", "ready"),
+        ("active_branch_id", "ghost"),
+        ("current_frame_version", 1),
+        ("created_at", "2026-07-14T00:00:00.000000Z"),
+        ("updated_at", "2026-07-14T00:00:00.000000Z"),
+    ),
+)
+async def test_task_row_semantics_remain_bound_to_task_created(
+    tmp_path: Path, column: str, changed_value: object
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings)
+    await store.create_task("task-1", "Build it", "cmd-create", actor)
+    with sqlite3.connect(settings.state_path) as db:
+        db.execute(
+            f"UPDATE workbench_tasks SET {column}=? WHERE id='task-1'", (changed_value,)
+        )
+
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    assert "bound to task.created" in str(verification.reason)
+    with pytest.raises(LedgerCorruption):
+        await store.create_task("task-1", "Build it", "cmd-create", actor)
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1")
+    with pytest.raises(LedgerCorruption):
+        await Projector(store.registry).rebuild(store, "task-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("branch_id", "column", "changed_value"),
+    (
+        ("main", "status", "merged"),
+        ("main", "created_at", "2026-07-14T00:00:00.000000Z"),
+        ("child", "status", "merged"),
+        ("child", "created_at", "2026-07-14T00:00:00.000000Z"),
+    ),
+)
+async def test_branch_state_and_time_remain_bound_to_creation_event(
+    tmp_path: Path, branch_id: str, column: str, changed_value: str
+) -> None:
+    settings = settings_for(tmp_path)
+    await StateStore(settings).initialize()
+    actor = EventActor(kind="owner", actor_id="matt")
+    store = WorkbenchStore(settings)
+    created = await store.create_task("task-1", "Build it", "cmd-create", actor)
+    await store.fork_branch(
+        "task-1", "cmd-fork", "main", "child", created.sequence, actor
+    )
+    with sqlite3.connect(settings.state_path) as db:
+        if column == "created_at":
+            db.execute("DROP TRIGGER workbench_branches_identity_immutable")
+        db.execute(
+            f"UPDATE workbench_branches SET {column}=? "
+            "WHERE task_id='task-1' AND branch_id=?",
+            (changed_value, branch_id),
+        )
+
+    verification = await store.verify_ledger("task-1")
+    assert verification.valid is False
+    with pytest.raises(LedgerCorruption):
+        await store.create_task("task-1", "Build it", "cmd-create", actor)
+    with pytest.raises(LedgerCorruption):
+        await store.snapshot("task-1", branch_id)
+    with pytest.raises(LedgerCorruption):
+        await Projector(store.registry).rebuild(store, "task-1")

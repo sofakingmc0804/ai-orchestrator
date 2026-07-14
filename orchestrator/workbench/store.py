@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Iterable, Sequence
+from typing import Any, AsyncIterator, Callable, Iterable, Mapping, Sequence
 
 import aiosqlite
 
@@ -20,7 +20,9 @@ from orchestrator.workbench.events import (
     GENESIS_CHECKSUM,
     ValidatedDraft,
     canonical_json_text,
+    drafts_checksum,
     event_checksum,
+    manifest_checksum,
     normalize_timestamp,
 )
 from orchestrator.workbench.models import (
@@ -111,8 +113,30 @@ class WorkbenchStore:
             await db.execute("PRAGMA foreign_keys=ON")
             await db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
             yield db
-        finally:
-            await db.close()
+        except BaseException as original:
+            try:
+                await self._finish_close(db)
+            except asyncio.CancelledError:
+                if not isinstance(original, asyncio.CancelledError):
+                    raise
+            except BaseException as cleanup_error:
+                raise original from cleanup_error
+            raise
+        else:
+            await self._finish_close(db)
+
+    async def _finish_close(self, db: aiosqlite.Connection) -> None:
+        task = asyncio.create_task(db.close())
+        cancellation: asyncio.CancelledError | None = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                continue
+        task.result()
+        if cancellation is not None:
+            raise cancellation
 
     async def _finish_commit(self, db: aiosqlite.Connection) -> None:
         task = asyncio.create_task(db.commit())
@@ -152,6 +176,17 @@ class WorkbenchStore:
         if cancellation is not None:
             raise cancellation
 
+    async def _rollback_after_error(
+        self, db: aiosqlite.Connection, original: BaseException
+    ) -> None:
+        try:
+            await self._finish_rollback(db)
+        except asyncio.CancelledError:
+            if not isinstance(original, asyncio.CancelledError):
+                raise
+        except BaseException as cleanup_error:
+            raise original from cleanup_error
+
     async def create_task(
         self,
         task_id: str,
@@ -175,6 +210,27 @@ class WorkbenchStore:
                 existing_task = await (
                     await db.execute("SELECT id FROM workbench_tasks WHERE id=?", (task_id,))
                 ).fetchone()
+                if existing_task is None:
+                    orphan = await (
+                        await db.execute(
+                            """
+                            SELECT 1 FROM (
+                                SELECT task_id FROM workbench_events WHERE task_id=?
+                                UNION ALL
+                                SELECT task_id FROM workbench_command_manifests WHERE task_id=?
+                                UNION ALL
+                                SELECT task_id FROM workbench_branches WHERE task_id=?
+                                UNION ALL
+                                SELECT task_id FROM projection_metadata WHERE task_id=?
+                            ) LIMIT 1
+                            """,
+                            (task_id, task_id, task_id, task_id),
+                        )
+                    ).fetchone()
+                    if orphan is not None:
+                        raise LedgerCorruption(None, "task authority row is missing")
+                else:
+                    await self._require_task(db, task_id)
                 if existing_task is not None:
                     verification = await self._verify_ledger_db(
                         db, task_id, include_projections=True
@@ -184,24 +240,24 @@ class WorkbenchStore:
                     db, task_id, command_id, (validated,), expected_frame_version=None
                 )
                 if existing is not None:
-                    await db.rollback()
+                    await self._finish_rollback(db)
                     return existing[0]
                 if existing_task is not None:
                     raise IdempotencyConflict(f"task already exists under another command: {task_id}")
 
                 created_at = normalize_timestamp(self._clock())
-                event_id = self._new_event_id()
-                event = self._build_event(
+                events, manifest = self._prepare_command(
                     task_id=task_id,
                     command_id=command_id,
-                    command_sequence=1,
-                    sequence=1,
-                    validated=validated,
-                    frame_version=0,
+                    validated=(validated,),
+                    target_branch_id="main",
+                    first_sequence=1,
+                    starting_frame_version=0,
+                    expected_frame_version=0,
                     prior_checksum=GENESIS_CHECKSUM,
-                    event_id=event_id,
                     created_at=created_at,
                 )
+                event = events[0]
                 await db.execute(
                     """
                     INSERT INTO workbench_tasks(
@@ -219,7 +275,10 @@ class WorkbenchStore:
                     """,
                     (task_id, created_at),
                 )
+                await self._insert_manifest(db, manifest)
                 await self._insert_event(db, event)
+                staged = await self._verify_ledger_db(db, task_id, include_projections=False)
+                self._require_valid(staged)
                 visible = await self._visible_events(db, task_id, "main", at_sequence=None)
                 snapshot = self._replay(
                     self.projector, visible, task_id=task_id, branch_id="main"
@@ -227,9 +286,8 @@ class WorkbenchStore:
                 await self._publish_snapshot(db, snapshot, event.created_at)
                 await self._finish_commit(db)
                 return event
-            except BaseException:
-                if db.in_transaction:
-                    await db.rollback()
+            except BaseException as original:
+                await self._rollback_after_error(db, original)
                 raise
 
     async def append(
@@ -284,7 +342,7 @@ class WorkbenchStore:
                     expected_frame_version=expected_frame_version,
                 )
                 if existing is not None:
-                    await db.rollback()
+                    await self._finish_rollback(db)
                     return existing
 
                 branch_id = next(iter(branches))
@@ -311,27 +369,17 @@ class WorkbenchStore:
                         )
 
                 last = await self._global_head(db, task_id)
-                sequence = last[0]
-                prior_checksum = last[1]
-                frame_version = current_frame
-                events: list[WorkbenchEvent] = []
-                for ordinal, item in enumerate(validated, start=1):
-                    if item.definition.frame_effect is FrameEffect.CONFIRM:
-                        frame_version += 1
-                    sequence += 1
-                    event = self._build_event(
-                        task_id=task_id,
-                        command_id=command_id,
-                        command_sequence=ordinal,
-                        sequence=sequence,
-                        validated=item,
-                        frame_version=frame_version,
-                        prior_checksum=prior_checksum,
-                        event_id=self._new_event_id(),
-                        created_at=normalize_timestamp(self._clock()),
-                    )
-                    events.append(event)
-                    prior_checksum = event.checksum
+                events, manifest = self._prepare_command(
+                    task_id=task_id,
+                    command_id=command_id,
+                    validated=validated,
+                    target_branch_id=branch_id,
+                    first_sequence=last[0] + 1,
+                    starting_frame_version=current_frame,
+                    expected_frame_version=current_frame,
+                    prior_checksum=last[1],
+                    created_at=normalize_timestamp(self._clock()),
+                )
 
                 projected = self._replay(
                     self.projector,
@@ -339,14 +387,16 @@ class WorkbenchStore:
                     task_id=task_id,
                     branch_id=branch_id,
                 )
+                await self._insert_manifest(db, manifest)
                 for event in events:
                     await self._insert_event(db, event)
+                staged = await self._verify_ledger_db(db, task_id, include_projections=False)
+                self._require_valid(staged)
                 await self._publish_snapshot(db, projected, events[-1].created_at)
                 await self._finish_commit(db)
                 return tuple(events)
-            except BaseException:
-                if db.in_transaction:
-                    await db.rollback()
+            except BaseException as original:
+                await self._rollback_after_error(db, original)
                 raise
 
     async def fork_branch(
@@ -405,10 +455,20 @@ class WorkbenchStore:
                             (task_id, branch_id),
                         )
                     ).fetchone()
+                    actual = (
+                        self._strict_text(branch["parent_branch_id"], "branch parent id"),
+                        self._strict_integer(branch["forked_from_sequence"], "branch fork sequence"),
+                        self._strict_integer(
+                            branch["forked_from_frame_version"], "branch fork frame version"
+                        ),
+                        self._strict_text(
+                            branch["created_by_event_id"], "branch creation event id"
+                        ),
+                    ) if branch is not None else None
                     expected = (parent_branch_id, at_sequence, fork_frame, existing[0].event_id)
-                    if branch is None or tuple(branch) != expected:
+                    if actual != expected:
                         raise LedgerCorruption(existing[0].sequence, "fork command and branch topology disagree")
-                    await db.rollback()
+                    await self._finish_rollback(db)
                     return existing[0]
                 duplicate = await (
                     await db.execute(
@@ -427,17 +487,19 @@ class WorkbenchStore:
                     branch_id=parent_branch_id,
                 )
                 head_sequence, head_checksum = await self._global_head(db, task_id)
-                event = self._build_event(
+                events, manifest = self._prepare_command(
                     task_id=task_id,
                     command_id=command_id,
-                    command_sequence=1,
-                    sequence=head_sequence + 1,
-                    validated=validated,
-                    frame_version=parent_snapshot.frame_version,
+                    validated=(validated,),
+                    target_branch_id=parent_branch_id,
+                    first_sequence=head_sequence + 1,
+                    starting_frame_version=parent_snapshot.frame_version,
+                    expected_frame_version=parent_snapshot.frame_version,
                     prior_checksum=head_checksum,
-                    event_id=self._new_event_id(),
                     created_at=normalize_timestamp(self._clock()),
                 )
+                event = events[0]
+                await self._insert_manifest(db, manifest)
                 await self._insert_event(db, event)
                 await db.execute(
                     """
@@ -456,6 +518,8 @@ class WorkbenchStore:
                         event.created_at,
                     ),
                 )
+                staged = await self._verify_ledger_db(db, task_id, include_projections=False)
+                self._require_valid(staged)
                 parent_projected = self._replay(
                     self.projector,
                     parent_current.extended((event,)),
@@ -476,9 +540,8 @@ class WorkbenchStore:
                 await self._publish_snapshot(db, child_projected, child_time)
                 await self._finish_commit(db)
                 return event
-            except BaseException:
-                if db.in_transaction:
-                    await db.rollback()
+            except BaseException as original:
+                await self._rollback_after_error(db, original)
                 raise
 
     async def snapshot(
@@ -511,8 +574,8 @@ class WorkbenchStore:
                 )
                 await self._finish_rollback(db)
                 return result
-            except BaseException:
-                await self._finish_rollback(db)
+            except BaseException as original:
+                await self._rollback_after_error(db, original)
                 raise
 
     async def verify_ledger(self, task_id: str) -> LedgerVerification:
@@ -523,8 +586,8 @@ class WorkbenchStore:
                 result = await self._verify_ledger_db(db, task_id, include_projections=True)
                 await self._finish_rollback(db)
                 return result
-            except BaseException:
-                await self._finish_rollback(db)
+            except BaseException as original:
+                await self._rollback_after_error(db, original)
                 raise
 
     async def _rebuild_projections(
@@ -547,7 +610,7 @@ class WorkbenchStore:
                 ).fetchall()
                 heads = []
                 for row in branches:
-                    branch_id = str(row[0])
+                    branch_id = self._strict_text(row[0], "branch id")
                     visible = await self._visible_events(db, task_id, branch_id, at_sequence=None)
                     snapshot = self._replay(
                         projector, visible, task_id=task_id, branch_id=branch_id
@@ -560,9 +623,8 @@ class WorkbenchStore:
                     raise LedgerCorruption(after[0], "ledger head changed during projection rebuild")
                 await self._finish_commit(db)
                 return tuple(heads)
-            except BaseException:
-                if db.in_transaction:
-                    await db.rollback()
+            except BaseException as original:
+                await self._rollback_after_error(db, original)
                 raise
 
     async def _verify_ledger_db(
@@ -576,49 +638,103 @@ class WorkbenchStore:
         prior = GENESIS_CHECKSUM
         expected_sequence = 1
         for row in rows:
-            sequence = int(row["sequence"])
+            sequence = row["sequence"] if type(row["sequence"]) is int else expected_sequence
             try:
+                sequence = self._strict_integer(row["sequence"], "event sequence")
+                event_schema_version = self._strict_integer(
+                    row["event_schema_version"], "event schema version"
+                )
+                self._strict_integer(row["command_sequence"], "event command sequence")
+                self._strict_integer(row["frame_version"], "event frame version")
                 if sequence != expected_sequence:
                     raise ValueError(f"expected contiguous sequence {expected_sequence}")
-                if str(row["prior_checksum"]) != prior:
+                if self._strict_text(row["prior_checksum"], "event prior checksum") != prior:
                     raise ValueError("prior checksum link does not match")
-                payload = json.loads(str(row["payload_json"]))
-                if str(row["payload_json"]) != canonical_json_text(payload):
+                payload_text = self._strict_text(row["payload_json"], "event payload json")
+                payload = json.loads(payload_text)
+                if payload_text != canonical_json_text(payload):
                     raise ValueError("payload is not stored in canonical JSON form")
-                if str(row["created_at"]) != normalize_timestamp(str(row["created_at"])):
+                created_at = self._strict_text(row["created_at"], "event created at")
+                if created_at != normalize_timestamp(created_at):
                     raise ValueError("created_at is not normalized UTC")
                 envelope = self._row_envelope(row, payload)
                 computed = event_checksum(envelope)
-                if str(row["checksum"]) != computed:
+                if self._strict_text(row["checksum"], "event checksum") != computed:
                     raise ValueError("stored checksum does not match immutable envelope")
                 # Structural validation is also part of fail-closed verification.
-                self.registry.validate(
+                validated = self.registry.validate(
                     EventDraft(
-                        event_type=str(row["event_type"]),
-                        event_schema_version=int(row["event_schema_version"]),
-                        actor=EventActor(kind=str(row["actor_kind"]), actor_id=str(row["actor_id"])),
-                        branch_id=str(row["branch_id"]),
-                        cause=EventCause(str(row["cause"])) if row["cause"] is not None else None,
-                        caused_by=str(row["caused_by"]) if row["caused_by"] is not None else None,
+                        event_type=self._strict_text(row["event_type"], "event type"),
+                        event_schema_version=event_schema_version,
+                        actor=EventActor(
+                            kind=self._strict_text(row["actor_kind"], "event actor kind"),
+                            actor_id=self._strict_text(row["actor_id"], "event actor id"),
+                        ),
+                        branch_id=self._strict_text(row["branch_id"], "event branch id"),
+                        cause=(
+                            EventCause(self._strict_text(row["cause"], "event cause"))
+                            if row["cause"] is not None
+                            else None
+                        ),
+                        caused_by=self._strict_text(
+                            row["caused_by"], "event caused by", nullable=True
+                        ),
                         payload=payload,
                     )
                 )
+                if canonical_json_text(payload) != canonical_json_text(
+                    validated.payload.model_dump(mode="json")
+                ):
+                    raise ValueError("stored payload differs from registry-normalized payload")
             except Exception as exc:
                 return LedgerVerification(
                     valid=False,
                     task_id=task_id,
                     checked_events=expected_sequence - 1,
-                    head_sequence=int(rows[-1]["sequence"]) if rows else 0,
-                    head_checksum=str(rows[-1]["checksum"]) if rows else GENESIS_CHECKSUM,
+                    head_sequence=(
+                        rows[-1]["sequence"]
+                        if rows and type(rows[-1]["sequence"]) is int
+                        else 0
+                    ),
+                    head_checksum=(
+                        rows[-1]["checksum"]
+                        if rows and type(rows[-1]["checksum"]) is str
+                        else GENESIS_CHECKSUM
+                    ),
                     first_invalid_sequence=sequence,
                     reason=str(exc),
                 )
-            prior = str(row["checksum"])
+            prior = self._strict_text(row["checksum"], "event checksum")
             expected_sequence += 1
 
-        topology_failure = await self._verify_branch_topology(db, task_id, rows)
+        try:
+            topology_failure = await self._verify_branch_topology(db, task_id, rows)
+        except Exception as exc:
+            topology_failure = self._topology_failure(
+                task_id, rows, None, str(exc)
+            )
         if topology_failure is not None:
             return topology_failure
+        try:
+            task_failure = await self._verify_task_authority(db, task_id, rows)
+        except Exception as exc:
+            task_failure = self._topology_failure(task_id, rows, 1, str(exc))
+        if task_failure is not None:
+            return task_failure
+        try:
+            manifest_failure = await self._verify_command_manifests(db, task_id, rows)
+        except Exception as exc:
+            manifest_failure = self._manifest_failure(
+                task_id,
+                self._strict_integer(rows[-1]["sequence"], "event sequence") if rows else 0,
+                self._strict_text(rows[-1]["checksum"], "event checksum")
+                if rows
+                else GENESIS_CHECKSUM,
+                None,
+                str(exc),
+            )
+        if manifest_failure is not None:
+            return manifest_failure
 
         if include_projections:
             branches = await (
@@ -628,7 +744,7 @@ class WorkbenchStore:
                 )
             ).fetchall()
             for branch in branches:
-                branch_id = str(branch[0])
+                branch_id = self._strict_text(branch[0], "branch id")
                 visible = await self._visible_events(db, task_id, branch_id, at_sequence=None)
                 snapshot = self._replay(
                     self.projector, visible, task_id=task_id, branch_id=branch_id
@@ -636,7 +752,8 @@ class WorkbenchStore:
                 metadata = await (
                     await db.execute(
                         """
-                        SELECT head_sequence,head_event_checksum,canonical_state_json,state_checksum,updated_at
+                        SELECT task_id,projection_name,branch_id,head_sequence,head_event_checksum,
+                               canonical_state_json,state_checksum,updated_at
                         FROM projection_metadata
                         WHERE task_id=? AND projection_name=? AND branch_id=?
                         """,
@@ -652,12 +769,50 @@ class WorkbenchStore:
                     snapshot.head.state_checksum,
                     expected_time,
                 )
-                if metadata is None or tuple(metadata) != expected:
+                try:
+                    if metadata is not None:
+                        actual = (
+                            self._strict_integer(
+                                metadata["head_sequence"], "projection head sequence"
+                            ),
+                            self._strict_text(
+                                metadata["head_event_checksum"], "projection head checksum"
+                            ),
+                            self._strict_text(
+                                metadata["canonical_state_json"], "projection canonical state"
+                            ),
+                            self._strict_text(
+                                metadata["state_checksum"], "projection state checksum"
+                            ),
+                            self._strict_text(metadata["updated_at"], "projection updated at"),
+                        )
+                        if (
+                            self._strict_text(metadata["task_id"], "projection task id")
+                            != task_id
+                            or self._strict_text(
+                                metadata["projection_name"], "projection name"
+                            )
+                            != PROJECTION_NAME
+                            or self._strict_text(
+                                metadata["branch_id"], "projection branch id"
+                            )
+                            != branch_id
+                        ):
+                            actual = None
+                    else:
+                        actual = None
+                except Exception:
+                    actual = None
+                if actual != expected:
                     return LedgerVerification(
                         valid=False,
                         task_id=task_id,
                         checked_events=len(rows),
-                        head_sequence=int(rows[-1]["sequence"]) if rows else 0,
+                        head_sequence=self._strict_integer(
+                            rows[-1]["sequence"], "event sequence"
+                        )
+                        if rows
+                        else 0,
                         head_checksum=prior,
                         first_invalid_sequence=snapshot.head.head_sequence or None,
                         reason=f"projection metadata mismatch for branch {branch_id}",
@@ -666,8 +821,434 @@ class WorkbenchStore:
             valid=True,
             task_id=task_id,
             checked_events=len(rows),
-            head_sequence=int(rows[-1]["sequence"]) if rows else 0,
+            head_sequence=self._strict_integer(rows[-1]["sequence"], "event sequence")
+            if rows
+            else 0,
             head_checksum=prior,
+        )
+
+    async def _verify_command_manifests(
+        self,
+        db: aiosqlite.Connection,
+        task_id: str,
+        event_rows: Sequence[aiosqlite.Row],
+    ) -> LedgerVerification | None:
+        manifests = await (
+            await db.execute(
+                """
+                SELECT * FROM workbench_command_manifests
+                WHERE task_id=? ORDER BY first_sequence
+                """,
+                (task_id,),
+            )
+        ).fetchall()
+        head_sequence = (
+            event_rows[-1]["sequence"]
+            if event_rows and type(event_rows[-1]["sequence"]) is int
+            else 0
+        )
+        head_checksum = (
+            self._strict_text(event_rows[-1]["checksum"], "event checksum")
+            if event_rows
+            else GENESIS_CHECKSUM
+        )
+        if not manifests:
+            return self._manifest_failure(
+                task_id,
+                head_sequence,
+                head_checksum,
+                1 if event_rows else None,
+                "ledger has no command manifests",
+            )
+
+        expected_first = 1
+        claimed_sequences: set[int] = set()
+        root_events = [
+            row
+            for row in event_rows
+            if self._strict_text(row["event_type"], "event type") == "task.created"
+        ]
+        if (
+            len(root_events) != 1
+            or self._strict_integer(root_events[0]["sequence"], "event sequence") != 1
+        ):
+            return self._manifest_failure(
+                task_id, head_sequence, head_checksum, 1, "ledger must have one task.created at sequence 1"
+            )
+
+        for manifest in manifests:
+            try:
+                first_sequence = self._strict_integer(
+                    manifest["first_sequence"], "manifest first sequence"
+                )
+                last_sequence = self._strict_integer(
+                    manifest["last_sequence"], "manifest last sequence"
+                )
+                event_count = self._strict_integer(
+                    manifest["event_count"], "manifest event count"
+                )
+                command_id = self._strict_text(manifest["command_id"], "manifest command id")
+                branch_id = self._strict_text(
+                    manifest["target_branch_id"], "manifest target branch id"
+                )
+                fields = {
+                    "task_id": self._strict_text(manifest["task_id"], "manifest task id"),
+                    "command_id": command_id,
+                    "target_branch_id": branch_id,
+                    "event_count": event_count,
+                    "first_sequence": first_sequence,
+                    "last_sequence": last_sequence,
+                    "first_event_id": self._strict_text(
+                        manifest["first_event_id"], "manifest first event id"
+                    ),
+                    "last_event_id": self._strict_text(
+                        manifest["last_event_id"], "manifest last event id"
+                    ),
+                    "starting_frame_version": self._strict_integer(
+                        manifest["starting_frame_version"], "manifest starting frame version"
+                    ),
+                    "expected_frame_version": self._strict_integer(
+                        manifest["expected_frame_version"], "manifest expected frame version"
+                    ),
+                    "confirm_ordinal": (
+                        self._strict_integer(
+                            manifest["confirm_ordinal"], "manifest confirm ordinal"
+                        )
+                        if manifest["confirm_ordinal"] is not None
+                        else None
+                    ),
+                    "drafts_checksum": self._strict_text(
+                        manifest["drafts_checksum"], "manifest drafts checksum"
+                    ),
+                    "created_at": self._strict_text(
+                        manifest["created_at"], "manifest created at"
+                    ),
+                }
+                if manifest_checksum(fields) != self._strict_text(
+                    manifest["manifest_checksum"], "manifest checksum"
+                ):
+                    raise ValueError("manifest checksum mismatch")
+                if first_sequence != expected_first or last_sequence != first_sequence + event_count - 1:
+                    raise ValueError("manifest ranges are not contiguous from sequence one")
+                if fields["created_at"] != normalize_timestamp(fields["created_at"]):
+                    raise ValueError("manifest created_at is not normalized UTC")
+            except Exception as exc:
+                return self._manifest_failure(
+                    task_id,
+                    head_sequence,
+                    head_checksum,
+                    (
+                        manifest["first_sequence"]
+                        if type(manifest["first_sequence"]) is int
+                        else None
+                    ),
+                    str(exc),
+                )
+
+            command_rows = [
+                row
+                for row in event_rows
+                if self._strict_text(row["command_id"], "event command id") == command_id
+            ]
+            command_rows.sort(
+                key=lambda row: self._strict_integer(
+                    row["command_sequence"], "event command sequence"
+                )
+            )
+            if len(command_rows) != event_count:
+                return self._manifest_failure(
+                    task_id,
+                    head_sequence,
+                    head_checksum,
+                    first_sequence,
+                    f"command {command_id} event cardinality mismatch",
+                )
+            validated: list[ValidatedDraft] = []
+            for ordinal, row in enumerate(command_rows, start=1):
+                sequence = self._strict_integer(row["sequence"], "event sequence")
+                if sequence in claimed_sequences:
+                    return self._manifest_failure(
+                        task_id, head_sequence, head_checksum, sequence, "event claimed by multiple manifests"
+                    )
+                claimed_sequences.add(sequence)
+                if (
+                    self._strict_integer(row["command_sequence"], "event command sequence")
+                    != ordinal
+                    or sequence != first_sequence + ordinal - 1
+                    or self._strict_text(row["task_id"], "event task id") != task_id
+                    or self._strict_text(row["command_id"], "event command id") != command_id
+                    or self._strict_text(row["branch_id"], "event branch id") != branch_id
+                    or (
+                        ordinal == 1
+                        and self._strict_text(row["event_id"], "event id")
+                        != fields["first_event_id"]
+                    )
+                    or (
+                        ordinal == event_count
+                        and self._strict_text(row["event_id"], "event id")
+                        != fields["last_event_id"]
+                    )
+                    or self._strict_text(row["created_at"], "event created at")
+                    != fields["created_at"]
+                    or self._strict_text(row["idempotency_key"], "event idempotency key")
+                    != self._idempotency_key(task_id, command_id, ordinal)
+                ):
+                    return self._manifest_failure(
+                        task_id,
+                        head_sequence,
+                        head_checksum,
+                        sequence,
+                        f"command {command_id} ordinal, range, endpoint, branch, time, or idempotency mismatch",
+                    )
+                try:
+                    payload = json.loads(
+                        self._strict_text(row["payload_json"], "event payload json")
+                    )
+                    validated.append(
+                        self.registry.validate(
+                            EventDraft(
+                                event_type=self._strict_text(row["event_type"], "event type"),
+                                event_schema_version=self._strict_integer(
+                                    row["event_schema_version"], "event schema version"
+                                ),
+                                actor=EventActor(
+                                    kind=self._strict_text(
+                                        row["actor_kind"], "event actor kind"
+                                    ),
+                                    actor_id=self._strict_text(
+                                        row["actor_id"], "event actor id"
+                                    ),
+                                ),
+                                branch_id=self._strict_text(
+                                    row["branch_id"], "event branch id"
+                                ),
+                                cause=(
+                                    EventCause(
+                                        self._strict_text(row["cause"], "event cause")
+                                    )
+                                    if row["cause"] is not None
+                                    else None
+                                ),
+                                caused_by=(
+                                    self._strict_text(
+                                        row["caused_by"], "event caused by"
+                                    )
+                                    if row["caused_by"] is not None
+                                    else None
+                                ),
+                                payload=payload,
+                            )
+                        )
+                    )
+                    if canonical_json_text(payload) != canonical_json_text(
+                        validated[-1].payload.model_dump(mode="json")
+                    ):
+                        raise ValueError("stored payload differs from registry-normalized payload")
+                except Exception as exc:
+                    return self._manifest_failure(
+                        task_id, head_sequence, head_checksum, sequence, str(exc)
+                    )
+            if drafts_checksum(task_id, command_id, validated) != fields["drafts_checksum"]:
+                return self._manifest_failure(
+                    task_id,
+                    head_sequence,
+                    head_checksum,
+                    first_sequence,
+                    f"command {command_id} canonical drafts checksum mismatch",
+                )
+
+            try:
+                before = await self._visible_events(
+                    db, task_id, branch_id, at_sequence=first_sequence - 1
+                )
+            except Exception as exc:
+                return self._manifest_failure(
+                    task_id, head_sequence, head_checksum, first_sequence, str(exc)
+                )
+            starting_frame = before[-1].frame_version if before else 0
+            if (
+                fields["starting_frame_version"] != starting_frame
+                or fields["expected_frame_version"] != starting_frame
+            ):
+                return self._manifest_failure(
+                    task_id,
+                    head_sequence,
+                    head_checksum,
+                    first_sequence,
+                    f"command {command_id} starting or expected frame mismatch",
+                )
+            visible_ids = {event.event_id for event in before}
+            frame_version = starting_frame
+            observed_confirm: int | None = None
+            for ordinal, (row, item) in enumerate(zip(command_rows, validated), start=1):
+                sequence = self._strict_integer(row["sequence"], "event sequence")
+                caused_by = self._strict_text(
+                    row["caused_by"], "event caused by", nullable=True
+                )
+                if caused_by is not None and caused_by not in visible_ids:
+                    return self._manifest_failure(
+                        task_id,
+                        head_sequence,
+                        head_checksum,
+                        sequence,
+                        f"command {command_id} cause is not visible at its append boundary",
+                    )
+                if item.definition.frame_effect is FrameEffect.CONFIRM:
+                    if observed_confirm is not None:
+                        return self._manifest_failure(
+                            task_id, head_sequence, head_checksum, sequence, "multiple confirms in command"
+                        )
+                    observed_confirm = ordinal
+                    frame_version += 1
+                if self._strict_integer(row["frame_version"], "event frame version") != frame_version:
+                    return self._manifest_failure(
+                        task_id,
+                        head_sequence,
+                        head_checksum,
+                        sequence,
+                        f"command {command_id} registry-derived frame transition mismatch",
+                    )
+            if fields["confirm_ordinal"] != observed_confirm:
+                return self._manifest_failure(
+                    task_id,
+                    head_sequence,
+                    head_checksum,
+                    first_sequence,
+                    f"command {command_id} confirm ordinal mismatch",
+                )
+            expected_first = last_sequence + 1
+
+        event_sequences = {
+            self._strict_integer(row["sequence"], "event sequence") for row in event_rows
+        }
+        if claimed_sequences != event_sequences:
+            missing = sorted(event_sequences - claimed_sequences)
+            return self._manifest_failure(
+                task_id,
+                head_sequence,
+                head_checksum,
+                missing[0] if missing else expected_first,
+                "orphan event or manifest",
+            )
+        if expected_first - 1 != head_sequence:
+            return self._manifest_failure(
+                task_id, head_sequence, head_checksum, expected_first, "manifest ranges do not cover ledger head"
+            )
+        root = root_events[0]
+        first_manifest = manifests[0]
+        if (
+            self._strict_integer(first_manifest["first_sequence"], "manifest first sequence") != 1
+            or self._strict_integer(first_manifest["event_count"], "manifest event count") != 1
+            or self._strict_text(first_manifest["first_event_id"], "manifest first event id")
+            != self._strict_text(root["event_id"], "event id")
+            or self._strict_text(first_manifest["last_event_id"], "manifest last event id")
+            != self._strict_text(root["event_id"], "event id")
+            or self._strict_text(
+                first_manifest["target_branch_id"], "manifest target branch id"
+            )
+            != self._strict_text(root["branch_id"], "event branch id")
+            or self._strict_text(root["prior_checksum"], "event prior checksum")
+            != GENESIS_CHECKSUM
+            or self._strict_integer(root["frame_version"], "event frame version") != 0
+        ):
+            return self._manifest_failure(
+                task_id, head_sequence, head_checksum, 1, "root manifest is not bound to task.created"
+            )
+        return None
+
+    async def _verify_task_authority(
+        self,
+        db: aiosqlite.Connection,
+        task_id: str,
+        event_rows: Sequence[aiosqlite.Row],
+    ) -> LedgerVerification | None:
+        creation_rows = [
+            row
+            for row in event_rows
+            if self._strict_text(row["event_type"], "event type") == "task.created"
+        ]
+        task = await (
+            await db.execute("SELECT * FROM workbench_tasks WHERE id=?", (task_id,))
+        ).fetchone()
+        if task is None or len(creation_rows) != 1:
+            return self._topology_failure(
+                task_id, event_rows, 1, "task row and unique task.created event disagree"
+            )
+        creation = creation_rows[0]
+        try:
+            payload = json.loads(
+                self._strict_text(creation["payload_json"], "event payload json")
+            )
+            created_at = self._strict_text(creation["created_at"], "event created at")
+            initial_branch_id = self._strict_text(
+                payload["initial_branch_id"], "task initial branch id"
+            )
+            expected = (
+                task_id,
+                self._strict_text(payload["title"], "task creation title"),
+                "intake",
+                initial_branch_id,
+                0,
+                created_at,
+                created_at,
+            )
+            observed = (
+                self._strict_text(task["id"], "task id"),
+                self._strict_text(task["title"], "task title"),
+                self._strict_text(task["state"], "task state"),
+                self._strict_text(task["active_branch_id"], "task active branch id"),
+                self._strict_integer(task["current_frame_version"], "task current frame version"),
+                self._strict_text(task["created_at"], "task created at"),
+                self._strict_text(task["updated_at"], "task updated at"),
+            )
+            if created_at != normalize_timestamp(created_at) or observed != expected:
+                raise ValueError("task row is not bound to task.created")
+            root = await (
+                await db.execute(
+                    "SELECT * FROM workbench_branches WHERE task_id=? AND branch_id=?",
+                    (task_id, initial_branch_id),
+                )
+            ).fetchone()
+            if root is None:
+                raise ValueError("task root branch is missing")
+            if (
+                root["parent_branch_id"] is not None
+                or root["forked_from_sequence"] is not None
+                or root["forked_from_frame_version"] is not None
+                or root["created_by_event_id"] is not None
+                or self._strict_text(root["status"], "branch status") != "active"
+                or self._strict_text(root["created_at"], "branch created at") != created_at
+                or normalize_timestamp(
+                    self._strict_text(root["created_at"], "branch created at")
+                )
+                != created_at
+            ):
+                raise ValueError("root branch is not bound to task.created")
+        except Exception as exc:
+            return self._topology_failure(
+                task_id,
+                event_rows,
+                self._strict_integer(creation["sequence"], "event sequence"),
+                str(exc),
+            )
+        return None
+
+    @staticmethod
+    def _manifest_failure(
+        task_id: str,
+        head_sequence: int,
+        head_checksum: str,
+        sequence: int | None,
+        detail: str,
+    ) -> LedgerVerification:
+        return LedgerVerification(
+            valid=False,
+            task_id=task_id,
+            checked_events=max((sequence or 1) - 1, 0),
+            head_sequence=head_sequence,
+            head_checksum=head_checksum,
+            first_invalid_sequence=sequence,
+            reason=f"command manifest mismatch: {detail}",
         )
 
     async def _verify_branch_topology(
@@ -679,33 +1260,51 @@ class WorkbenchStore:
         branches = await (
             await db.execute(
                 """
-                SELECT task_id,branch_id,parent_branch_id,forked_from_sequence,
-                       forked_from_frame_version,created_by_event_id
+                SELECT *
                 FROM workbench_branches WHERE task_id=? ORDER BY branch_id
                 """,
                 (task_id,),
             )
         ).fetchall()
-        by_id = {str(row["event_id"]): row for row in event_rows}
+        by_id = {
+            self._strict_text(row["event_id"], "event id"): row for row in event_rows
+        }
         fork_events: dict[str, aiosqlite.Row] = {}
         for row in event_rows:
-            if str(row["event_type"]) != "branch.forked":
+            if self._strict_text(row["event_type"], "event type") != "branch.forked":
                 continue
             try:
-                payload = json.loads(str(row["payload_json"]))
-                child_id = str(payload["new_branch_id"])
+                payload = json.loads(
+                    self._strict_text(row["payload_json"], "event payload json")
+                )
+                child_id = self._strict_text(payload["new_branch_id"], "fork child branch id")
             except Exception as exc:
-                return self._topology_failure(task_id, event_rows, int(row["sequence"]), str(exc))
+                return self._topology_failure(
+                    task_id,
+                    event_rows,
+                    self._strict_integer(row["sequence"], "event sequence"),
+                    str(exc),
+                )
             if child_id in fork_events:
                 return self._topology_failure(
-                    task_id, event_rows, int(row["sequence"]), "duplicate fork event for child"
+                    task_id,
+                    event_rows,
+                    self._strict_integer(row["sequence"], "event sequence"),
+                    "duplicate fork event for child",
                 )
             fork_events[child_id] = row
 
         matched_forks: set[str] = set()
         roots = 0
         for branch in branches:
-            branch_id = str(branch["branch_id"])
+            for column in ("task_id", "branch_id", "status", "created_at"):
+                self._strict_text(branch[column], f"branch {column}")
+            self._strict_text(branch["parent_branch_id"], "branch parent id", nullable=True)
+            self._strict_text(
+                branch["created_by_event_id"], "branch creation event id", nullable=True
+            )
+            self._strict_text(branch["task_id"], "branch task id")
+            branch_id = self._strict_text(branch["branch_id"], "branch id")
             parent = branch["parent_branch_id"]
             if parent is None:
                 roots += 1
@@ -721,39 +1320,64 @@ class WorkbenchStore:
                         task_id, event_rows, 1, f"root branch {branch_id} has fork identity"
                     )
                 continue
-            created_id = str(branch["created_by_event_id"] or "")
+            parent = self._strict_text(parent, "branch parent id")
+            created_id = self._strict_text(
+                branch["created_by_event_id"], "branch creation event id"
+            )
             event = by_id.get(created_id)
-            if event is None or str(event["event_type"]) != "branch.forked":
+            if event is None or self._strict_text(event["event_type"], "event type") != "branch.forked":
                 return self._topology_failure(
                     task_id, event_rows, None, f"branch {branch_id} lacks its fork event"
                 )
-            sequence = int(event["sequence"])
+            sequence = self._strict_integer(event["sequence"], "event sequence")
             try:
-                payload = json.loads(str(event["payload_json"]))
+                payload = json.loads(
+                    self._strict_text(event["payload_json"], "event payload json")
+                )
+                event_created_at = self._strict_text(
+                    event["created_at"], "event created at"
+                )
+                branch_created_at = self._strict_text(
+                    branch["created_at"], "branch created at"
+                )
+                forked_from_sequence = self._strict_integer(
+                    branch["forked_from_sequence"], "branch fork sequence"
+                )
+                forked_from_frame_version = self._strict_integer(
+                    branch["forked_from_frame_version"], "branch fork frame version"
+                )
                 expected = (
                     branch_id,
-                    str(parent),
-                    int(branch["forked_from_sequence"]),
-                    int(branch["forked_from_frame_version"]),
+                    parent,
+                    forked_from_sequence,
+                    forked_from_frame_version,
                 )
                 observed = (
-                    str(payload["new_branch_id"]),
-                    str(payload["parent_branch_id"]),
-                    int(payload["forked_from_sequence"]),
-                    int(payload["forked_from_frame_version"]),
+                    self._strict_text(payload["new_branch_id"], "fork child branch id"),
+                    self._strict_text(payload["parent_branch_id"], "fork parent branch id"),
+                    self._strict_integer(payload["forked_from_sequence"], "fork payload sequence"),
+                    self._strict_integer(
+                        payload["forked_from_frame_version"], "fork payload frame version"
+                    ),
                 )
+                if (
+                    self._strict_text(branch["status"], "branch status") != "active"
+                    or branch_created_at != event_created_at
+                    or normalize_timestamp(branch_created_at) != event_created_at
+                ):
+                    raise ValueError("child branch state or creation time is not bound to fork event")
             except Exception as exc:
                 return self._topology_failure(task_id, event_rows, sequence, str(exc))
-            if observed != expected or str(event["branch_id"]) != str(parent):
+            if observed != expected or self._strict_text(
+                event["branch_id"], "event branch id"
+            ) != parent:
                 return self._topology_failure(
                     task_id,
                     event_rows,
                     sequence,
                     f"branch {branch_id} does not match its immutable fork event",
                 )
-            if int(branch["forked_from_sequence"]) < 1 or sequence <= int(
-                branch["forked_from_sequence"]
-            ):
+            if forked_from_sequence < 1 or sequence <= forked_from_sequence:
                 return self._topology_failure(
                     task_id, event_rows, sequence, f"branch {branch_id} has an invalid fork boundary"
                 )
@@ -769,7 +1393,7 @@ class WorkbenchStore:
             return self._topology_failure(
                 task_id,
                 event_rows,
-                int(event["sequence"]),
+                self._strict_integer(event["sequence"], "event sequence"),
                 f"fork event has no matching branch: {child}",
             )
         return None
@@ -785,8 +1409,16 @@ class WorkbenchStore:
             valid=False,
             task_id=task_id,
             checked_events=len(rows),
-            head_sequence=int(rows[-1]["sequence"]) if rows else 0,
-            head_checksum=str(rows[-1]["checksum"]) if rows else GENESIS_CHECKSUM,
+            head_sequence=(
+                rows[-1]["sequence"]
+                if rows and type(rows[-1]["sequence"]) is int
+                else 0
+            ),
+            head_checksum=(
+                rows[-1]["checksum"]
+                if rows and type(rows[-1]["checksum"]) is str
+                else GENESIS_CHECKSUM
+            ),
             first_invalid_sequence=sequence,
             reason=f"branch topology mismatch: {detail}",
         )
@@ -854,12 +1486,24 @@ class WorkbenchStore:
             ).fetchone()
             if row is None:
                 raise BranchNotFound(f"branch not found: {task_id}/{current}")
+            stored_branch_id = self._strict_text(row["branch_id"], "branch id")
+            if stored_branch_id != current:
+                raise LedgerCorruption(None, "branch lookup identity mismatch")
+            self._strict_text(row["parent_branch_id"], "branch parent id", nullable=True)
+            self._strict_text(
+                row["created_by_event_id"], "branch creation event id", nullable=True
+            )
             creation_event = None
             if row["created_by_event_id"] is not None:
                 event_row = await (
                     await db.execute(
                         "SELECT * FROM workbench_events WHERE task_id=? AND event_id=?",
-                        (task_id, str(row["created_by_event_id"])),
+                        (
+                            task_id,
+                            self._strict_text(
+                                row["created_by_event_id"], "branch creation event id"
+                            ),
+                        ),
                     )
                 ).fetchone()
                 if event_row is None:
@@ -869,18 +1513,20 @@ class WorkbenchStore:
                 BranchTopology(
                     branch_id=current,
                     parent_branch_id=(
-                        str(row["parent_branch_id"])
+                        self._strict_text(row["parent_branch_id"], "branch parent id")
                         if row["parent_branch_id"] is not None
                         else None
                     ),
                     visible_through_sequence=cutoff,
                     forked_from_sequence=(
-                        int(row["forked_from_sequence"])
+                        self._strict_integer(row["forked_from_sequence"], "branch fork sequence")
                         if row["forked_from_sequence"] is not None
                         else None
                     ),
                     forked_from_frame_version=(
-                        int(row["forked_from_frame_version"])
+                        self._strict_integer(
+                            row["forked_from_frame_version"], "branch fork frame version"
+                        )
                         if row["forked_from_frame_version"] is not None
                         else None
                     ),
@@ -889,8 +1535,11 @@ class WorkbenchStore:
             )
             if row["parent_branch_id"] is None:
                 break
-            cutoff = min(cutoff, int(row["forked_from_sequence"]))
-            current = str(row["parent_branch_id"])
+            cutoff = min(
+                cutoff,
+                self._strict_integer(row["forked_from_sequence"], "branch fork sequence"),
+            )
+            current = self._strict_text(row["parent_branch_id"], "branch parent id")
         ordered_lineage = tuple(reversed(lineage))
         rows: list[aiosqlite.Row] = []
         for topology_item in ordered_lineage:
@@ -910,7 +1559,7 @@ class WorkbenchStore:
                     )
                 ).fetchall()
             )
-        rows.sort(key=lambda row: int(row["sequence"]))
+        rows.sort(key=lambda row: self._strict_integer(row["sequence"], "event sequence"))
         return _StoreVisibleEvents(
             tuple(self._event_from_row(row) for row in rows),
             task_id,
@@ -971,6 +1620,66 @@ class WorkbenchStore:
         if expected_frame_version is not None and expected_frame_version != starting_frame:
             raise IdempotencyConflict("retry expected frame differs")
         return events
+
+    def _prepare_command(
+        self,
+        *,
+        task_id: str,
+        command_id: str,
+        validated: Sequence[ValidatedDraft],
+        target_branch_id: str,
+        first_sequence: int,
+        starting_frame_version: int,
+        expected_frame_version: int,
+        prior_checksum: str,
+        created_at: str,
+    ) -> tuple[tuple[WorkbenchEvent, ...], dict[str, Any]]:
+        items = tuple(validated)
+        if not items:
+            raise EventValidationError("command manifest cannot be empty")
+        event_ids = tuple(self._new_event_id() for _ in items)
+        confirm_ordinals = tuple(
+            ordinal
+            for ordinal, item in enumerate(items, start=1)
+            if item.definition.frame_effect is FrameEffect.CONFIRM
+        )
+        if len(confirm_ordinals) > 1:
+            raise EventValidationError("Task 2 permits at most one confirmed frame event per command")
+        frame_version = starting_frame_version
+        checksum = prior_checksum
+        events: list[WorkbenchEvent] = []
+        for ordinal, (item, event_id) in enumerate(zip(items, event_ids), start=1):
+            if item.definition.frame_effect is FrameEffect.CONFIRM:
+                frame_version += 1
+            event = self._build_event(
+                task_id=task_id,
+                command_id=command_id,
+                command_sequence=ordinal,
+                sequence=first_sequence + ordinal - 1,
+                validated=item,
+                frame_version=frame_version,
+                prior_checksum=checksum,
+                event_id=event_id,
+                created_at=created_at,
+            )
+            events.append(event)
+            checksum = event.checksum
+        fields = {
+            "task_id": task_id,
+            "command_id": command_id,
+            "target_branch_id": target_branch_id,
+            "event_count": len(events),
+            "first_sequence": first_sequence,
+            "last_sequence": first_sequence + len(events) - 1,
+            "first_event_id": events[0].event_id,
+            "last_event_id": events[-1].event_id,
+            "starting_frame_version": starting_frame_version,
+            "expected_frame_version": expected_frame_version,
+            "confirm_ordinal": confirm_ordinals[0] if confirm_ordinals else None,
+            "drafts_checksum": drafts_checksum(task_id, command_id, items),
+            "created_at": created_at,
+        }
+        return tuple(events), {**fields, "manifest_checksum": manifest_checksum(fields)}
 
     def _build_event(
         self,
@@ -1058,6 +1767,33 @@ class WorkbenchStore:
             ),
         )
 
+    async def _insert_manifest(self, db: aiosqlite.Connection, manifest: Mapping[str, Any]) -> None:
+        await db.execute(
+            """
+            INSERT INTO workbench_command_manifests(
+                task_id,command_id,target_branch_id,event_count,first_sequence,last_sequence,
+                first_event_id,last_event_id,starting_frame_version,expected_frame_version,
+                confirm_ordinal,drafts_checksum,manifest_checksum,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                manifest["task_id"],
+                manifest["command_id"],
+                manifest["target_branch_id"],
+                manifest["event_count"],
+                manifest["first_sequence"],
+                manifest["last_sequence"],
+                manifest["first_event_id"],
+                manifest["last_event_id"],
+                manifest["starting_frame_version"],
+                manifest["expected_frame_version"],
+                manifest["confirm_ordinal"],
+                manifest["drafts_checksum"],
+                manifest["manifest_checksum"],
+                manifest["created_at"],
+            ),
+        )
+
     async def _publish_snapshot(
         self, db: aiosqlite.Connection, snapshot: WorkbenchSnapshot, updated_at: str
     ) -> None:
@@ -1096,7 +1832,14 @@ class WorkbenchStore:
                 (task_id,),
             )
         ).fetchone()
-        return (int(row["sequence"]), str(row["checksum"])) if row else (0, GENESIS_CHECKSUM)
+        return (
+            (
+                self._strict_integer(row["sequence"], "event sequence"),
+                self._strict_text(row["checksum"], "event checksum"),
+            )
+            if row
+            else (0, GENESIS_CHECKSUM)
+        )
 
     async def _require_task(self, db: aiosqlite.Connection, task_id: str) -> aiosqlite.Row:
         row = await (
@@ -1104,6 +1847,19 @@ class WorkbenchStore:
         ).fetchone()
         if row is None:
             raise TaskNotFound(f"task not found: {task_id}")
+        try:
+            for column in (
+                "id",
+                "title",
+                "state",
+                "active_branch_id",
+                "created_at",
+                "updated_at",
+            ):
+                self._strict_text(row[column], f"task {column}")
+            self._strict_integer(row["current_frame_version"], "task current frame version")
+        except ValueError as exc:
+            raise LedgerCorruption(None, str(exc)) from exc
         return row
 
     async def _require_branch(
@@ -1117,49 +1873,95 @@ class WorkbenchStore:
         ).fetchone()
         if row is None:
             raise BranchNotFound(f"branch not found: {task_id}/{branch_id}")
+        try:
+            for column in ("task_id", "branch_id", "status", "created_at"):
+                self._strict_text(row[column], f"branch {column}")
+            self._strict_text(row["parent_branch_id"], "branch parent id", nullable=True)
+            self._strict_text(row["created_by_event_id"], "branch creation event id", nullable=True)
+            if row["forked_from_sequence"] is not None:
+                self._strict_integer(row["forked_from_sequence"], "branch fork sequence")
+            if row["forked_from_frame_version"] is not None:
+                self._strict_integer(row["forked_from_frame_version"], "branch fork frame version")
+        except ValueError as exc:
+            raise LedgerCorruption(None, str(exc)) from exc
         return row
 
     def _event_from_row(self, row: aiosqlite.Row) -> WorkbenchEvent:
         return WorkbenchEvent(
-            event_schema_version=int(row["event_schema_version"]),
-            event_id=str(row["event_id"]),
-            task_id=str(row["task_id"]),
-            sequence=int(row["sequence"]),
-            event_type=str(row["event_type"]),
-            actor=EventActor(kind=str(row["actor_kind"]), actor_id=str(row["actor_id"])),
-            branch_id=str(row["branch_id"]),
-            cause=EventCause(str(row["cause"])) if row["cause"] is not None else None,
-            caused_by=str(row["caused_by"]) if row["caused_by"] is not None else None,
-            command_id=str(row["command_id"]),
-            command_sequence=int(row["command_sequence"]),
-            frame_version=int(row["frame_version"]),
-            payload=json.loads(str(row["payload_json"])),
-            idempotency_key=str(row["idempotency_key"]),
-            prior_checksum=str(row["prior_checksum"]),
-            checksum=str(row["checksum"]),
-            created_at=str(row["created_at"]),
+            event_schema_version=self._strict_integer(
+                row["event_schema_version"], "event schema version"
+            ),
+            event_id=self._strict_text(row["event_id"], "event id"),
+            task_id=self._strict_text(row["task_id"], "event task id"),
+            sequence=self._strict_integer(row["sequence"], "event sequence"),
+            event_type=self._strict_text(row["event_type"], "event type"),
+            actor=EventActor(
+                kind=self._strict_text(row["actor_kind"], "event actor kind"),
+                actor_id=self._strict_text(row["actor_id"], "event actor id"),
+            ),
+            branch_id=self._strict_text(row["branch_id"], "event branch id"),
+            cause=(
+                EventCause(self._strict_text(row["cause"], "event cause"))
+                if row["cause"] is not None
+                else None
+            ),
+            caused_by=self._strict_text(row["caused_by"], "event caused by", nullable=True),
+            command_id=self._strict_text(row["command_id"], "event command id"),
+            command_sequence=self._strict_integer(
+                row["command_sequence"], "event command sequence"
+            ),
+            frame_version=self._strict_integer(row["frame_version"], "event frame version"),
+            payload=json.loads(self._strict_text(row["payload_json"], "event payload json")),
+            idempotency_key=self._strict_text(row["idempotency_key"], "event idempotency key"),
+            prior_checksum=self._strict_text(row["prior_checksum"], "event prior checksum"),
+            checksum=self._strict_text(row["checksum"], "event checksum"),
+            created_at=self._strict_text(row["created_at"], "event created at"),
         )
 
     def _row_envelope(self, row: aiosqlite.Row, payload: Any) -> dict[str, Any]:
         return {
-            "event_schema_version": int(row["event_schema_version"]),
-            "event_id": str(row["event_id"]),
-            "task_id": str(row["task_id"]),
-            "sequence": int(row["sequence"]),
-            "event_type": str(row["event_type"]),
-            "actor_kind": str(row["actor_kind"]),
-            "actor_id": str(row["actor_id"]),
-            "branch_id": str(row["branch_id"]),
-            "cause": str(row["cause"]) if row["cause"] is not None else None,
-            "caused_by": str(row["caused_by"]) if row["caused_by"] is not None else None,
-            "command_id": str(row["command_id"]),
-            "command_sequence": int(row["command_sequence"]),
-            "frame_version": int(row["frame_version"]),
+            "event_schema_version": self._strict_integer(
+                row["event_schema_version"], "event schema version"
+            ),
+            "event_id": self._strict_text(row["event_id"], "event id"),
+            "task_id": self._strict_text(row["task_id"], "event task id"),
+            "sequence": self._strict_integer(row["sequence"], "event sequence"),
+            "event_type": self._strict_text(row["event_type"], "event type"),
+            "actor_kind": self._strict_text(row["actor_kind"], "event actor kind"),
+            "actor_id": self._strict_text(row["actor_id"], "event actor id"),
+            "branch_id": self._strict_text(row["branch_id"], "event branch id"),
+            "cause": self._strict_text(row["cause"], "event cause", nullable=True),
+            "caused_by": self._strict_text(
+                row["caused_by"], "event caused by", nullable=True
+            ),
+            "command_id": self._strict_text(row["command_id"], "event command id"),
+            "command_sequence": self._strict_integer(
+                row["command_sequence"], "event command sequence"
+            ),
+            "frame_version": self._strict_integer(row["frame_version"], "event frame version"),
             "payload": payload,
-            "idempotency_key": str(row["idempotency_key"]),
-            "created_at": str(row["created_at"]),
-            "prior_checksum": str(row["prior_checksum"]),
+            "idempotency_key": self._strict_text(
+                row["idempotency_key"], "event idempotency key"
+            ),
+            "created_at": self._strict_text(row["created_at"], "event created at"),
+            "prior_checksum": self._strict_text(
+                row["prior_checksum"], "event prior checksum"
+            ),
         }
+
+    @staticmethod
+    def _strict_integer(value: Any, name: str) -> int:
+        if type(value) is not int:
+            raise ValueError(f"{name} must use integer storage")
+        return value
+
+    @staticmethod
+    def _strict_text(value: Any, name: str, *, nullable: bool = False) -> str | None:
+        if value is None and nullable:
+            return None
+        if type(value) is not str:
+            raise ValueError(f"{name} must use text storage")
+        return value
 
     @staticmethod
     def _idempotency_key(task_id: str, command_id: str, ordinal: int) -> str:
