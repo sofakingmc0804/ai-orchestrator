@@ -7,6 +7,8 @@ from orchestrator.workbench.models import (
     FrameCursor,
     FrameNode,
     FrameState,
+    FrameProposal,
+    CorrectionImpact,
     NodeUpsert,
     Provenance,
 )
@@ -132,3 +134,13 @@ def test_reject_change_closes_pending_proposal_without_advancing_frame():
     with pytest.raises(FrameConflict):
         service.confirm("reject", current=_base(service.state))
     assert service.state.frame_version == 0
+
+
+def test_frame_proposal_binds_preview_checksum_and_version_to_base():
+    state = _empty_state()
+    with pytest.raises(ValueError):
+        FrameProposal(
+            proposal_id="bad", base=_base(state), proposed_version=9, changes=_change(),
+            preview=state, preview_state_checksum="f" * 64, impact=CorrectionImpact(),
+            impact_preview_checksum="a" * 64, status="pending", provenance=_provenance(),
+        )

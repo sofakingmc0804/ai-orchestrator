@@ -486,6 +486,16 @@ class CorrectionImpact(_Task3Model):
         return self
 class FrameProposal(_Task3Model):
     proposal_id: str; base: FrameCursor; proposed_version: int; changes: FrameChangeSet; preview: FrameState; preview_state_checksum: str; impact: CorrectionImpact; impact_preview_checksum: str; status: Literal["pending", "accepted", "rejected", "superseded"]; provenance: Provenance
+
+    @model_validator(mode="after")
+    def _bind_preview(self):
+        if self.proposed_version != self.base.frame_version + 1:
+            raise ValueError("proposal version must be base version plus one")
+        if (self.preview.task_id, self.preview.branch_id, self.preview.frame_version) != (self.base.task_id, self.base.branch_id, self.proposed_version):
+            raise ValueError("preview must bind to proposal task, branch, and version")
+        if self.preview_state_checksum != self.preview.state_checksum:
+            raise ValueError("preview checksum does not match preview state")
+        return self
 class OutcomeDelta(_Task3Model):
     dimension: Literal["intent", "success", "consequence", "authority", "cost", "owner_visible_ux", "external_action", "irreversibility"]; baseline: Any; candidate: Any; delegation_node_id: str | None = None
 class OutcomePosition(_Task3Model):
