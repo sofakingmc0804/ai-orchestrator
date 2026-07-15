@@ -380,7 +380,9 @@ def _validate_json_value(value: Any) -> None:
     raise TypeError(f"unsupported canonical JSON value: {type(value).__name__}")
 
 _HEX = str
-def _checksum(v: str) -> str:
+def _checksum(v: str | None) -> str | None:
+    if v is None:
+        return None
     if len(v) != 64 or any(c not in "0123456789abcdef" for c in v): raise ValueError("checksum must be lowercase SHA-256")
     return v
 
