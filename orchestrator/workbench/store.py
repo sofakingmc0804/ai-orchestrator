@@ -6,9 +6,11 @@ import json
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, AsyncIterator, Callable, Iterable, Mapping, Sequence
 
 import aiosqlite
@@ -46,6 +48,17 @@ from orchestrator.workbench.projector import (
     PROJECTION_NAME,
     Projector,
     ReplayPlan,
+)
+from orchestrator.workbench.runtime import (
+    CommandContext,
+    ParticipantDatabase,
+    ParticipantDatabasePolicy,
+    ParticipantInsert,
+    ParticipantMutation,
+    ParticipantPhase,
+    ParticipantUpdate,
+    RuntimeConfigurationError,
+    WorkbenchRuntime,
 )
 
 
@@ -96,11 +109,17 @@ class WorkbenchStore:
         source: Settings | Path | str,
         *,
         registry: EventRegistry | None = None,
+        runtime: WorkbenchRuntime | None = None,
         clock: Callable[[], datetime] | None = None,
         id_factory: Callable[[], str] | None = None,
     ) -> None:
         self.path = Path(source.state_path if isinstance(source, Settings) else source)
-        self.registry = registry or EventRegistry.production()
+        if runtime is not None and registry is not None and runtime.registry is not registry:
+            raise RuntimeConfigurationError("store and runtime registry identity must be exact")
+        self.registry = runtime.registry if runtime is not None else (registry or EventRegistry.production())
+        self.runtime = runtime or WorkbenchRuntime(registry=self.registry, participants=())
+        if self.runtime.registry is not self.registry:
+            raise RuntimeConfigurationError("store and runtime registry identity must be exact")
         self.projector = Projector(self.registry)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._id_factory = id_factory or (lambda: f"evt_{uuid.uuid4().hex}")
@@ -336,10 +355,12 @@ class WorkbenchStore:
         confirms = sum(item.definition.frame_effect is FrameEffect.CONFIRM for item in validated)
         if confirms > 1:
             raise EventValidationError("Task 2 permits at most one confirmed frame event per command")
+        participant = self.runtime.participant_for(validated)
 
         async with self._connection() as db:
             try:
                 await db.execute("BEGIN IMMEDIATE")
+                participant = self.runtime.participant_for(validated)
                 await self._require_task(db, task_id)
                 verification = await self._verify_ledger_db(db, task_id, include_projections=True)
                 self._require_valid(verification)
@@ -360,6 +381,56 @@ class WorkbenchStore:
                 snapshot = self._replay(
                     self.projector, visible, task_id=task_id, branch_id=branch_id
                 )
+                global_head = await self._global_head(db, task_id)
+                task_cache = await (
+                    await db.execute(
+                        "SELECT active_branch_id,current_frame_version FROM workbench_tasks WHERE id=?",
+                        (task_id,),
+                    )
+                ).fetchone()
+                if task_cache is None:
+                    raise LedgerCorruption(None, "task cache disappeared during command validation")
+                if participant is not None:
+                    participant_db, participant_policy = await self._participant_database(
+                        db,
+                        participant_id=participant.participant_id,
+                        phase="validate",
+                        task_id=task_id,
+                    )
+                    context = CommandContext(
+                        task_id=task_id,
+                        branch_id=branch_id,
+                        before=snapshot,
+                        global_head_sequence=global_head[0],
+                        global_head_checksum=global_head[1],
+                        selected_branch_id=self._strict_text(
+                            task_cache["active_branch_id"], "task active branch"
+                        ),
+                        selected_branch_frame_version=self._strict_integer(
+                            task_cache["current_frame_version"], "task current frame version"
+                        ),
+                    )
+                    callback_context = deepcopy(context)
+                    callback_drafts = deepcopy(validated)
+                    before_callback = self._command_callback_fingerprint(
+                        callback_context, callback_drafts
+                    )
+                    async with self._participant_database_guard(
+                        db, policy=participant_policy, phase="validate"
+                    ):
+                        await participant.validate_command(
+                            participant_db,
+                            context=callback_context,
+                            drafts=callback_drafts,
+                        )
+                    if participant_db.export_mutations():
+                        raise LedgerCorruption(
+                            None, "validate participant produced a mutation plan"
+                        )
+                    if self._command_callback_fingerprint(
+                        callback_context, callback_drafts
+                    ) != before_callback:
+                        raise LedgerCorruption(None, "participant mutated validate_command arguments")
                 current_frame = snapshot.frame_version
                 if confirms:
                     if expected_frame_version is None or expected_frame_version != current_frame:
@@ -377,7 +448,7 @@ class WorkbenchStore:
                             f"caused_by is not visible in branch {branch_id}: {item.draft.caused_by}"
                         )
 
-                last = await self._global_head(db, task_id)
+                last = global_head
                 events, manifest = self._prepare_command(
                     task_id=task_id,
                     command_id=command_id,
@@ -399,6 +470,41 @@ class WorkbenchStore:
                 await self._insert_manifest(db, manifest)
                 for event in events:
                     await self._insert_event(db, event)
+                if participant is not None:
+                    participant_db, participant_policy = await self._participant_database(
+                        db,
+                        participant_id=participant.participant_id,
+                        phase="apply",
+                        task_id=task_id,
+                    )
+                    callback_before = deepcopy(snapshot)
+                    callback_events = deepcopy(tuple(events))
+                    callback_after = deepcopy(projected)
+                    before_callback = self._apply_callback_fingerprint(
+                        callback_before, callback_events, callback_after
+                    )
+                    async with self._participant_database_guard(
+                        db, policy=participant_policy, phase="apply"
+                    ):
+                        await participant.apply_command(
+                            participant_db,
+                            before=callback_before,
+                            events=callback_events,
+                            after=callback_after,
+                        )
+                    if self._apply_callback_fingerprint(
+                        callback_before, callback_events, callback_after
+                    ) != before_callback:
+                        raise LedgerCorruption(None, "participant mutated apply_command arguments")
+                    async with self._participant_database_guard(
+                        db, policy=participant_policy, phase="apply"
+                    ):
+                        await self._apply_participant_mutations(
+                            db,
+                            policy=participant_policy,
+                            task_id=task_id,
+                            mutations=participant_db.export_mutations(),
+                        )
                 staged = await self._verify_ledger_db(db, task_id, include_projections=False)
                 self._require_valid(staged)
                 await self._publish_snapshot(db, projected, events[-1].created_at)
@@ -747,6 +853,10 @@ class WorkbenchStore:
         if manifest_failure is not None:
             return manifest_failure
 
+        domain_failure = await self._verify_domain_authority(db, task_id, rows)
+        if domain_failure is not None:
+            return domain_failure
+
         if include_projections:
             branches = await (
                 await db.execute(
@@ -837,6 +947,350 @@ class WorkbenchStore:
             else 0,
             head_checksum=prior,
         )
+
+    async def _verify_domain_authority(
+        self,
+        db: aiosqlite.Connection,
+        task_id: str,
+        rows: Sequence[aiosqlite.Row],
+    ) -> LedgerVerification | None:
+        self.runtime.validate_current()
+        events = tuple(self._event_from_row(row) for row in rows)
+        for participant in self.runtime.participants:
+            try:
+                participant_events = deepcopy(events)
+                events_fingerprint = self._events_callback_fingerprint(participant_events)
+                participant_db, participant_policy = await self._participant_database(
+                    db,
+                    participant_id=participant.participant_id,
+                    phase="verify",
+                    task_id=task_id,
+                )
+                async with self._participant_database_guard(
+                    db, policy=participant_policy, phase="verify"
+                ):
+                    result = await participant.verify_authority(
+                        participant_db, task_id=task_id, events=participant_events
+                    )
+                if participant_db.export_mutations():
+                    raise ValueError("verifier produced a mutation plan")
+                if self._events_callback_fingerprint(participant_events) != events_fingerprint:
+                    raise ValueError("participant mutated verifier event arguments")
+                if result.participant_id != participant.participant_id:
+                    raise ValueError(
+                        f"verifier returned participant_id {result.participant_id}, expected {participant.participant_id}"
+                    )
+                if not result.valid:
+                    raise ValueError(result.reason or "domain authority mismatch")
+            except Exception as exc:
+                return LedgerVerification(
+                    valid=False,
+                    task_id=task_id,
+                    checked_events=len(rows),
+                    head_sequence=(
+                        self._strict_integer(rows[-1]["sequence"], "event sequence")
+                        if rows else 0
+                    ),
+                    head_checksum=(
+                        self._strict_text(rows[-1]["checksum"], "event checksum")
+                        if rows else GENESIS_CHECKSUM
+                    ),
+                    first_invalid_sequence=(
+                        self._strict_integer(rows[-1]["sequence"], "event sequence")
+                        if rows else None
+                    ),
+                    reason=f"domain participant {participant.participant_id}: {exc}",
+                )
+        return None
+
+    @asynccontextmanager
+    async def _participant_database_guard(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        policy: ParticipantDatabasePolicy,
+        phase: ParticipantPhase,
+    ) -> AsyncIterator[None]:
+        always_denied = {
+            sqlite3.SQLITE_TRANSACTION,
+            sqlite3.SQLITE_SAVEPOINT,
+            sqlite3.SQLITE_ATTACH,
+            sqlite3.SQLITE_DETACH,
+            sqlite3.SQLITE_PRAGMA,
+            sqlite3.SQLITE_CREATE_INDEX,
+            sqlite3.SQLITE_CREATE_TABLE,
+            sqlite3.SQLITE_CREATE_TEMP_INDEX,
+            sqlite3.SQLITE_CREATE_TEMP_TABLE,
+            sqlite3.SQLITE_CREATE_TEMP_TRIGGER,
+            sqlite3.SQLITE_CREATE_TEMP_VIEW,
+            sqlite3.SQLITE_CREATE_TRIGGER,
+            sqlite3.SQLITE_CREATE_VIEW,
+            sqlite3.SQLITE_DROP_INDEX,
+            sqlite3.SQLITE_DROP_TABLE,
+            sqlite3.SQLITE_DROP_TEMP_INDEX,
+            sqlite3.SQLITE_DROP_TEMP_TABLE,
+            sqlite3.SQLITE_DROP_TEMP_TRIGGER,
+            sqlite3.SQLITE_DROP_TEMP_VIEW,
+            sqlite3.SQLITE_DROP_TRIGGER,
+            sqlite3.SQLITE_DROP_VIEW,
+            sqlite3.SQLITE_ALTER_TABLE,
+            sqlite3.SQLITE_REINDEX,
+            sqlite3.SQLITE_ANALYZE,
+        }
+        tables = {table.table_name: table for table in policy.tables}
+
+        def authorize(
+            action: int,
+            _arg1: str | None,
+            _arg2: str | None,
+            _database: str | None,
+            _trigger: str | None,
+        ) -> int:
+            if action in always_denied:
+                return sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_READ:
+                if _trigger is not None:
+                    return sqlite3.SQLITE_OK
+                return sqlite3.SQLITE_OK if _arg1 in tables else sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_INSERT:
+                table = tables.get(_arg1 or "")
+                return (
+                    sqlite3.SQLITE_OK
+                    if phase == "apply" and table is not None and table.insertable_columns
+                    else sqlite3.SQLITE_DENY
+                )
+            if action == sqlite3.SQLITE_UPDATE:
+                table = tables.get(_arg1 or "")
+                return (
+                    sqlite3.SQLITE_OK
+                    if phase == "apply"
+                    and table is not None
+                    and _arg2 in table.updatable_columns
+                    else sqlite3.SQLITE_DENY
+                )
+            if action == sqlite3.SQLITE_DELETE:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        await self._install_participant_authorizer(db, authorize)
+        body_cancellation: asyncio.CancelledError | None = None
+        try:
+            yield
+        except asyncio.CancelledError as exc:
+            body_cancellation = exc
+            raise
+        finally:
+            clear = asyncio.create_task(self._clear_participant_authorizer(db))
+            cancellation: asyncio.CancelledError | None = None
+            clear_error: BaseException | None = None
+            while not clear.done():
+                try:
+                    await asyncio.shield(clear)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+                    continue
+                except BaseException as exc:
+                    clear_error = exc
+                    break
+            try:
+                clear.result()
+            except BaseException as exc:
+                clear_error = clear_error or exc
+            if body_cancellation is not None:
+                if clear_error is not None:
+                    raise body_cancellation from clear_error
+                raise body_cancellation
+            if clear_error is not None:
+                raise clear_error
+            if cancellation is not None:
+                raise cancellation
+
+    async def _clear_participant_authorizer(self, db: aiosqlite.Connection) -> None:
+        await db._execute(db._conn.set_authorizer, None)
+
+    async def _install_participant_authorizer(
+        self, db: aiosqlite.Connection, authorize: Callable[..., int]
+    ) -> None:
+        install = asyncio.create_task(db._execute(db._conn.set_authorizer, authorize))
+        cancellation: asyncio.CancelledError | None = None
+        error: BaseException | None = None
+        while not install.done():
+            try:
+                await asyncio.shield(install)
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                continue
+            except BaseException as exc:
+                error = exc
+                break
+        if error is None:
+            try:
+                install.result()
+            except BaseException as exc:
+                error = exc
+        if cancellation is not None:
+            clear = asyncio.create_task(self._clear_participant_authorizer(db))
+            while not clear.done():
+                try:
+                    await asyncio.shield(clear)
+                except asyncio.CancelledError:
+                    continue
+            try:
+                clear.result()
+            except BaseException as clear_error:
+                raise cancellation from clear_error
+            if error is not None:
+                raise cancellation from error
+            raise cancellation
+        if error is not None:
+            raise error
+
+    async def _participant_database(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        participant_id: str,
+        phase: ParticipantPhase,
+        task_id: str,
+    ) -> tuple[ParticipantDatabase, ParticipantDatabasePolicy]:
+        policy = self.runtime.database_policy_for(participant_id)
+        task_rows: dict[str, tuple[Mapping[str, Any], ...]] = {}
+        global_rows: dict[str, tuple[Mapping[str, Any], ...]] = {}
+        for table in policy.tables:
+            quoted = '"' + table.table_name.replace('"', '""') + '"'
+            actual_table = await (
+                await db.execute(
+                    "SELECT name FROM sqlite_schema "
+                    "WHERE type='table' AND name=? COLLATE NOCASE",
+                    (table.table_name,),
+                )
+            ).fetchone()
+            if actual_table is None or str(actual_table[0]) != table.table_name:
+                raise RuntimeConfigurationError(
+                    f"participant table spelling does not match sqlite_schema: {table.table_name}"
+                )
+            columns = await (await db.execute(f"PRAGMA table_xinfo({quoted})")).fetchall()
+            if not columns:
+                raise RuntimeConfigurationError(
+                    f"participant table does not exist: {table.table_name}"
+                )
+            schema = {str(row[1]): row for row in columns}
+            declared = (
+                set(table.readable_columns)
+                | set(table.insertable_columns)
+                | set(table.updatable_columns)
+                | {table.task_id_column}
+            )
+            missing = declared - set(schema)
+            if missing:
+                raise RuntimeConfigurationError(
+                    f"participant table {table.table_name} is missing columns {sorted(missing)}"
+                )
+            task_column = schema[table.task_id_column]
+            if int(task_column[3]) != 1:
+                raise RuntimeConfigurationError(
+                    f"participant table {table.table_name} task identity must be NOT NULL"
+                )
+            preload_columns = tuple(sorted(set(table.readable_columns) | {table.task_id_column}))
+            selected = ",".join(
+                '"' + column.replace('"', '""') + '"'
+                for column in preload_columns
+            )
+            cursor = await db.execute(
+                f"SELECT {selected} FROM {quoted} WHERE "
+                f"{'"' + table.task_id_column.replace('"', '""') + '"'}=?",
+                (task_id,),
+            )
+            rows = await cursor.fetchall()
+            await cursor.close()
+            task_rows[table.table_name] = tuple(
+                MappingProxyType(dict(zip(preload_columns, tuple(row)))) for row in rows
+            )
+            if phase == "verify" and table.global_read:
+                cursor = await db.execute(f"SELECT {selected} FROM {quoted}")
+                rows = await cursor.fetchall()
+                await cursor.close()
+                global_rows[table.table_name] = tuple(
+                    MappingProxyType(dict(zip(preload_columns, tuple(row)))) for row in rows
+                )
+        return (
+            ParticipantDatabase(
+                phase=phase,
+                task_id=task_id,
+                policy=policy,
+                task_rows=MappingProxyType(task_rows),
+                global_rows=MappingProxyType(global_rows),
+            ),
+            policy,
+        )
+
+    async def _apply_participant_mutations(
+        self,
+        db: aiosqlite.Connection,
+        *,
+        policy: ParticipantDatabasePolicy,
+        task_id: str,
+        mutations: tuple[ParticipantMutation, ...],
+    ) -> None:
+        tables = {table.table_name: table for table in policy.tables}
+        for mutation in mutations:
+            if type(mutation.table_name) is not str:
+                raise RuntimeConfigurationError("mutation table identifier must be an exact string")
+            table = tables.get(mutation.table_name)
+            if table is None:
+                raise RuntimeConfigurationError(
+                    f"mutation table is outside participant policy: {mutation.table_name}"
+                )
+            quoted_table = '"' + table.table_name.replace('"', '""') + '"'
+            if isinstance(mutation, ParticipantInsert):
+                values = dict(mutation.values)
+                scoped_task_id = values.get(table.task_id_column)
+                if type(scoped_task_id) is not str or scoped_task_id != task_id:
+                    raise RuntimeConfigurationError("cross-task insert mutation is prohibited")
+                if any(type(column) is not str for column in values):
+                    raise RuntimeConfigurationError("insert mutation identifiers must be exact strings")
+                if set(values) - {table.task_id_column} - set(table.insertable_columns):
+                    raise RuntimeConfigurationError("insert mutation contains undeclared columns")
+                columns = tuple(sorted(values))
+                quoted_columns = ",".join(
+                    '"' + column.replace('"', '""') + '"' for column in columns
+                )
+                await db.execute(
+                    f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES "
+                    f"({','.join('?' for _ in columns)})",
+                    tuple(values[column] for column in columns),
+                )
+                continue
+            if not isinstance(mutation, ParticipantUpdate):
+                raise RuntimeConfigurationError("unknown participant mutation type")
+            values = dict(mutation.values)
+            equals = dict(mutation.equals)
+            scoped_task_id = equals.get(table.task_id_column)
+            if type(scoped_task_id) is not str or scoped_task_id != task_id:
+                raise RuntimeConfigurationError("cross-task update mutation is prohibited")
+            if any(type(column) is not str for column in (*values, *equals)):
+                raise RuntimeConfigurationError("update mutation identifiers must be exact strings")
+            if not values or set(values) - set(table.updatable_columns):
+                raise RuntimeConfigurationError("update mutation contains undeclared columns")
+            if set(equals) - set(table.readable_columns) - {table.task_id_column}:
+                raise RuntimeConfigurationError("update mutation predicate is undeclared")
+            set_columns = tuple(sorted(values))
+            predicates = tuple(sorted(equals))
+            set_sql = ",".join(
+                f"{'"' + column.replace('"', '""') + '"'}=?" for column in set_columns
+            )
+            where_sql = " AND ".join(
+                f"{'"' + column.replace('"', '""') + '"'} IS NULL"
+                if equals[column] is None
+                else f"{'"' + column.replace('"', '""') + '"'}=?"
+                for column in predicates
+            )
+            parameters = tuple(values[column] for column in set_columns) + tuple(
+                equals[column] for column in predicates if equals[column] is not None
+            )
+            await db.execute(
+                f"UPDATE {quoted_table} SET {set_sql} WHERE {where_sql}", parameters
+            )
 
     async def _verify_command_manifests(
         self,
@@ -1982,6 +2436,49 @@ class WorkbenchStore:
             "command_id": command_id,
             "ordinal": ordinal,
         }
+        return hashlib.sha256(canonical_json_text(value).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _command_callback_fingerprint(
+        context: CommandContext, drafts: tuple[ValidatedDraft, ...]
+    ) -> str:
+        value = {
+            "context": {
+                "task_id": context.task_id,
+                "branch_id": context.branch_id,
+                "before": context.before.model_dump(mode="json"),
+                "global_head_sequence": context.global_head_sequence,
+                "global_head_checksum": context.global_head_checksum,
+                "selected_branch_id": context.selected_branch_id,
+                "selected_branch_frame_version": context.selected_branch_frame_version,
+            },
+            "drafts": [
+                {
+                    "draft": item.draft.model_dump(mode="json"),
+                    "payload": item.payload.model_dump(mode="json"),
+                    "authority_participant": item.definition.authority_participant,
+                }
+                for item in drafts
+            ],
+        }
+        return hashlib.sha256(canonical_json_text(value).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _apply_callback_fingerprint(
+        before: WorkbenchSnapshot,
+        events: tuple[WorkbenchEvent, ...],
+        after: WorkbenchSnapshot,
+    ) -> str:
+        value = {
+            "before": before.model_dump(mode="json"),
+            "events": [event.model_dump(mode="json") for event in events],
+            "after": after.model_dump(mode="json"),
+        }
+        return hashlib.sha256(canonical_json_text(value).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _events_callback_fingerprint(events: tuple[WorkbenchEvent, ...]) -> str:
+        value = [event.model_dump(mode="json") for event in events]
         return hashlib.sha256(canonical_json_text(value).encode("utf-8")).hexdigest()
 
     def _new_event_id(self) -> str:

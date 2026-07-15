@@ -1936,10 +1936,12 @@ def test_command_manifest_checksum_contract_golden_vectors() -> None:
     registry.register(EventDefinition(
         event_type="fixture.nested", event_schema_version=1, payload_model=NestedPayload,
         frame_effect=FrameEffect.INHERIT, reducer=lambda state, event: state,
+        authority_participant="core",
     ))
     registry.register(EventDefinition(
         event_type="fixture.confirmed", event_schema_version=1, payload_model=ConfirmPayload,
         frame_effect=FrameEffect.CONFIRM, reducer=lambda state, event: state,
+        authority_participant="core",
     ))
     validated = (
         registry.validate(EventDraft(

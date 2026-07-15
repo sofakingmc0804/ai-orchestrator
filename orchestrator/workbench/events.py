@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -21,6 +22,7 @@ from orchestrator.workbench.models import (
 
 GENESIS_CHECKSUM = hashlib.sha256(b"ai-orchestrator/workbench-ledger/genesis/v1").hexdigest()
 EVENT_SCHEMA_VERSION = 1
+CORE_PARTICIPANT_ID = "core"
 
 
 class FrameEffect(str, Enum):
@@ -69,6 +71,7 @@ class EventDefinition:
     payload_model: type[BaseModel]
     frame_effect: FrameEffect
     reducer: Reducer
+    authority_participant: str
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,7 @@ class ValidatedDraft:
 class EventRegistry:
     def __init__(self) -> None:
         self._definitions: dict[tuple[str, int], EventDefinition] = {}
+        self._frozen = False
 
     @classmethod
     def production(cls) -> "EventRegistry":
@@ -92,6 +96,7 @@ class EventRegistry:
                 payload_model=TaskCreatedPayload,
                 frame_effect=FrameEffect.INHERIT,
                 reducer=_reduce_task_created,
+                authority_participant=CORE_PARTICIPANT_ID,
             )
         )
         registry.register(
@@ -101,6 +106,7 @@ class EventRegistry:
                 payload_model=BranchForkedPayload,
                 frame_effect=FrameEffect.INHERIT,
                 reducer=_reduce_branch_forked,
+                authority_participant=CORE_PARTICIPANT_ID,
             )
         )
         return registry
@@ -110,13 +116,50 @@ class EventRegistry:
         registry._definitions = dict(self._definitions)
         return registry
 
+    def definitions(self) -> dict[tuple[str, int], EventDefinition]:
+        return dict(self._definitions)
+
+    def ownership_fingerprint(self) -> tuple[tuple[str, int, str], ...]:
+        return tuple(
+            sorted(
+                (event_type, version, definition.authority_participant)
+                for (event_type, version), definition in self._definitions.items()
+            )
+        )
+
+    def semantic_fingerprint(self) -> tuple[tuple[Any, ...], ...]:
+        return tuple(
+            sorted(
+                (
+                    event_type,
+                    version,
+                    id(definition),
+                    id(definition.payload_model),
+                    id(definition.reducer),
+                    definition.frame_effect.value,
+                    definition.authority_participant,
+                )
+                for (event_type, version), definition in self._definitions.items()
+            )
+        )
+
     def register(self, definition: EventDefinition) -> None:
+        if self._frozen:
+            raise ValueError("event registry is frozen")
         key = (definition.event_type, definition.event_schema_version)
         if not definition.event_type.strip() or definition.event_schema_version < 1:
             raise ValueError("event definition identity is invalid")
+        if not definition.authority_participant.strip():
+            raise ValueError("event definition authority participant is invalid")
         if key in self._definitions:
             raise ValueError(f"event definition is already registered: {key}")
         self._definitions[key] = definition
+
+    def freeze(self) -> None:
+        if self._frozen:
+            return
+        self._definitions = MappingProxyType(dict(self._definitions))  # type: ignore[assignment]
+        self._frozen = True
 
     def definition(self, event_type: str, event_schema_version: int) -> EventDefinition:
         definition = self._definitions.get((event_type, event_schema_version))

@@ -161,10 +161,12 @@ def test_command_manifest_checksum_helpers_match_frozen_v1_vectors() -> None:
     registry.register(EventDefinition(
         event_type="fixture.nested", event_schema_version=1, payload_model=VectorPayload,
         frame_effect=FrameEffect.INHERIT, reducer=lambda state, event: state,
+        authority_participant="core",
     ))
     registry.register(EventDefinition(
         event_type="fixture.confirmed", event_schema_version=1, payload_model=ConfirmPayload,
         frame_effect=FrameEffect.CONFIRM, reducer=lambda state, event: state,
+        authority_participant="core",
     ))
     validated = (
         registry.validate(EventDraft(
@@ -302,6 +304,7 @@ def fixture_registry(*, effect: FrameEffect = FrameEffect.INHERIT) -> EventRegis
             payload_model=ValuePayload,
             frame_effect=effect,
             reducer=reduce_value,
+            authority_participant="core",
         )
     )
     return registry
@@ -322,6 +325,7 @@ def integer_fixture_registry() -> EventRegistry:
             payload_model=IntegerValuePayload,
             frame_effect=FrameEffect.INHERIT,
             reducer=reduce_value,
+            authority_participant="core",
         )
     )
     return registry
@@ -474,6 +478,7 @@ async def test_reducer_fault_rolls_back_entire_command(tmp_path: Path) -> None:
             payload_model=ValuePayload,
             frame_effect=FrameEffect.INHERIT,
             reducer=explode,
+            authority_participant="core",
         )
     )
     store = WorkbenchStore(settings, registry=registry)
@@ -979,6 +984,7 @@ async def test_confirm_and_propose_effects_are_registry_metadata_not_event_names
             payload_model=ValuePayload,
             frame_effect=FrameEffect.PROPOSE,
             reducer=reduce_proposal,
+            authority_participant="core",
         )
     )
     store = WorkbenchStore(settings, registry=registry)
@@ -1266,6 +1272,7 @@ async def test_rebuild_rejects_projector_with_a_different_registry_instance(tmp_
             payload_model=ValuePayload,
             frame_effect=FrameEffect.INHERIT,
             reducer=evil_reducer,
+            authority_participant="core",
         )
     )
     with pytest.raises(LedgerCorruption, match="registry"):
@@ -1296,6 +1303,7 @@ async def test_reducer_cannot_mutate_nested_event_payload_during_any_replay_path
             payload_model=NestedPayload,
             frame_effect=FrameEffect.INHERIT,
             reducer=mutating_reducer,
+            authority_participant="core",
         )
     )
     store = WorkbenchStore(settings, registry=registry)
