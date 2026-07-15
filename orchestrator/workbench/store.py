@@ -116,7 +116,11 @@ class WorkbenchStore:
         self.path = Path(source.state_path if isinstance(source, Settings) else source)
         if runtime is not None and registry is not None and runtime.registry is not registry:
             raise RuntimeConfigurationError("store and runtime registry identity must be exact")
-        self.registry = runtime.registry if runtime is not None else (registry or EventRegistry.production())
+        # The legacy store path is Task-2-only until an explicit runtime with
+        # the intent_core participant is supplied.  This keeps old callers
+        # fail-closed while the Task-3 catalog remains available via
+        # EventRegistry.production_task3().
+        self.registry = runtime.registry if runtime is not None else (registry or EventRegistry.task2())
         self.runtime = runtime or WorkbenchRuntime(registry=self.registry, participants=())
         if self.runtime.registry is not self.registry:
             raise RuntimeConfigurationError("store and runtime registry identity must be exact")
