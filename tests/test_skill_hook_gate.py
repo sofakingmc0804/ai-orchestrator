@@ -277,12 +277,20 @@ def test_pre_tool_use_blocks_external_gmail_auto_send_without_plan() -> None:
 
 
 def test_pre_tool_use_allows_daily_govcon_brief_send_to_matt_and_partner() -> None:
+    # Built from the same env-configurable recipient set gate.py enforces
+    # against, so this test carries no second literal copy of the real
+    # addresses.
+    display_names = {"matt": "Matt Couch", "partner": "Partner"}
+    to_field = [
+        f"{display_names.get(addr.split('@', 1)[0], addr.split('@', 1)[0].title())} <{addr}>"
+        for addr in sorted(gate.GOVCON_DAILY_AUTO_SEND_RECIPIENTS)
+    ]
     decision = handle_pre_tool_use(
         {
             "hook_event_name": "PreToolUse",
             "tool_name": "mcp__codex_apps__gmail._send_email",
             "tool_input": {
-                "to": ["Matt Couch <owner@example.com>", "Partner <partner@example.com>"],
+                "to": to_field,
                 "subject": "Example GovCon Daily Brief - 2026-06-15",
                 "body": "GovCon daily brief for Matt and Partner.",
             },
@@ -319,7 +327,12 @@ def test_pre_tool_use_blocks_gmail_draft_with_agent_signature() -> None:
             "tool_input": {
                 "to": "supplier@example.test",
                 "subject": "RFQ HHS0017441",
-                "body": "Please quote the attached items.\n\nThank you,\nMatt Couch\nExample Consulting\nC: 555-0100",
+                # Signature body references gate.py's own env-configurable
+                # business-name/phone constants instead of a second literal copy.
+                "body": (
+                    "Please quote the attached items.\n\nThank you,\nMatt Couch\n"
+                    f"{gate._SIGNATURE_BUSINESS_NAME} LLC\nC: {gate._SIGNATURE_PHONE}"
+                ),
             },
         },
         None,
