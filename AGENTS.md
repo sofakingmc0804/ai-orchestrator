@@ -69,7 +69,7 @@ its own project CLAUDE.md / change-control contract when a human works there.
 - **Status:** See `dev/ai-orchestrator/docs/STATUS.md` (canonical) and `python -m orchestrator.cli.main spec-status` for real, behaviorally-proven status. The 2026-06-10 migration docs are historical only.
 
 <!-- AI-GOVERNANCE-BLOCK BEGIN (generated; do not edit between markers) -->
-## Governed AI Policy (generated 2026-07-13 from ai-orchestrator efficiency_policy.json v1)
+## Governed AI Policy (generated 2026-07-20 from ai-orchestrator efficiency_policy.json v1)
 Authority: C:\Users\Couch\dev\ai-orchestrator\ (vendor-neutral). Full rigor rules:
 docs\specs\epistemic-rules.md (claims/sources/contradictions/options) and
 docs\specs\artifact-rules.md (predecessor retirement) â€” load on consequential work.
