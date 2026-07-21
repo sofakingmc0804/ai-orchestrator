@@ -203,8 +203,13 @@ def test_hermes_probe_sets_reason_and_repair_on_every_unhealthy_branch(monkeypat
     async def _run() -> None:
         adapter = HermesAgentAdapter()
 
-        # In a clean env hermes is not installed: must be STOPPED with reason+repair,
-        # never the false HEALTHY the old fall-through allowed via a matching python.exe.
+        # Make the "not installed" branch deterministic.  This PC may have
+        # Hermes installed, so probing the real executable would test ambient
+        # machine state instead of this adapter's unhealthy-path contract.
+        async def _not_installed(*_a, **_k):
+            return {"ok": False, "error": "hermes not found"}
+
+        monkeypatch.setattr(builtins_mod, "_run_bounded", _not_installed)
         info = await adapter.health_probe()
         assert info.health_state == HealthState.STOPPED
         assert info.detail and info.repair_action

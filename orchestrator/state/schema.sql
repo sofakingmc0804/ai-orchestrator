@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS standing_orders (
 
 CREATE TABLE IF NOT EXISTS scheduler_tasks (
     id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL DEFAULT 'unclassified_legacy',
     name TEXT,
     task_type TEXT,
     target_ref TEXT,
@@ -477,4 +478,147 @@ CREATE TABLE IF NOT EXISTS gmail_learned_precedents (
     precedent_type TEXT DEFAULT 'approved',
     approval_state TEXT DEFAULT 'approved',
     created_at TEXT
+);
+
+-- Hermes-first dual-workspace foundation.  Work content is scoped here; the
+-- system console may consume only aggregate resource and outcome data.
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS work_packets (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    source_workspace_id TEXT REFERENCES workspaces(id),
+    intent TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    mode_pack_id TEXT,
+    consumer TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'queued',
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_work_packets_workspace_created
+ON work_packets(workspace_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS transfer_proposals (
+    id TEXT PRIMARY KEY,
+    source_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    target_workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    source_work_packet_id TEXT NOT NULL REFERENCES work_packets(id),
+    summary TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'proposed',
+    decided_by TEXT,
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    target_work_packet_id TEXT REFERENCES work_packets(id),
+    receipt_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS resource_events (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    work_packet_id TEXT REFERENCES work_packets(id),
+    dispatch_id TEXT REFERENCES dispatches(id),
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    route TEXT NOT NULL,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    tokens_total INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL,
+    actual_cost_usd REAL,
+    quota_source TEXT NOT NULL,
+    measurement_source TEXT NOT NULL DEFAULT 'reported_runtime',
+    quota_state_json TEXT,
+    context_pressure REAL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_resource_events_model_created
+ON resource_events(provider, model, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS mode_packs (
+    id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    name TEXT NOT NULL,
+    allowed_workspaces_json TEXT NOT NULL,
+    source_authority TEXT NOT NULL,
+    preloaded_skills_json TEXT NOT NULL,
+    model_requirements_json TEXT NOT NULL,
+    evaluator TEXT NOT NULL,
+    budget_json TEXT NOT NULL,
+    completion_test_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_sessions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    mode_pack_id TEXT NOT NULL REFERENCES mode_packs(id),
+    frozen_mode_pack_json TEXT NOT NULL,
+    connector_policy_json TEXT NOT NULL,
+    delivery_policy_json TEXT NOT NULL,
+    skill_checks_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    ended_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS swarm_runs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    work_packet_id TEXT NOT NULL REFERENCES work_packets(id),
+    roles_json TEXT NOT NULL,
+    budget_json TEXT NOT NULL,
+    reviewer TEXT NOT NULL,
+    output_consumer TEXT NOT NULL,
+    stop_rule TEXT NOT NULL,
+    side_effect_policy TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'running',
+    reviewer_outcome TEXT,
+    receipt_json TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_episodes (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    work_packet_id TEXT NOT NULL REFERENCES work_packets(id),
+    mode_pack_id TEXT NOT NULL REFERENCES mode_packs(id),
+    selected_model TEXT NOT NULL,
+    tools_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    reviewer_outcome TEXT NOT NULL,
+    delivery_receipt TEXT NOT NULL,
+    cost_usd REAL,
+    failure_class TEXT,
+    score REAL,
+    held_out INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evaluation_episodes_model
+ON evaluation_episodes(selected_model, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS policy_candidates (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    policy_json TEXT NOT NULL,
+    baseline_score REAL,
+    episode_ids_json TEXT NOT NULL,
+    sandbox_only INTEGER NOT NULL DEFAULT 0,
+    requires_approval INTEGER NOT NULL DEFAULT 1,
+    state TEXT NOT NULL DEFAULT 'candidate',
+    replay_json TEXT,
+    rollback_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );

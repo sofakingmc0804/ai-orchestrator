@@ -205,11 +205,13 @@ async def run_scheduler_task_once(
     run_id = f"srun_{uuid.uuid4().hex[:12]}"
     task_id = str(task.get("id") or "")
     task_type = str(task.get("task_type") or "")
+    workspace_id = str(task.get("workspace_id") or "")
     enabled = bool(task.get("enabled"))
     result: dict[str, Any] = {
         "run_id": run_id,
         "task_id": task_id,
         "task_type": task_type,
+        "workspace_id": workspace_id,
         "enabled": enabled,
         "state": "skipped",
         "queued": 0,
@@ -219,6 +221,17 @@ async def run_scheduler_task_once(
     if not enabled and not force:
         result["reason"] = "scheduler_task_disabled"
         result["completed_at"] = iso()
+        return result
+    if workspace_id not in {"personal", "example", "system", "unclassified_legacy"}:
+        result["state"] = "failed"
+        result["reason"] = "scheduler_workspace_identity_missing"
+        result["completed_at"] = iso()
+        await store.add_repair_item(
+            "scheduler",
+            f"Scheduler task {task_id} has no valid workspace identity.",
+            "Assign personal, example, system, or unclassified_legacy before the task can run.",
+        )
+        await store.audit("scheduler", "scheduler_task_failed", task_id, result)
         return result
     if due_only and not force and not _is_due(task):
         result["reason"] = "scheduler_task_not_due"

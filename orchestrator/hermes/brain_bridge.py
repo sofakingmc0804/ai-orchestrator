@@ -65,6 +65,8 @@ async def route_for_hermes_prompt(
 ) -> dict[str, Any]:
     store = StateStore(settings)
     await store.initialize()
+    await store.bootstrap_workspace_roots()
+    await store.seed_default_mode_packs()
     route_payload = await route_brain(store, text=text, job_class=job_class)
     selected = _selected_payload(_selected_worker(route_payload))
     created_at = _utc_now()
@@ -75,6 +77,7 @@ async def route_for_hermes_prompt(
         "created_at": created_at,
         "source": "hermes-brain-bridge",
         "consumer": "Hermes shim before prompt execution",
+        "workspace_id": "unclassified_legacy",
         "input": {
             "text_chars": len(text),
             "job_class": job_class,
@@ -100,3 +103,126 @@ async def route_for_hermes_prompt(
         },
     )
     return receipt
+
+
+async def prepare_workspace_hermes_turn(
+    settings: Settings,
+    *,
+    workspace_id: str,
+    mode_pack_id: str,
+    skill_capability_checks: dict[str, bool],
+    text: str,
+    job_class: str | None,
+    argv: list[str] | None,
+    consumer: str,
+) -> dict[str, Any]:
+    """Create the governed envelope Hermes needs before it submits a turn.
+
+    The function intentionally does not call a model.  It freezes the chosen
+    mode and records the route first; Hermes reports real usage through
+    ``complete_workspace_hermes_turn`` when the provider turn ends.
+    """
+
+    store = StateStore(settings)
+    await store.initialize()
+    await store.bootstrap_workspace_roots()
+    await store.seed_default_mode_packs()
+    workspace_session = await store.start_workspace_session(
+        workspace_id=workspace_id,
+        mode_pack_id=mode_pack_id,
+        skill_capability_checks=skill_capability_checks,
+    )
+    work_packet = await store.create_work_packet(
+        workspace_id=workspace_id,
+        intent=text,
+        payload={"argv": argv or [], "text": text},
+        mode_pack_id=mode_pack_id,
+        consumer=consumer,
+        state="routing",
+    )
+    route_payload = await route_brain(store, text=text, job_class=job_class)
+    selected = _selected_payload(_selected_worker(route_payload))
+    route_id = str(route_payload.get("route_id") or work_packet["id"])
+    receipt = {
+        "state": route_payload.get("state"),
+        "proof_kind": "live",
+        "source": "hermes-workspace-bridge",
+        "created_at": _utc_now(),
+        "workspace_id": workspace_id,
+        "workspace_session_id": workspace_session["id"],
+        "work_packet_id": work_packet["id"],
+        "mode_pack_id": mode_pack_id,
+        "input": {"text_chars": len(text), "job_class": job_class, "argv": argv or []},
+        "selected": selected,
+        "route": route_payload,
+        "completion_test": "Hermes must report usage against this work packet after the provider turn ends.",
+    }
+    path = _receipt_path(settings, route_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    receipt["receipt_path"] = str(path)
+    path.write_text(json.dumps(receipt, indent=2, default=str), encoding="utf-8")
+    await store.audit(
+        "hermes-workspace-bridge",
+        "workspace_turn_prepared",
+        route_id,
+        {
+            "workspace_id": workspace_id,
+            "workspace_session_id": workspace_session["id"],
+            "work_packet_id": work_packet["id"],
+            "receipt_path": str(path),
+        },
+    )
+    return {
+        "state": route_payload.get("state"),
+        "workspace_id": workspace_id,
+        "workspace_session": workspace_session,
+        "work_packet": work_packet,
+        "selected": selected,
+        "route": route_payload,
+        "receipt_path": str(path),
+    }
+
+
+async def complete_workspace_hermes_turn(
+    settings: Settings,
+    *,
+    workspace_id: str,
+    work_packet_id: str,
+    provider: str,
+    model: str,
+    route: str,
+    tokens_in: int,
+    tokens_out: int,
+    estimated_cost_usd: float | None,
+    actual_cost_usd: float | None,
+    quota_source: str,
+    context_pressure: float | None,
+    quota_state: dict[str, Any] | None = None,
+    measurement_source: str = "hermes_runtime_state",
+) -> dict[str, Any]:
+    """Persist actual provider usage reported by Hermes for one prepared turn."""
+
+    store = StateStore(settings)
+    await store.initialize()
+    event = await store.record_resource_event(
+        workspace_id=workspace_id,
+        work_packet_id=work_packet_id,
+        provider=provider,
+        model=model,
+        route=route,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        estimated_cost_usd=estimated_cost_usd,
+        actual_cost_usd=actual_cost_usd,
+        quota_source=quota_source or "unknown",
+        quota_state=quota_state,
+        context_pressure=context_pressure,
+        measurement_source=measurement_source,
+    )
+    await store.audit(
+        "hermes-workspace-bridge",
+        "workspace_turn_metered",
+        str(event["id"]),
+        {"workspace_id": workspace_id, "work_packet_id": work_packet_id, "provider": provider, "model": model, "measurement_source": measurement_source},
+    )
+    return {"state": "metered", "workspace_id": workspace_id, "work_packet_id": work_packet_id, "resource_event": event}

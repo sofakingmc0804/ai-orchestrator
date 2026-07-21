@@ -173,6 +173,7 @@ def test_token_accounting_api_and_dashboard_show_cost_vs_quality(
     assert payload["premium_agents"][0]["avg_quality_score"] == 0.82
     assert payload["premium_agents"][0]["tokens_per_completed_directive"] == 100
     assert index.status_code == 200
-    assert "tokenAccountingList" in index.text
-    assert "/api/token-accounting?limit=10" in index.text
-    assert "Cost vs Quality" in index.text
+    assert "Platform Console" in index.text
+    assert "Metered tokens" in index.text
+    assert "/static/platform-console.js" in index.text
+    assert "tokenAccountingList" not in index.text

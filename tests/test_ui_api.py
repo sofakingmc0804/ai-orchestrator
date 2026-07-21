@@ -227,31 +227,16 @@ def test_simple_server_dashboard_routes_and_api_contract(monkeypatch: pytest.Mon
     assert budget_refresh["total"] == 0
 
 
-def test_dashboard_contains_token_flow_surface() -> None:
+def test_platform_console_is_restricted_to_system_resource_surface() -> None:
     html = (Path(__file__).resolve().parents[1] / "orchestrator" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
-    app_js = (Path(__file__).resolve().parents[1] / "orchestrator" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+    console_js = (Path(__file__).resolve().parents[1] / "orchestrator" / "ui" / "static" / "platform-console.js").read_text(encoding="utf-8")
 
-    assert "tokenFlowTotal" in html
-    assert "tokenFlowList" in html
-    assert "fetch('/api/token-flow?limit=10')" in html
-    for panel_id in [
-        "quotaTrafficList",
-        "qualityLeaderboardList",
-        "routeLadderList",
-        "failoverLadderList",
-        "failoverEventsList",
-        "governanceReceiptList",
-        "tokenAccountingList",
-    ]:
-        assert panel_id in html
-    for endpoint in [
-        "/api/budget",
-        "/api/quality-leaderboard",
-        "/api/failover-events",
-        "/api/governance-receipts",
-        "/api/route",
-    ]:
-        assert endpoint in app_js
+    assert "Platform Console" in html
+    assert "System scope only" in html
+    assert 'src="/static/platform-console.js"' in html
+    assert "/api/platform-console" in console_js
+    for excluded in ["routeText", "tokenFlowTotal", "tokenAccountingList", "connectors", "working-memory", "projects"]:
+        assert excluded not in html
 
 
 def test_primary_fastapi_living_dashboard_endpoints(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -419,14 +404,16 @@ def test_primary_fastapi_route_api_and_app_js_are_live(monkeypatch: pytest.Monke
 
         anyio.run(seed)
         index = client.get("/")
-        route = client.post("/api/route", json={"text": "fix this repo bug", "job_class": "repo_coding"})
+        route = client.post("/api/route", json={"text": "fix this repo bug", "job_class": "repo_coding", "workspace_id": "personal"})
 
     assert index.status_code == 200
-    assert '<script src="/static/app.js" defer></script>' in index.text
-    assert 'id="routeText"' in index.text
+    assert '<script src="/static/platform-console.js" defer></script>' in index.text
+    assert 'id="meterList"' in index.text
     assert route.status_code == 200
     payload = route.json()
     assert payload["job_class"] == "repo_coding"
+    assert payload["workspace_id"] == "personal"
+    assert payload["work_packet_id"].startswith("wp_")
     assert payload["decision"]["chosen_adapter"] == "ollama-http"
     assert payload["decision"]["candidates_considered"][0]["worker_id"] == "qwen@ollama-local"
 
@@ -578,7 +565,7 @@ def test_cli_and_api_route_return_identical_brain_payload(
             )
 
         asyncio.run(seed())
-        api_payload = client.post("/api/route", json={"text": "fix this repo bug", "job_class": "repo_coding"}).json()
+        api_payload = client.post("/api/route", json={"text": "fix this repo bug", "job_class": "repo_coding", "workspace_id": "personal"}).json()
 
         asyncio.run(
             cmd_route(
@@ -594,6 +581,6 @@ def test_cli_and_api_route_return_identical_brain_payload(
         )
         cli_payload = json.loads(capsys.readouterr().out)
 
-    assert cli_payload == api_payload
+    assert {key: value for key, value in api_payload.items() if key not in {"workspace_id", "work_packet_id"}} == cli_payload
     assert cli_payload["decision"]["chosen_adapter"] == "ollama-http"
     assert cli_payload["ranked_ladder"][0]["worker_id"] == "qwen@ollama-local"

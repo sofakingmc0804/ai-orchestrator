@@ -1,1 +1,1 @@
-"""Evaluation and tournament helpers for measured model quality."""
+"""Offline, replayable evaluation lanes for governed learning."""

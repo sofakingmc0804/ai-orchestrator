@@ -104,7 +104,7 @@ async def _seed_services(settings: Settings) -> None:
     )
 
 
-def test_fastapi_connectors_page_and_inventory_use_authority_receipt(
+def test_fastapi_connector_inventory_is_not_silently_assigned_to_a_workspace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -115,19 +115,18 @@ def test_fastapi_connectors_page_and_inventory_use_authority_receipt(
 
     with TestClient(app) as client:
         asyncio.run(_seed_services(settings))
-        page = client.get("/connectors")
-        payload = client.get("/api/connectors").json()
+        root = client.get("/")
+        missing_scope = client.get("/api/connectors")
+        payload = client.get("/api/connectors?workspace_id=example").json()
 
-    assert page.status_code == 200
-    assert 'id="connectorsPanel"' in page.text
-    assert "/api/connectors/config-preview" in page.text
-    assert payload["state"] == "produced"
-    assert payload["source"] == "state_store.services"
-    assert payload["authority"]["decision"] == "salvage_ui_and_connector_primitives_into_ai_orchestrator_do_not_run_as_separate_service"
-    assert payload["runtime_boundary"] == "no_second_service_started"
-    assert "do not copy Google tokens or credentials" in payload["forbidden_substitutes"]
-    assert payload["connectors"][0]["id"] == "local-drive-mcp"
-    assert payload["connectors"][0]["capabilities"] == ["file_search"]
+    assert root.status_code == 200
+    assert "Platform Console" in root.text
+    assert "connectorsPanel" not in root.text
+    assert missing_scope.status_code == 409
+    assert payload["workspace_id"] == "example"
+    assert payload["state"] == "owner_assignment_required"
+    assert payload["connectors"] == []
+    assert payload["unclassified_service_count"] == 1
 
 
 def test_config_preview_uses_env_references_and_rejects_secret_values(
@@ -149,6 +148,7 @@ def test_config_preview_uses_env_references_and_rejects_secret_values(
                 "args": ["server.js"],
                 "env_vars": ["LOCAL_DRIVE_TOKEN"],
                 "enabled": True,
+                "workspace_id": "example",
             },
         )
         unsafe = client.post(
@@ -158,6 +158,7 @@ def test_config_preview_uses_env_references_and_rejects_secret_values(
                 "transport": "stdio",
                 "command": "node",
                 "env": {"LOCAL_DRIVE_TOKEN": "secret-value"},
+                "workspace_id": "example",
             },
         )
         unsafe_header = client.post(
@@ -167,6 +168,7 @@ def test_config_preview_uses_env_references_and_rejects_secret_values(
                 "transport": "http",
                 "url": "https://example.invalid/mcp",
                 "http_headers": {"Authorization": "Bearer secret-value"},
+                "workspace_id": "example",
             },
         )
 
