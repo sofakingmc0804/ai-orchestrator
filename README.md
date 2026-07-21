@@ -1,163 +1,132 @@
 # AI Orchestrator
 
-> **Status:** AI Operating System Phases 1-7 complete as of 2026-06-14. See
-> **[docs/STATUS.md](docs/STATUS.md)** and run `python -m orchestrator.cli.main spec-status`.
-> The "ALL 6 PHASES COMPLETE / 100%" framing below is a **historical 2026-06-10 migration record**;
-> those completion claims were row-count artifacts, not behavioral proof, and are superseded.
-> Current direction and finished-state: `.claude/plans/make-the-end-to-end-plan-linked-widget.md`.
+A self-built multi-provider AI agent orchestration system. It routes work
+across Claude, Codex, Gemini, Copilot, Ollama, and other local and cloud
+providers, with budget-aware cost governance, skill-based routing and
+permission gating, and an audit-receipt trail for every dispatch.
 
----
+It exists to answer one question honestly at any time: *which provider should
+do this piece of work, under what budget and safety constraints, and what
+proof exists that it actually happened?* No single AI provider is treated as
+a default; the router picks a worker based on specialization, budget state,
+latency, and contract type, prefers local/subscription capacity over metered
+usage, and avoids exhausted quotas. Every dispatch produces a receipt
+(worker, job class, routing reasoning, budget state) so behavior can be
+audited after the fact instead of taken on faith.
 
-## Historical: Consolidation migration (2026-06-10)
-**Date:** 2026-06-10  
-**Status:** historical migration log
-**Duration:** ~2 hours
+This is a real operating tool, not a demo: it runs the day-to-day AI workload
+for Example Consulting (the author's consulting business, sometimes
+referenced in code and docs as "exampleco" or by side-project name "Example Co") and for the author's personal projects. Business-identity defaults
+(mailbox, domain, phone) are environment-variable configurable — see
+`orchestrator/gmail_response_agent/models.py`, `orchestrator/skills/gate.py`,
+and `orchestrator/notifications/subscribers/email.py` — so the same codebase
+runs cleanly for a different owner/business without code changes.
 
----
+## What it does
 
-## Executive Summary
+- **Routes work across providers** — Claude, Codex, Gemini, Copilot, Ollama
+  (local and cloud), LM Studio, and Hermes Agent, selected by job
+  specialization, live budget/quota state, and latency.
+- **Governs cost** — tracks per-provider budgets and quotas in real time and
+  keeps a reserve on scarce resources rather than draining them to zero.
+- **Gates and routes by skill** — a permission/skill-hook gate
+  (`orchestrator/skills/gate.py`) decides what a given tool call or prompt is
+  allowed to do before it runs, and a router
+  (`orchestrator/skills/detector.py`) selects the matching skill for a
+  prompt.
+- **Keeps an audit trail** — every dispatch produces a receipt with the
+  worker, job class, routing reasoning, and budget state at the time, so
+  behavior is checkable after the fact (`orchestrator/dispatch/`).
+- **Runs a local control plane** — a FastAPI service with dashboards for
+  system health, workers, budget, and receipts, plus a CLI and Windows shell
+  integration.
 
-Two mature systems have been consolidated into a single unified AI orchestrator:
+## Setup
 
-**Before:**
-- `dev/ai-orchestrator/` — Full orchestrator (70-80% complete)
-- `.ai-resource-governor/` — Budget tracking, worker roster, policy
+Requires Python 3.13+.
 
-**After:**
-- Single source: `dev/ai-orchestrator/` — Complete unified orchestrator
-- `.ai-resource-governor/` — Runtime data only (backward compat)
+```powershell
+git clone <this-repo>
+cd ai-orchestrator
+pip install -e .
+```
 
----
+Business-identity defaults (mailbox, domain, phone) fall back to the real
+operational values used in production. To run this for a different
+owner/business, set the relevant environment variables before starting the
+service — see `orchestrator/gmail_response_agent/models.py`,
+`orchestrator/skills/gate.py`, and `orchestrator/notifications/subscribers/email.py`
+for the full list of `ORCHESTRATOR_*` variables and their defaults.
 
-## Current behavior
+## Usage
 
-The guides below describe the live control plane. They do not certify the source-backed backlog loop as the intended product architecture; `docs/specs/AI_ORCHESTRATOR_SPEC_v4.0.md` and `docs/BUILD_PLAN.md` define the intended direction.
+Start the service and open the local dashboard:
+
+```powershell
+python -m orchestrator.main
+# http://127.0.0.1:8765/
+```
+
+Check the live control-plane state and CLI entry points:
+
+```powershell
+python -m orchestrator.cli.main dashboard-status --no-receipt
+python -m orchestrator.cli.main --help
+```
+
+The `orchestrator` console script (installed by `pip install -e .`) is the
+same CLI, e.g. `orchestrator dashboard-status` or `orchestrator status`.
+
+For a guided walkthrough of the running system — health checks, the work
+queue, discovery, and recovery — start with:
 
 | Document | Use |
 |----------|-----|
 | [Quick Start](docs/guides/QUICK_START.md) | Check health, inspect the queue, discover source-backed work, and restore the local service. |
 | [Instruction Manual](docs/guides/INSTRUCTION_MANUAL.md) | Understand discovery, routing, Hermes Desktop, validation, receipts, and scheduling. |
 | [Operator Manual](docs/guides/OPERATOR_MANUAL.md) | Run the service, intervene safely, recover failed source tasks, and preserve evidence. |
-
-The historical startup sequence below is retained only as a migration record. Use the guides above for the current server and CLI entrypoints.
-
-## Historical quick start (not current)
-
-```powershell
-# Start server
-cd C:\Users\Couch\dev\ai-orchestrator
-python -m orchestrator.platform.server
-
-# Open dashboards
-# http://localhost:8765/          # Home
-# http://localhost:8765/workers   # Workers (96 workers)
-# http://localhost:8765/budget    # Budget (6 providers)
-# http://localhost:8765/receipts  # Receipts (audit trail)
-
-# Install CLI aliases
-python -m orchestrator.cli.aliases install
-
-# Install Windows context menu
-python -m orchestrator.ui.shell_integration.context_menu install
-
-# Run tests
-python tests/test_consolidation.py
-```
-
----
-
-## What Was Built
-
-### 96 Workers Across 11 Surfaces
-- Ollama (local + cloud), Claude (Desktop MCP + Code CLI), Codex CLI
-- Copilot (GitHub + VSCode), Gemini CLI, Hermes Agent, LM Studio
-
-### Intelligent Routing
-- Routes based on: specialization, budget state, latency, contract type
-- Prefers local/subscription over metered
-- Avoids exhausted quotas
-
-### Real-Time Budget Monitoring
-- 6 providers: Anthropic, OpenAI, Copilot, Ollama, Hermes, Gemini
-- Budget-aware routing
-- 20% reserve on scarce resources
-
-### Complete Audit Trail
-- Every receipt includes: worker_id, job_class, routing_reasoning, budget_state
-- Searchable/filterable receipts dashboard
-
-### 4 UI Dashboards
-- **Home:** System health, activity stream, quick stats
-- **Workers:** Grid view with search/filter
-- **Budget:** Provider quotas, usage, probes
-- **Receipts:** Historical dispatch log
-
-### CLI + Shell Integration
-- Aliases: `orch`, `orch-workers`, `orch-budget`, `orch-dispatch`
-- Windows context menu: Right-click → "Dispatch here"
-
----
-
-## Documentation
-
-| Document | Purpose |
-|----------|---------|
-| `docs/MIGRATION_COMPLETE.md` | Full migration report (7KB) |
-| `docs/SNAPSHOT_FINAL.md` | Final system snapshot |
-| `docs/CONSOLIDATION_ROADMAP_2026-06-10.md` | Original plan |
-| `docs/migration/` | Phase-by-phase logs (6 phases) |
-
----
+| [Status](docs/STATUS.md) | Current, behaviorally-verified project status (canonical; supersedes the historical migration claims in `docs/HISTORY.md`). |
 
 ## Architecture
 
 ```
-dev/ai-orchestrator/
-├── orchestrator/
-│   ├── adapters/          # 11 provider adapters
-│   ├── governance/        # Job classifier, worker roster builder
-│   ├── routing/           # Worker-aware routing engine
-│   ├── dispatch/          # Dispatcher + enhanced receipts
-│   ├── discovery/         # Budget probes
-│   ├── state/             # SQLite schema + store
-│   ├── ui/                # 4 dashboards
-│   ├── cli/               # Commands + aliases
-│   └── ...
-├── data/rosters/          # Worker rosters
-├── docs/                  # Migration logs, specs
-├── tests/                 # Test suite
-└── .runtime/              # State DB (~184MB), logs, cache
+orchestrator/
+├── adapters/          # Per-provider adapters (Claude, Codex, Gemini, Copilot, Ollama, ...)
+├── governance/        # Job classifier, worker roster builder
+├── routing/           # Worker-aware routing engine
+├── dispatch/          # Dispatcher + receipts
+├── discovery/         # Budget probes
+├── skills/            # Skill routing and permission/hook gate
+├── scheduler/         # Scheduled tasks, mailbox jobs
+├── gmail_response_agent/  # Gmail-facing response agent
+├── workspace_runtime.py, swarm/, evaluation/  # Multi-workspace + evaluation runtime
+├── state/             # SQLite schema + store
+├── ui/                # Dashboards (home, workers, budget, receipts, command center)
+└── cli/               # Commands + aliases
+data/rosters/          # Worker rosters
+docs/                  # Guides, specs, migration/status history
+tests/                 # Test suite
 ```
 
----
+## Testing
 
-## Phase Summary
+```powershell
+python -m pytest -q
+```
 
-| Phase | Status | Key Deliverables |
-|-------|--------|------------------|
-| 1: Foundation | ✅ | Merged worker roster, unified schema |
-| 2: Routing | ✅ | Worker-aware routing, job classifier |
-| 3: Budget | ✅ | Live probes, budget dashboard |
-| 4: Receipts | ✅ | Enhanced receipts, receipts UI |
-| 5: UI/CLI | ✅ | 4 dashboards, CLI aliases, context menu |
-| 6: Cleanup | ✅ | Tests, migration report, final snapshot |
+As of this writing the suite has 2 known, pre-existing failures unrelated to
+routine changes in this repo — both in `tests/test_skill_hook_gate.py`:
+`test_codex_chrome_extension_prompt_selects_chrome_skill_and_lease` and
+`test_router_benchmark_child_skill_prompts_select_expected_skill`. Both are
+skill-router selection mismatches (the router returns a related but
+differently-named skill than the test expects), not crashes or data-integrity
+failures. They are tracked as known issues, not silently ignored.
 
----
+## Project history
 
-## Verification
-
-All acceptance criteria met:
-- ✅ 96 workers loaded in database
-- ✅ 6 budget probes configured
-- ✅ Receipts schema has Phase 4 columns
-- ✅ 4 UI pages functional
-- ✅ CLI aliases installable
-- ✅ Windows context menu working
-- ✅ End-to-end test suite created
-- ✅ Migration report complete
-
----
-
-**Migration executed by:** Hermes Agent  
-**Completed:** 2026-06-10 22:45 CT  
-**Status:** ✅ COMPLETE
+This project went through an internal two-system consolidation
+(2026-06-10) and a later three-branch rebuild/cleanup pass (2026-07-21). The
+full migration log, phase-by-phase claims, and superseded status banners are
+preserved in [`docs/HISTORY.md`](docs/HISTORY.md) and `docs/migration/` rather
+than at the top of this file. [`docs/STATUS.md`](docs/STATUS.md) is the
+current, behaviorally-verified source of truth for project status.
