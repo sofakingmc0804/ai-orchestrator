@@ -142,7 +142,7 @@ def main() -> int:
     receipt["steps"]["prune"] = {"retention_days": RETENTION_DAYS, "pruned": pruned}
 
     healthy = integrity_err is None and integrity == "ok" and vacuum_err is None and backup_ok
-    receipt["state"] = "produced" if healthy else "blocked_after_repair_attempt"
+    receipt["state"] = "produced" if healthy else "continuation_required"
     receipt["healthy"] = healthy
     receipt["completed_at"] = _now().isoformat()
     _write_receipt(receipt, started)

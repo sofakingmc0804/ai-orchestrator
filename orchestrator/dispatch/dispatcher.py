@@ -32,17 +32,43 @@ class Dispatcher:
         self.max_attempts_per_adapter = 3
         self.retry_backoff_seconds = [0.2, 0.5]
 
-    async def dispatch_text(self, raw_text: str, project_root: Path | None = None, job_class_override: str | None = None) -> DispatchResult:
+    async def dispatch_text(
+        self,
+        raw_text: str,
+        project_root: Path | None = None,
+        job_class_override: str | None = None,
+        source: str = "user",
+        operation_task: dict[str, Any] | None = None,
+        auto_approve_local: bool = False,
+        preferred_adapter: str | None = None,
+    ) -> DispatchResult:
         intent = parse_intent(raw_text)
+        intent.source = source
+        if operation_task is not None:
+            intent.parsed_payload["operation_task"] = operation_task
         project_policy: dict[str, Any] = {}
         if project_root:
             intent.project_id = await self.store.find_project_id_for_path(project_root)
             project_policy = await self._project_policy(intent.project_id)
         await self.store.create_intent(intent)
-        if self._requires_approval(intent, project_policy):
+        source_authorized_local = (
+            auto_approve_local
+            and source == "backlog_discovery"
+            and project_root is not None
+            and project_root.is_dir()
+        )
+        if source_authorized_local and preferred_adapter is None:
+            preferred_adapter = "hermes-agent"
+        if self._requires_approval(intent, project_policy) and not source_authorized_local:
             await self._request_approval(intent)
             return DispatchResult(dispatch_id="", intent_id=intent.id, adapter_name="", state="awaiting_approval")
-        return await self._execute_intent(intent, project_root, project_policy, job_class_override=job_class_override)
+        return await self._execute_intent(
+            intent,
+            project_root,
+            project_policy,
+            job_class_override=job_class_override,
+            preferred_adapter=preferred_adapter,
+        )
 
     async def approve_intent(self, intent_id: str, approved: bool) -> DispatchResult:
         row = await self.store.get_intent(intent_id)
@@ -115,6 +141,7 @@ class Dispatcher:
         project_root: Path | None = None,
         project_policy: dict[str, Any] | None = None,
         job_class_override: str | None = None,
+        preferred_adapter: str | None = None,
     ) -> DispatchResult:
         # Phase 2: Classify intent → job_class
         classification = classify_with_fallback(intent.raw_text, override=job_class_override)
@@ -154,6 +181,31 @@ class Dispatcher:
             capabilities = await self.store.list_capabilities()
             decision = route_intent(intent, capabilities, quota_state, project_policy)
 
+        if preferred_adapter:
+            adapter = self.adapters.get(preferred_adapter)
+            if adapter is None:
+                await self.store.update_intent_state(intent.id, "failed", completed=True)
+                return DispatchResult(
+                    dispatch_id="",
+                    intent_id=intent.id,
+                    adapter_name=preferred_adapter,
+                    state="failed",
+                    error=f"preferred adapter is not registered: {preferred_adapter}",
+                )
+            decision.chosen_adapter = preferred_adapter
+            decision.candidates_considered = [
+                {
+                    "adapter_name": preferred_adapter,
+                    "worker_id": f"{preferred_adapter}@governed-desktop",
+                    "model_id": "desktop-hermes",
+                    "provider_id": "governed-desktop",
+                    "billing_class": "subscription_quota",
+                    "forced_for_source_backed_local_work": True,
+                }
+            ]
+            decision.candidates_rejected = []
+            decision.reasoning = f"Pinned {preferred_adapter} for source-backed local project work."
+
         await self.store.record_routing(decision)
         if not decision.chosen_adapter:
             await self.store.update_intent_state(intent.id, "failed", completed=True)
@@ -189,6 +241,8 @@ class Dispatcher:
             "project_policy": project_policy,
             "skill_hook_plan": skill_hook_plan.receipt_payload(),
         }
+        if project_root is not None:
+            envelope["project_root"] = str(project_root)
         operation_task = intent.parsed_payload.get("operation_task")
         if isinstance(operation_task, dict):
             envelope["operation_task"] = operation_task

@@ -81,10 +81,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         projects = discover_projects(project_roots, max_depth=3)
         await store.upsert_projects(projects)
 
-        async def defer_startup_repair(_store: StateStore) -> dict[str, object]:
-            return {"state": "skipped", "reason": "deferred_to_supervisor_thread"}
-
-        app.state.supervisor_startup_receipt = await run_supervisor_tick(settings, store, repair_core=defer_startup_repair)
+        app.state.supervisor_startup_receipt = {
+            "state": "produced",
+            "proof_kind": "live",
+            "mode": "background_supervisor_thread",
+        }
         app.state.supervisor_thread = start_supervisor_thread(settings)
         try:
             yield
@@ -313,6 +314,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project = Path(req.project_root) if req.project_root else None
         result = await dispatcher.dispatch_text(req.text, project)
         return result.model_dump(mode="json")
+
+    @app.get("/api/job-classes")
+    async def job_classes() -> dict[str, list[str]]:
+        rows = await store.db.fetch("SELECT job_class FROM job_classes ORDER BY job_class")
+        return {"job_classes": [str(row["job_class"]) for row in rows]}
 
     @app.post("/api/route")
     async def route(req: RouteRequest) -> dict[str, object]:

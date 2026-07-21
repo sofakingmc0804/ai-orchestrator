@@ -18,13 +18,16 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $Script = Join-Path $RepoRoot "scripts\db_maintenance.py"
-$Python = (Get-Command python -ErrorAction Stop).Source
+$Pythonw = (Get-Command pythonw.exe -ErrorAction Stop).Source
+$NoConsoleLauncher = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "no-console-task-launcher.pyw")
+$Python = (Get-Command python.exe -ErrorAction Stop).Source
 
 if (-not (Test-Path -LiteralPath $Script)) {
   throw "Maintenance script not found: $Script"
 }
 
-$Action = New-ScheduledTaskAction -Execute $Python -Argument "-B `"$Script`"" -WorkingDirectory $RepoRoot
+$ActionArgs = "`"$NoConsoleLauncher`" -- `"$Python`" -B `"$Script`""
+$Action = New-ScheduledTaskAction -Execute $Pythonw -Argument $ActionArgs -WorkingDirectory $RepoRoot
 if ($Frequency -eq "Weekly") {
   $Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $DayOfWeek -At $Time
 }
@@ -36,5 +39,5 @@ $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null
 Write-Output "Registered '$TaskName': $Frequency at $Time"
-Write-Output "  Command: `"$Python`" -B `"$Script`""
+Write-Output "  Command: `"$Pythonw`" $ActionArgs"
 Write-Output "  Working dir: $RepoRoot"

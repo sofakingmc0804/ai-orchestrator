@@ -29,7 +29,19 @@ Two mature systems have been consolidated into a single unified AI orchestrator:
 
 ---
 
-## Quick Start
+## Current behavior
+
+The guides below describe the live control plane. They do not certify the source-backed backlog loop as the intended product architecture; `docs/specs/AI_ORCHESTRATOR_SPEC_v4.0.md` and `docs/BUILD_PLAN.md` define the intended direction.
+
+| Document | Use |
+|----------|-----|
+| [Quick Start](docs/guides/QUICK_START.md) | Check health, inspect the queue, discover source-backed work, and restore the local service. |
+| [Instruction Manual](docs/guides/INSTRUCTION_MANUAL.md) | Understand discovery, routing, Hermes Desktop, validation, receipts, and scheduling. |
+| [Operator Manual](docs/guides/OPERATOR_MANUAL.md) | Run the service, intervene safely, recover failed source tasks, and preserve evidence. |
+
+The historical startup sequence below is retained only as a migration record. Use the guides above for the current server and CLI entrypoints.
+
+## Historical quick start (not current)
 
 ```powershell
 # Start server

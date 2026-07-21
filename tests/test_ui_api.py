@@ -360,6 +360,38 @@ def test_primary_fastapi_living_dashboard_endpoints(monkeypatch: pytest.MonkeyPa
     assert governance["summary"]["by_decision"]["allow"] == 1
 
 
+def test_fastapi_startup_does_not_block_on_supervisor_work(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls = {"sync_supervisor": 0, "thread": 0}
+
+    async def fake_services() -> tuple[list[Any], list[Any]]:
+        return [], []
+
+    async def fake_supervisor_tick(_settings: Settings, _store: StateStore, **_kwargs: object) -> dict[str, object]:
+        calls["sync_supervisor"] += 1
+        return {"state": "produced"}
+
+    monkeypatch.setattr(fastapi_server, "discover_services_and_capabilities", fake_services)
+    monkeypatch.setattr(fastapi_server, "discover_projects", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(fastapi_server, "run_supervisor_tick", fake_supervisor_tick)
+    monkeypatch.setattr(
+        fastapi_server,
+        "start_supervisor_thread",
+        lambda _settings: calls.__setitem__("thread", calls["thread"] + 1) or object(),
+    )
+    settings = Settings(
+        home=tmp_path,
+        state_path=tmp_path / "state.sqlite",
+        notifications_path=tmp_path / "notifications.jsonl",
+        log_dir=tmp_path / "logs",
+        repo_root=tmp_path,
+    )
+
+    with TestClient(fastapi_server.create_app(settings)) as client:
+        assert client.get("/docs").status_code == 200
+
+    assert calls == {"sync_supervisor": 0, "thread": 1}
+
+
 def test_primary_fastapi_route_api_and_app_js_are_live(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def fake_services() -> tuple[list[Any], list[Any]]:
         return [], []
@@ -419,16 +451,30 @@ def test_primary_fastapi_route_api_and_app_js_are_live(monkeypatch: pytest.Monke
 
         anyio.run(seed)
         index = client.get("/")
+        route_classes = client.get("/api/job-classes")
         route = client.post("/api/route", json={"text": "fix this repo bug", "job_class": "repo_coding"})
 
     assert index.status_code == 200
-    assert '<script src="/static/app.js" defer></script>' in index.text
+    assert '<script src="/static/app.js?v=route-job-classes-v1" defer></script>' in index.text
     assert 'id="routeText"' in index.text
+    assert route_classes.status_code == 200
+    assert route_classes.json() == {"job_classes": ["repo_coding"]}
     assert route.status_code == 200
     payload = route.json()
     assert payload["job_class"] == "repo_coding"
     assert payload["decision"]["chosen_adapter"] == "ollama-http"
     assert payload["decision"]["candidates_considered"][0]["worker_id"] == "qwen@ollama-local"
+
+
+def test_route_form_uses_live_job_class_registry_and_renders_route_errors() -> None:
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "orchestrator" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (root / "orchestrator" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert '<option value="classification">' not in html
+    assert '<script src="/static/app.js?v=route-job-classes-v1" defer></script>' in html
+    assert 'getJson("/api/job-classes")' in app_js
+    assert 'error: payload.error' in app_js
 
 
 def test_primary_fastapi_status_api_uses_cached_quota_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

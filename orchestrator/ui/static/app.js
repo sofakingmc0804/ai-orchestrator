@@ -58,6 +58,7 @@
         budget_source: top.budget_source || null,
         quality_source: top.quality_source || null,
         reasoning: decision.reasoning || "",
+        error: payload.error || decision.error || null,
       },
       null,
       2,
@@ -69,7 +70,8 @@
     if (!list) return;
     const rows = payload.ranked_ladder || (payload.decision || {}).candidates_considered || [];
     if (!rows.length) {
-      list.innerHTML = `<li class="meter-item"><div><div class="meter-name">No route ladder available</div></div></li>`;
+      const detail = payload.error ? `<div class="meter-detail">${esc(payload.error)}</div>` : "";
+      list.innerHTML = `<li class="meter-item"><div><div class="meter-name">No route ladder available</div>${detail}</div></li>`;
       return;
     }
     list.innerHTML = rows.slice(0, 6).map((row, index) => {
@@ -116,6 +118,16 @@
         submit.disabled = false;
       }
     });
+  }
+
+  async function loadRouteJobClasses() {
+    const jobClass = document.getElementById("routeJobClass");
+    if (!jobClass) return;
+    const payload = await getJson("/api/job-classes");
+    const values = Array.isArray(payload.job_classes) ? payload.job_classes : [];
+    const selected = jobClass.value;
+    jobClass.innerHTML = `<option value="">Auto</option>${values.map((value) => `<option value="${esc(value)}">${esc(value)}</option>`).join("")}`;
+    if (values.includes(selected)) jobClass.value = selected;
   }
 
   function renderQuota(payload) {
@@ -228,6 +240,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     bindRoutePanel();
+    loadRouteJobClasses().catch(() => {});
     loadLivingDashboard();
     setInterval(loadLivingDashboard, 60000);
   });

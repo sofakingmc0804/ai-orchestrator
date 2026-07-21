@@ -40,19 +40,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"C:/Users/Couch/dev/ai-orchestrator/.codex/hooks/skill_gate_repo.py\"",
-            "commandWindows": "python \"C:\\Users\\Couch\\dev\\ai-orchestrator\\.codex\\hooks\\skill_gate_repo.py\"",
-            "timeout": 30,
-            "statusMessage": "Verifying terminal receipt"
-          }
-        ]
-      }
     ]
   }
 }

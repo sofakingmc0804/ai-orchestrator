@@ -1403,7 +1403,7 @@ def main(argv: list[str] | None = None) -> int:
             "worker_count": len(roster.get("workers", [])),
             "catalog_provider_count": len(catalog.get("providers", {})),
             "validation": validation,
-            "terminal_state": "built" if validation["ok"] else "blocked_after_repair_attempt",
+            "terminal_state": "built" if validation["ok"] else "continuation_required",
             "created_at": utc_now(),
         }
         final_receipt = RECEIPTS / f"worker-roster-v2-build-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"

@@ -109,11 +109,11 @@ function Ensure-OrchestratorRunning {
     }
   }
   if (-not $Listener) {
-    $Receipt = Write-OrchestratorStartReceipt -EventName "start_failed" -State "blocked_after_repair_attempt" -ProcessId 0 -Healthy $false -ErrorText "orchestrator failed to bind port $Port"
+    $Receipt = Write-OrchestratorStartReceipt -EventName "start_failed" -State "continuation_required" -ProcessId 0 -Healthy $false -ErrorText "orchestrator failed to bind port $Port"
     throw "orchestrator failed to bind port $Port receipt=$Receipt"
   }
   $EventName = if ($RestartEvent) { "watchdog_restart" } else { "started" }
-  $State = if ($Healthy) { "produced" } else { "blocked_after_repair_attempt" }
+  $State = if ($Healthy) { "produced" } else { "continuation_required" }
   $Receipt = Write-OrchestratorStartReceipt -EventName $EventName -State $State -ProcessId $Listener.OwningProcess -Healthy $Healthy
   Write-Output "$EventName pid=$($Listener.OwningProcess) healthy=$Healthy receipt=$Receipt"
   if (-not $Healthy) {
@@ -128,7 +128,7 @@ if ($Watchdog) {
       Ensure-OrchestratorRunning -RestartEvent:$true
       $DelaySeconds = $HealthyDelaySeconds
     } catch {
-      $Receipt = Write-OrchestratorStartReceipt -EventName "watchdog_error" -State "blocked_after_repair_attempt" -ProcessId 0 -Healthy $false -ErrorText "$_"
+      $Receipt = Write-OrchestratorStartReceipt -EventName "watchdog_error" -State "continuation_required" -ProcessId 0 -Healthy $false -ErrorText "$_"
       Write-Output "watchdog_error receipt=$Receipt error=$_"
       $DelaySeconds = [Math]::Min([Math]::Max($DelaySeconds * 2, 10), 300)
     }

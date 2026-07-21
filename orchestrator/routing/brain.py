@@ -45,7 +45,7 @@ async def route_brain(
     if not job_spec:
         known = await store.db.fetch("SELECT job_class FROM job_classes ORDER BY job_class")
         return {
-            "state": "blocked_after_repair_attempt",
+            "state": "continuation_required",
             "job_class": resolved_job_class,
             "classification": classification,
             "error": f"Job class not found: {resolved_job_class}",
@@ -73,7 +73,7 @@ async def route_brain(
     decision_payload = decision.model_dump(mode="json")
     decision_payload.pop("decided_at", None)
     return {
-        "state": "produced" if decision.chosen_adapter else "blocked_after_repair_attempt",
+        "state": "produced" if decision.chosen_adapter else "continuation_required",
         "route_id": intent.id,
         "job_class": resolved_job_class,
         "classification": classification,

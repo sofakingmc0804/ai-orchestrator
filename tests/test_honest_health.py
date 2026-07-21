@@ -110,6 +110,24 @@ def test_freshness_flags_stale_sources() -> None:
     assert len(stale["stale"]) == 2
 
 
+def test_static_business_snapshot_is_an_advisory_not_a_control_plane_fault() -> None:
+    now = datetime(2026, 6, 29, 18, 0, 0, tzinfo=timezone.utc)
+    freshness = _freshness_component(
+        {"business_snapshot": _iso(now - timedelta(hours=20)), "subscriptions": _iso(now - timedelta(hours=1))}, now
+    )
+
+    state, reasons = _aggregate_health(
+        "healthy",
+        {"fleet": _fleet_component([]), "data_freshness": freshness, "db_integrity": {"state": "ok"}, "work_proof": {"state": "ok"}},
+    )
+
+    assert freshness["state"] == "stale"
+    assert freshness["blocking_stale"] == []
+    assert freshness["advisories"][0]["source"] == "business_snapshot"
+    assert state == "healthy"
+    assert reasons == []
+
+
 def test_work_proof_stale_and_unknown() -> None:
     now = datetime(2026, 6, 29, 18, 0, 0, tzinfo=timezone.utc)
     stale = _work_proof_component({"latest_tick": {"completed_at": _iso(now - timedelta(hours=5))}}, now)
@@ -203,14 +221,18 @@ def test_hermes_probe_sets_reason_and_repair_on_every_unhealthy_branch(monkeypat
     async def _run() -> None:
         adapter = HermesAgentAdapter()
 
-        # In a clean env hermes is not installed: must be STOPPED with reason+repair,
+        # Simulate a missing Desktop Hermes runtime: must be STOPPED with reason+repair,
         # never the false HEALTHY the old fall-through allowed via a matching python.exe.
+        async def _missing(*_a, **_k):
+            return {"ok": False, "error": "hermes not found"}
+
+        monkeypatch.setattr(builtins_mod, "_run_bounded", _missing)
         info = await adapter.health_probe()
         assert info.health_state == HealthState.STOPPED
         assert info.detail and info.repair_action
 
         cases = [
-            ({"ok": True, "stdout": "Provider: nous\nCustom endpoint: x", "returncode": 0}, HealthState.HEALTHY, False),
+            ({"ok": True, "stdout": "Model: nous-hermes\nProvider: nous", "returncode": 0}, HealthState.HEALTHY, False),
             ({"ok": True, "stdout": "hello", "returncode": 0}, HealthState.DEGRADED, True),
             ({"ok": False, "error": "timed out", "timeout": True}, HealthState.DEGRADED, True),
             ({"ok": False, "error": "hermes not found"}, HealthState.STOPPED, True),

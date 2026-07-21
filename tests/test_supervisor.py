@@ -118,7 +118,7 @@ def test_supervisor_thread_stops_cleanly(tmp_path: Path) -> None:
 
 
 def test_supervisor_default_tick_interval_limits_background_churn() -> None:
-    assert SUPERVISOR_TICK_SECONDS >= 300.0
+    assert SUPERVISOR_TICK_SECONDS == 60.0
 
 
 def test_startup_scripts_use_supervised_fastapi_service() -> None:

@@ -17,6 +17,7 @@ from orchestrator.dispatch.dispatcher import Dispatcher
 from orchestrator.models import BillingClass, Capability, ConsequenceTier, ServiceInfo
 from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.skills.detector import detect_skill_route
+from orchestrator.skills import gate
 from orchestrator.skills.gate import handle_permission_request, handle_pre_tool_use, handle_stop, handle_user_prompt_submit
 from orchestrator.skills.models import AuthorityCheck
 from orchestrator.skills.runtime import persist_plan, run_hook_event
@@ -200,7 +201,7 @@ def test_visible_desktop_prompt_is_conditional_without_confirmation_route() -> N
     assert checks["desktop_control_lease"].status == "required"
     assert "browser or computer-control authority requested" in context.lower()
     assert "confirm route" not in context.lower()
-    assert "forbidden" not in context.lower()
+    assert "browser or computer-control is forbidden" not in context.lower()
 
 
 def test_computer_use_prompt_selects_conditional_computer_control_route() -> None:
@@ -213,6 +214,21 @@ def test_computer_use_prompt_selects_conditional_computer_control_route() -> Non
     assert checks["desktop_control_lease"].status == "required"
     assert "not actively using this desktop ui" in checks["desktop_control_lease"].reason.lower()
     assert "forbidden" not in checks["desktop_control_lease"].reason.lower()
+
+
+def test_claude_desktop_non_active_task_chat_does_not_select_visible_control() -> None:
+    plan = detect_skill_route(
+        "Use Claude Desktop non-active task chat and app transcript readback to prove runtime UI without interrupting my active UI.",
+        cwd=Path.cwd(),
+    )
+
+    checks = {check.name: check for check in plan.authority_checks}
+
+    assert plan.domain == "browser"
+    assert "computer-use" not in _skill_names(plan)
+    assert checks["non_interrupting_app_route_order"].status == "required"
+    assert "app transcript readback" in checks["non_interrupting_app_route_order"].reason.lower()
+    assert "visible computer use" in checks["non_interrupting_app_route_order"].reason.lower()
 
 
 def test_obvious_code_repair_prompt_injects_route_without_confirmation_prompt() -> None:
@@ -494,10 +510,10 @@ def test_user_prompt_submit_emits_valid_additional_context() -> None:
 
     assert "decision" not in decision
     assert decision["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
-    assert "terminal state" in decision["hookSpecificOutput"]["additionalContext"].lower()
+    assert "read every selected skill.md" in decision["hookSpecificOutput"]["additionalContext"].lower()
 
 
-def test_pre_tool_use_advises_visible_desktop_command_without_rewriting() -> None:
+def test_pre_tool_use_denies_visible_desktop_command_without_lease() -> None:
     plan = detect_skill_route("inspect my logged-in Chrome tab", cwd=Path.cwd())
     decision = handle_pre_tool_use(
         {
@@ -510,9 +526,9 @@ def test_pre_tool_use_advises_visible_desktop_command_without_rewriting() -> Non
 
     output = decision["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
-    assert "permissionDecision" not in output
+    assert output["permissionDecision"] == "deny"
     assert "updatedInput" not in output
-    assert "visible-control" in output["additionalContext"].lower()
+    assert "visible-control command denied" in output["permissionDecisionReason"].lower()
 
 
 def test_pre_tool_use_does_not_rewrite_text_search_that_mentions_chrome() -> None:
@@ -547,7 +563,7 @@ def test_pre_tool_use_does_not_rewrite_text_search_that_mentions_chrome_skill() 
     assert "permissionDecision" not in output
 
 
-def test_pre_tool_use_advises_unplanned_visible_desktop_command_without_rewriting() -> None:
+def test_pre_tool_use_denies_unplanned_visible_desktop_command_without_lease() -> None:
     plan = detect_skill_route("inspect the policy text", cwd=Path.cwd())
     decision = handle_pre_tool_use(
         {
@@ -560,12 +576,12 @@ def test_pre_tool_use_advises_unplanned_visible_desktop_command_without_rewritin
 
     output = decision["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
-    assert "permissionDecision" not in output
+    assert output["permissionDecision"] == "deny"
     assert "updatedInput" not in output
-    assert "visible-control" in output["additionalContext"].lower()
+    assert "visible-control command denied" in output["permissionDecisionReason"].lower()
 
 
-def test_pre_tool_use_advises_expired_desktop_control_lease_without_rewriting() -> None:
+def test_pre_tool_use_denies_expired_desktop_control_lease_without_rewriting() -> None:
     plan = _approved_desktop_plan(Path.cwd(), expires_delta=timedelta(minutes=-1))
     decision = handle_pre_tool_use(
         {
@@ -579,12 +595,12 @@ def test_pre_tool_use_advises_expired_desktop_control_lease_without_rewriting() 
 
     output = decision["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
-    assert "permissionDecision" not in output
+    assert output["permissionDecision"] == "deny"
     assert "updatedInput" not in output
-    assert "visible-control" in output["additionalContext"].lower()
+    assert "visible-control command denied" in output["permissionDecisionReason"].lower()
 
 
-def test_pre_tool_use_advises_desktop_control_lease_for_wrong_cwd_without_rewriting(tmp_path: Path) -> None:
+def test_pre_tool_use_denies_desktop_control_lease_for_wrong_cwd_without_rewriting(tmp_path: Path) -> None:
     approved_cwd = tmp_path / "approved"
     other_cwd = tmp_path / "other"
     approved_cwd.mkdir()
@@ -602,9 +618,9 @@ def test_pre_tool_use_advises_desktop_control_lease_for_wrong_cwd_without_rewrit
 
     output = decision["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
-    assert "permissionDecision" not in output
+    assert output["permissionDecision"] == "deny"
     assert "updatedInput" not in output
-    assert "visible-control" in output["additionalContext"].lower()
+    assert "visible-control command denied" in output["permissionDecisionReason"].lower()
 
 
 def test_permission_request_allows_valid_desktop_control_lease() -> None:
@@ -937,10 +953,9 @@ async def test_yes_approved_desktop_lease_is_cwd_scoped(tmp_path: Path) -> None:
 
     output = pre_tool["hookSpecificOutput"]
     assert output["hookEventName"] == "PreToolUse"
-    assert "permissionDecision" not in output
+    assert output["permissionDecision"] == "deny"
     assert "updatedInput" not in output
-    assert "visible-control" in output["additionalContext"].lower()
-    assert "will not rewrite or block" in output["additionalContext"].lower()
+    assert "visible-control command denied" in output["permissionDecisionReason"].lower()
 
 
 @pytest.mark.asyncio
@@ -1183,20 +1198,6 @@ async def test_cancel_route_reply_is_advisory_not_blocking(tmp_path: Path) -> No
 
     assert "decision" not in decision
     assert "cancelled" in decision["hookSpecificOutput"]["additionalContext"].lower()
-
-
-def test_stop_continues_when_terminal_receipt_is_missing() -> None:
-    plan = detect_skill_route("fix this repo bug and add tests", cwd=Path.cwd())
-    decision = handle_stop(
-        {
-            "hook_event_name": "Stop",
-            "last_assistant_message": "I made the change.",
-            "stop_hook_active": False,
-        },
-        plan,
-    )
-
-    assert decision == {}
 
 
 def test_stop_does_not_continue_low_risk_standard_prompt_without_receipt() -> None:

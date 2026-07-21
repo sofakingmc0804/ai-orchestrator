@@ -211,6 +211,53 @@ CREATE TABLE IF NOT EXISTS selections (
     grouped_with TEXT
 );
 
+CREATE TABLE IF NOT EXISTS delegated_work_items (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    raw_text TEXT NOT NULL,
+    consumer TEXT NOT NULL,
+    job_class TEXT NOT NULL,
+    project_root TEXT,
+    mode TEXT NOT NULL,
+    operation_task_json TEXT NOT NULL,
+    min_quality_score REAL NOT NULL,
+    state TEXT NOT NULL,
+    dispatch_id TEXT,
+    output_path TEXT,
+    receipt_path TEXT,
+    validation_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_delegated_work_items_state_created
+ON delegated_work_items(state, created_at);
+
+CREATE TABLE IF NOT EXISTS discovered_work_items (
+    id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    source_line INTEGER,
+    source_task_id TEXT,
+    project_root TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    source_status TEXT NOT NULL,
+    priority TEXT,
+    state TEXT NOT NULL,
+    delegated_work_id TEXT,
+    error TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_discovered_work_items_state_updated
+ON discovered_work_items(state, updated_at);
+
 -- Worker cards (from governor, added 2026-06-10 during consolidation)
 CREATE TABLE IF NOT EXISTS worker_cards (
     worker_id TEXT PRIMARY KEY,
@@ -356,6 +403,72 @@ CREATE TABLE IF NOT EXISTS skill_hook_receipts (
     terminal_state_requirement TEXT,
     reason TEXT,
     raw_event_json TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS contract_runs (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT,
+    session_id TEXT,
+    turn_id TEXT,
+    prompt TEXT,
+    axis_version TEXT,
+    possibility_space_count INTEGER,
+    terminal_state TEXT,
+    numeric_result_json TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS possibility_items (
+    id TEXT PRIMARY KEY,
+    contract_run_id TEXT REFERENCES contract_runs(id),
+    axis_tuple_json TEXT,
+    requirement_level TEXT,
+    proof_level_required TEXT,
+    equivalent_key TEXT,
+    satisfaction_action TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS equivalence_classes (
+    id TEXT PRIMARY KEY,
+    contract_run_id TEXT REFERENCES contract_runs(id),
+    representative_id TEXT,
+    member_ids_json TEXT,
+    member_authority_surfaces_json TEXT,
+    rule TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS evidence_items (
+    id TEXT PRIMARY KEY,
+    contract_run_id TEXT REFERENCES contract_runs(id),
+    evidence_class TEXT,
+    authority_surface TEXT,
+    subject TEXT,
+    verified INTEGER,
+    detail TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS counterexamples (
+    id TEXT PRIMARY KEY,
+    contract_run_id TEXT REFERENCES contract_runs(id),
+    axis_tuple_json TEXT,
+    why_relevant TEXT,
+    failed_predicate TEXT,
+    required_resolution TEXT,
+    consequence_if_ignored TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS contract_decisions (
+    id TEXT PRIMARY KEY,
+    contract_run_id TEXT REFERENCES contract_runs(id),
+    hook_event_name TEXT,
+    decision TEXT,
+    numeric_result_json TEXT,
     created_at TEXT
 );
 
