@@ -154,6 +154,7 @@ async def migrate_legacy_scheduled_tasks(
                 enabled=False,
                 task_id=scheduler_task_id,
                 review_state="needs_review",
+                workspace_id="unclassified_legacy",
             )
             imported += 1
             source_imported += 1

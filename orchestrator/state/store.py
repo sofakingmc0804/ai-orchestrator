@@ -17,6 +17,7 @@ from orchestrator.gmail_response_agent.store import GMAIL_RESPONSE_AGENT_SCHEMA
 from orchestrator.models import Capability, Intent, Notification, RoutingDecision, Selection, ServiceInfo
 from orchestrator.state.migration_runner import MigrationRunner, split_sql_statements
 from orchestrator.usage.tokens import estimate_tokens
+from orchestrator.workspace_runtime import DEFAULT_MODE_PACKS, WORKSPACE_ROOTS, WorkspacePolicyError
 
 
 def iso(dt: datetime | None = None) -> str:
@@ -73,6 +74,7 @@ class StateStore:
             try:
                 await db.execute("BEGIN IMMEDIATE")
                 await self._ensure_scheduler_task_columns(db)
+                await self._ensure_resource_event_columns(db)
                 await self._ensure_service_columns(db)
                 await self._ensure_worker_card_columns(db)
                 await self._ensure_receipt_columns(db)
@@ -228,6 +230,7 @@ class StateStore:
         rows = await (await db.execute("PRAGMA table_info(scheduler_tasks)")).fetchall()
         columns = {str(row[1]) for row in rows}
         additions = {
+            "workspace_id": "ALTER TABLE scheduler_tasks ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'unclassified_legacy'",
             "review_state": "ALTER TABLE scheduler_tasks ADD COLUMN review_state TEXT DEFAULT 'not_required'",
             "reviewed_at": "ALTER TABLE scheduler_tasks ADD COLUMN reviewed_at TEXT",
             "reviewed_by": "ALTER TABLE scheduler_tasks ADD COLUMN reviewed_by TEXT",
@@ -236,6 +239,15 @@ class StateStore:
         for column, statement in additions.items():
             if column not in columns:
                 await db.execute(statement)
+
+    async def _ensure_resource_event_columns(self, db: aiosqlite.Connection) -> None:
+        """Bring metering receipts forward without rewriting historic events."""
+        rows = await (await db.execute("PRAGMA table_info(resource_events)")).fetchall()
+        columns = {str(row[1]) for row in rows}
+        if "measurement_source" not in columns:
+            await db.execute(
+                "ALTER TABLE resource_events ADD COLUMN measurement_source TEXT NOT NULL DEFAULT 'reported_runtime'"
+            )
 
     async def _ensure_budget_lane_tables(self, db: aiosqlite.Connection) -> None:
         await db.execute(
@@ -2122,15 +2134,17 @@ class StateStore:
         task_id: str | None = None,
         next_run_at: str | None = None,
         review_state: str = "not_required",
+        workspace_id: str = "unclassified_legacy",
     ) -> str:
         scheduler_task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
         now = iso()
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
-                INSERT INTO scheduler_tasks(id, name, task_type, target_ref, payload, schedule_kind, interval_seconds, enabled, review_state, next_run_at, last_run_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                INSERT INTO scheduler_tasks(id, workspace_id, name, task_type, target_ref, payload, schedule_kind, interval_seconds, enabled, review_state, next_run_at, last_run_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                  workspace_id=excluded.workspace_id,
                   name=excluded.name,
                   task_type=excluded.task_type,
                   target_ref=excluded.target_ref,
@@ -2147,6 +2161,7 @@ class StateStore:
                 """,
                 (
                     scheduler_task_id,
+                    workspace_id,
                     name,
                     task_type,
                     target_ref,
@@ -2160,7 +2175,7 @@ class StateStore:
                     now,
                 ),
             )
-            await self._audit_in_db(db, "scheduler", "scheduler_task_upserted", scheduler_task_id, {"name": name, "task_type": task_type, "target_ref": target_ref, "enabled": enabled})
+            await self._audit_in_db(db, "scheduler", "scheduler_task_upserted", scheduler_task_id, {"workspace_id": workspace_id, "name": name, "task_type": task_type, "target_ref": target_ref, "enabled": enabled})
             await db.commit()
         return scheduler_task_id
 
@@ -2277,6 +2292,7 @@ class StateStore:
                 interval_seconds=0,
                 enabled=bool(order.get("enabled")),
                 task_id=f"task_{order_id}",
+                workspace_id="unclassified_legacy",
             )
             created += 1
         result = {"standing_orders": len(orders), "created": created, "existing": len(existing)}
@@ -2316,3 +2332,893 @@ class StateStore:
             db.row_factory = aiosqlite.Row
             rows = await (await db.execute("SELECT * FROM audit_log ORDER BY ts DESC LIMIT ?", (limit,))).fetchall()
             return [dict(r) for r in rows]
+
+    @staticmethod
+    def _decode_json(value: object, fallback: Any) -> Any:
+        if value is None:
+            return fallback
+        try:
+            return json.loads(str(value))
+        except json.JSONDecodeError:
+            return fallback
+
+    @classmethod
+    def _decode_workspace_row(cls, row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
+        item = dict(row)
+        for column, output, fallback in (
+            ("policy_json", "policy", {}),
+            ("payload_json", "payload", {}),
+            ("receipt_json", "receipt", {}),
+            ("allowed_workspaces_json", "allowed_workspaces", []),
+            ("preloaded_skills_json", "preloaded_skills", []),
+            ("model_requirements_json", "model_requirements", {}),
+            ("budget_json", "budget", {}),
+            ("completion_test_json", "completion_test", {}),
+            ("frozen_mode_pack_json", "frozen_mode_pack", {}),
+            ("connector_policy_json", "connector_policy", {}),
+            ("delivery_policy_json", "delivery_policy", {}),
+            ("skill_checks_json", "skill_checks", {}),
+            ("roles_json", "roles", []),
+            ("evidence_json", "evidence", {}),
+            ("tools_json", "tools", []),
+            ("episode_ids_json", "episode_ids", []),
+            ("replay_json", "replay", {}),
+            ("rollback_json", "rollback", {}),
+            ("quota_state_json", "quota_state", {}),
+        ):
+            if column in item:
+                item[output] = cls._decode_json(item.get(column), fallback)
+        return item
+
+    async def _require_workspace_in_db(self, db: aiosqlite.Connection, workspace_id: str) -> dict[str, Any]:
+        db.row_factory = aiosqlite.Row
+        row = await (await db.execute("SELECT * FROM workspaces WHERE id = ? AND state = 'active'", (workspace_id,))).fetchone()
+        if row is None:
+            raise WorkspacePolicyError(f"workspace is not active: {workspace_id}")
+        return self._decode_workspace_row(row)
+
+    async def bootstrap_workspace_roots(self) -> list[dict[str, Any]]:
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            for workspace in WORKSPACE_ROOTS:
+                await db.execute(
+                    """
+                    INSERT INTO workspaces(id, label, classification, policy_json, state, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'active', ?, ?)
+                    ON CONFLICT(id) DO NOTHING
+                    """,
+                    (
+                        workspace["id"],
+                        workspace["label"],
+                        workspace["classification"],
+                        json.dumps(workspace["policy"], sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+            await self._audit_in_db(db, "workspace", "workspace_roots_bootstrapped", "workspaces", {"ids": [row["id"] for row in WORKSPACE_ROOTS]})
+            await db.commit()
+        return await self.list_workspaces()
+
+    async def list_workspaces(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("SELECT * FROM workspaces ORDER BY id")).fetchall()
+            return [self._decode_workspace_row(row) for row in rows]
+
+    async def create_work_packet(
+        self,
+        *,
+        workspace_id: str,
+        intent: str,
+        payload: dict[str, Any],
+        mode_pack_id: str | None,
+        consumer: str,
+        source_workspace_id: str | None = None,
+        state: str = "queued",
+    ) -> dict[str, Any]:
+        packet_id = f"wp_{uuid.uuid4().hex[:16]}"
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            await self._require_workspace_in_db(db, workspace_id)
+            if source_workspace_id:
+                await self._require_workspace_in_db(db, source_workspace_id)
+            await db.execute(
+                """
+                INSERT INTO work_packets(id, workspace_id, source_workspace_id, intent, payload_json, mode_pack_id, consumer, state, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (packet_id, workspace_id, source_workspace_id, intent, json.dumps(payload, sort_keys=True), mode_pack_id, consumer, state, now),
+            )
+            await self._audit_in_db(
+                db,
+                "workspace",
+                "work_packet_created",
+                packet_id,
+                {"workspace_id": workspace_id, "source_workspace_id": source_workspace_id, "mode_pack_id": mode_pack_id, "consumer": consumer},
+            )
+            await db.commit()
+        packet = await self.get_work_packet(packet_id)
+        assert packet is not None
+        return packet
+
+    async def get_work_packet(self, packet_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM work_packets WHERE id = ?", (packet_id,))).fetchone()
+            return self._decode_workspace_row(row) if row is not None else None
+
+    async def list_work_packets(self, workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute("SELECT * FROM work_packets WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?", (workspace_id, limit))
+            ).fetchall()
+            return [self._decode_workspace_row(row) for row in rows]
+
+    async def propose_transfer(self, *, work_packet_id: str, target_workspace_id: str, summary: str) -> dict[str, Any]:
+        proposal_id = f"xfer_{uuid.uuid4().hex[:16]}"
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            packet_row = await (await db.execute("SELECT * FROM work_packets WHERE id = ?", (work_packet_id,))).fetchone()
+            if packet_row is None:
+                raise WorkspacePolicyError(f"work packet not found: {work_packet_id}")
+            packet = self._decode_workspace_row(packet_row)
+            source_workspace_id = str(packet["workspace_id"])
+            await self._require_workspace_in_db(db, target_workspace_id)
+            if (source_workspace_id, target_workspace_id) != ("personal", "example"):
+                raise WorkspacePolicyError("only Personal-to-Example transfer proposals are permitted by this foundation")
+            await db.execute(
+                """
+                INSERT INTO transfer_proposals(id, source_workspace_id, target_workspace_id, source_work_packet_id, summary, state, created_at)
+                VALUES (?, ?, ?, ?, ?, 'proposed', ?)
+                """,
+                (proposal_id, source_workspace_id, target_workspace_id, work_packet_id, summary, now),
+            )
+            await self._audit_in_db(
+                db,
+                "workspace",
+                "transfer_proposed",
+                proposal_id,
+                {"source_workspace_id": source_workspace_id, "target_workspace_id": target_workspace_id, "source_work_packet_id": work_packet_id},
+            )
+            await db.commit()
+        proposal = await self.get_transfer_proposal(proposal_id)
+        assert proposal is not None
+        return proposal
+
+    async def get_transfer_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM transfer_proposals WHERE id = ?", (proposal_id,))).fetchone()
+            return self._decode_workspace_row(row) if row is not None else None
+
+    async def list_transfer_proposals(self, state: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        query = "SELECT * FROM transfer_proposals"
+        params: tuple[Any, ...] = ()
+        if state:
+            query += " WHERE state = ?"
+            params = (state,)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params = (*params, limit)
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(query, params)).fetchall()
+            return [self._decode_workspace_row(row) for row in rows]
+
+    async def decide_transfer(self, proposal_id: str, *, approve: bool, decided_by: str) -> dict[str, Any]:
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            proposal_row = await (await db.execute("SELECT * FROM transfer_proposals WHERE id = ?", (proposal_id,))).fetchone()
+            if proposal_row is None:
+                raise WorkspacePolicyError(f"transfer proposal not found: {proposal_id}")
+            proposal = self._decode_workspace_row(proposal_row)
+            if proposal["state"] != "proposed":
+                raise WorkspacePolicyError(f"transfer proposal is already decided: {proposal_id}")
+            if not approve:
+                receipt = {"decision": "rejected", "target_written": False, "decided_by": decided_by, "decided_at": now}
+                await db.execute(
+                    "UPDATE transfer_proposals SET state = 'rejected', decided_by = ?, decided_at = ?, receipt_json = ? WHERE id = ?",
+                    (decided_by, now, json.dumps(receipt, sort_keys=True), proposal_id),
+                )
+                await self._audit_in_db(db, "owner", "transfer_rejected", proposal_id, receipt)
+                await db.commit()
+            else:
+                packet_row = await (
+                    await db.execute("SELECT * FROM work_packets WHERE id = ?", (proposal["source_work_packet_id"],))
+                ).fetchone()
+                if packet_row is None:
+                    raise WorkspacePolicyError("source work packet disappeared before transfer approval")
+                source = self._decode_workspace_row(packet_row)
+                target_packet_id = f"wp_{uuid.uuid4().hex[:16]}"
+                await db.execute(
+                    """
+                    INSERT INTO work_packets(id, workspace_id, source_workspace_id, intent, payload_json, mode_pack_id, consumer, state, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)
+                    """,
+                    (
+                        target_packet_id,
+                        proposal["target_workspace_id"],
+                        proposal["source_workspace_id"],
+                        source["intent"],
+                        json.dumps(source["payload"], sort_keys=True),
+                        source.get("mode_pack_id"),
+                        source["consumer"],
+                        now,
+                    ),
+                )
+                receipt = {
+                    "decision": "approved",
+                    "target_written": True,
+                    "target_work_packet_id": target_packet_id,
+                    "decided_by": decided_by,
+                    "decided_at": now,
+                }
+                await db.execute(
+                    """
+                    UPDATE transfer_proposals
+                    SET state = 'approved', decided_by = ?, decided_at = ?, target_work_packet_id = ?, receipt_json = ?
+                    WHERE id = ?
+                    """,
+                    (decided_by, now, target_packet_id, json.dumps(receipt, sort_keys=True), proposal_id),
+                )
+                await self._audit_in_db(db, "owner", "transfer_approved", proposal_id, receipt)
+                await db.commit()
+        result = await self.get_transfer_proposal(proposal_id)
+        assert result is not None
+        return result
+
+    async def seed_default_mode_packs(self) -> list[dict[str, Any]]:
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            for pack in DEFAULT_MODE_PACKS:
+                await db.execute(
+                    """
+                    INSERT INTO mode_packs(
+                        id, version, name, allowed_workspaces_json, source_authority, preloaded_skills_json,
+                        model_requirements_json, evaluator, budget_json, completion_test_json, state, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                    ON CONFLICT(id) DO NOTHING
+                    """,
+                    (
+                        pack["id"],
+                        pack["version"],
+                        pack["name"],
+                        json.dumps(pack["allowed_workspaces"], sort_keys=True),
+                        pack["source_authority"],
+                        json.dumps(pack["preloaded_skills"], sort_keys=True),
+                        json.dumps(pack["model_requirements"], sort_keys=True),
+                        pack["evaluator"],
+                        json.dumps(pack["budget"], sort_keys=True),
+                        json.dumps(pack["completion_test"], sort_keys=True),
+                        now,
+                        now,
+                    ),
+                )
+            await self._audit_in_db(db, "workspace", "mode_packs_seeded", "mode_packs", {"ids": [pack["id"] for pack in DEFAULT_MODE_PACKS]})
+            await db.commit()
+        return await self.list_mode_packs()
+
+    async def list_mode_packs(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute("SELECT * FROM mode_packs WHERE state = 'active' ORDER BY id")).fetchall()
+            return [self._decode_workspace_row(row) for row in rows]
+
+    async def start_workspace_session(
+        self,
+        *,
+        workspace_id: str,
+        mode_pack_id: str,
+        skill_capability_checks: dict[str, bool],
+        connector_policy: dict[str, Any] | None = None,
+        delivery_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        session_id = f"ws_{uuid.uuid4().hex[:16]}"
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            await self._require_workspace_in_db(db, workspace_id)
+            db.row_factory = aiosqlite.Row
+            pack_row = await (await db.execute("SELECT * FROM mode_packs WHERE id = ? AND state = 'active'", (mode_pack_id,))).fetchone()
+            if pack_row is None:
+                raise WorkspacePolicyError(f"mode pack not found: {mode_pack_id}")
+            pack = self._decode_workspace_row(pack_row)
+            if workspace_id not in pack["allowed_workspaces"]:
+                raise WorkspacePolicyError(f"mode pack {mode_pack_id} is not allowed in workspace {workspace_id}")
+            failed = [skill for skill in pack["preloaded_skills"] if skill_capability_checks.get(skill) is not True]
+            if failed:
+                raise WorkspacePolicyError(f"mode pack capability check failed: {', '.join(failed)}")
+            frozen = {
+                "id": pack["id"],
+                "version": pack["version"],
+                "name": pack["name"],
+                "source_authority": pack["source_authority"],
+                "preloaded_skills": pack["preloaded_skills"],
+                "model_requirements": pack["model_requirements"],
+                "evaluator": pack["evaluator"],
+                "budget": pack["budget"],
+                "completion_test": pack["completion_test"],
+            }
+            await db.execute(
+                """
+                INSERT INTO workspace_sessions(
+                    id, workspace_id, mode_pack_id, frozen_mode_pack_json, connector_policy_json,
+                    delivery_policy_json, skill_checks_json, state, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                """,
+                (
+                    session_id,
+                    workspace_id,
+                    mode_pack_id,
+                    json.dumps(frozen, sort_keys=True),
+                    json.dumps(connector_policy or {"workspace": workspace_id}, sort_keys=True),
+                    json.dumps(delivery_policy or {"consumer_required": True}, sort_keys=True),
+                    json.dumps(skill_capability_checks, sort_keys=True),
+                    now,
+                ),
+            )
+            await self._audit_in_db(db, "workspace", "workspace_session_started", session_id, {"workspace_id": workspace_id, "mode_pack_id": mode_pack_id})
+            await db.commit()
+        return await self.get_workspace_session(session_id)
+
+    async def get_workspace_session(self, session_id: str) -> dict[str, Any]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM workspace_sessions WHERE id = ?", (session_id,))).fetchone()
+            if row is None:
+                raise WorkspacePolicyError(f"workspace session not found: {session_id}")
+            return self._decode_workspace_row(row)
+
+    async def record_resource_event(
+        self,
+        *,
+        workspace_id: str,
+        work_packet_id: str | None,
+        provider: str,
+        model: str,
+        route: str,
+        tokens_in: int,
+        tokens_out: int,
+        estimated_cost_usd: float | None,
+        actual_cost_usd: float | None,
+        quota_source: str,
+        context_pressure: float | None,
+        dispatch_id: str | None = None,
+        quota_state: dict[str, Any] | None = None,
+        measurement_source: str = "reported_runtime",
+    ) -> dict[str, Any]:
+        event_id = f"res_{uuid.uuid4().hex[:16]}"
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            await self._require_workspace_in_db(db, workspace_id)
+            if work_packet_id:
+                db.row_factory = aiosqlite.Row
+                packet_row = await (await db.execute("SELECT workspace_id FROM work_packets WHERE id = ?", (work_packet_id,))).fetchone()
+                if packet_row is None or str(packet_row["workspace_id"]) != workspace_id:
+                    raise WorkspacePolicyError("resource event work packet must belong to its workspace")
+            await db.execute(
+                """
+                INSERT INTO resource_events(
+                    id, workspace_id, work_packet_id, dispatch_id, provider, model, route, tokens_in,
+                    tokens_out, tokens_total, estimated_cost_usd, actual_cost_usd, quota_source,
+                    measurement_source, quota_state_json, context_pressure, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    workspace_id,
+                    work_packet_id,
+                    dispatch_id,
+                    provider,
+                    model,
+                    route,
+                    tokens_in,
+                    tokens_out,
+                    tokens_in + tokens_out,
+                    estimated_cost_usd,
+                    actual_cost_usd,
+                    quota_source,
+                    measurement_source or "unknown",
+                    json.dumps(quota_state or {}, sort_keys=True),
+                    context_pressure,
+                    now,
+                ),
+            )
+            await self._audit_in_db(db, "meter", "resource_event_recorded", event_id, {"workspace_id": workspace_id, "provider": provider, "model": model, "quota_source": quota_source, "measurement_source": measurement_source})
+            await db.commit()
+        events = await self.list_resource_events(limit=1, event_id=event_id)
+        return events[0]
+
+    async def correct_resource_event(
+        self,
+        event_id: str,
+        *,
+        provider: str,
+        model: str,
+        quota_source: str,
+        measurement_source: str,
+        estimated_cost_usd: float | None,
+        actual_cost_usd: float | None,
+        quota_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Correct attribution only from a stronger runtime receipt, with an audit trail."""
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM resource_events WHERE id = ?", (event_id,))).fetchone()
+            if row is None:
+                raise WorkspacePolicyError(f"resource event not found: {event_id}")
+            previous = dict(row)
+            await db.execute(
+                """
+                UPDATE resource_events
+                SET provider = ?, model = ?, quota_source = ?, measurement_source = ?,
+                    estimated_cost_usd = ?, actual_cost_usd = ?, quota_state_json = ?
+                WHERE id = ?
+                """,
+                (
+                    provider or "unknown",
+                    model or "unknown",
+                    quota_source or "unknown",
+                    measurement_source or "unknown",
+                    estimated_cost_usd,
+                    actual_cost_usd,
+                    json.dumps(quota_state or {}, sort_keys=True),
+                    event_id,
+                ),
+            )
+            await self._audit_in_db(
+                db,
+                "meter",
+                "resource_event_corrected",
+                event_id,
+                {
+                    "workspace_id": previous["workspace_id"],
+                    "previous_provider": previous["provider"],
+                    "previous_model": previous["model"],
+                    "provider": provider,
+                    "model": model,
+                    "quota_source": quota_source,
+                    "measurement_source": measurement_source,
+                    "estimated_cost_usd": estimated_cost_usd,
+                    "actual_cost_usd": actual_cost_usd,
+                    "quota_state": quota_state or {},
+                },
+            )
+            await db.commit()
+        events = await self.list_resource_events(limit=1, event_id=event_id)
+        return events[0]
+
+    async def list_resource_events(
+        self,
+        limit: int = 200,
+        event_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM resource_events"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if event_id:
+            clauses.append("id = ?")
+            params.append(event_id)
+        if workspace_id:
+            clauses.append("workspace_id = ?")
+            params.append(workspace_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(query, tuple(params))).fetchall()
+            return [self._decode_workspace_row(row) for row in rows]
+
+    async def workspace_meter(self, workspace_id: str) -> dict[str, Any]:
+        """Aggregate only the selected workspace's resource events for Hermes.
+
+        The meter deliberately excludes work-packet text, payloads, memories and
+        transfer content.  It is a resource readout, not a second task surface.
+        """
+        async with aiosqlite.connect(self.path) as db:
+            await self._require_workspace_in_db(db, workspace_id)
+        events = await self.list_resource_events(limit=1000, workspace_id=workspace_id)
+        by_model: dict[tuple[str, str], dict[str, Any]] = {}
+        for event in events:
+            key = (str(event.get("provider") or "unknown"), str(event.get("model") or "unknown"))
+            row = by_model.setdefault(
+                key,
+                {
+                    "provider": key[0],
+                    "model": key[1],
+                    "events": 0,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "tokens_total": 0,
+                    "estimated_cost_usd": 0.0,
+                    "actual_cost_usd": 0.0,
+                    "estimated_cost_unknown_events": 0,
+                    "actual_cost_unknown_events": 0,
+                    "quota_sources": set(),
+                    "measurement_sources": set(),
+                    "context_pressure_max": 0.0,
+                    "last_event_at": None,
+                },
+            )
+            row["events"] += 1
+            row["tokens_in"] += int(event.get("tokens_in") or 0)
+            row["tokens_out"] += int(event.get("tokens_out") or 0)
+            row["tokens_total"] += int(event.get("tokens_total") or 0)
+            if event.get("estimated_cost_usd") is None:
+                row["estimated_cost_unknown_events"] += 1
+            else:
+                row["estimated_cost_usd"] += float(event["estimated_cost_usd"])
+            if event.get("actual_cost_usd") is None:
+                row["actual_cost_unknown_events"] += 1
+            else:
+                row["actual_cost_usd"] += float(event["actual_cost_usd"])
+            row["quota_sources"].add(str(event.get("quota_source") or "unknown"))
+            row["measurement_sources"].add(str(event.get("measurement_source") or "unknown"))
+            row["context_pressure_max"] = max(row["context_pressure_max"], float(event.get("context_pressure") or 0.0))
+            row["last_event_at"] = max(str(row["last_event_at"] or ""), str(event.get("created_at") or "")) or None
+
+        provider_models = []
+        for row in by_model.values():
+            row["estimated_cost_usd"] = None if row["estimated_cost_unknown_events"] else round(row["estimated_cost_usd"], 6)
+            row["actual_cost_usd"] = None if row["actual_cost_unknown_events"] else round(row["actual_cost_usd"], 6)
+            row["quota_sources"] = sorted(row["quota_sources"])
+            row["measurement_sources"] = sorted(row["measurement_sources"])
+            provider_models.append(row)
+        provider_models.sort(key=lambda item: (-int(item["tokens_total"]), str(item["provider"]), str(item["model"])))
+        return {
+            "workspace_id": workspace_id,
+            "events": sum(int(row["events"]) for row in provider_models),
+            "tokens_total": sum(int(row["tokens_total"]) for row in provider_models),
+            "estimated_cost_usd": None if any(row["estimated_cost_usd"] is None for row in provider_models) else round(sum(float(row["estimated_cost_usd"]) for row in provider_models), 6),
+            "actual_cost_usd": None if any(row["actual_cost_usd"] is None for row in provider_models) else round(sum(float(row["actual_cost_usd"]) for row in provider_models), 6),
+            "quota_sources": sorted({source for row in provider_models for source in row["quota_sources"]}) or ["unknown"],
+            "provider_models": provider_models,
+        }
+
+    async def record_evaluation_episode(
+        self,
+        *,
+        workspace_id: str,
+        work_packet_id: str,
+        mode_pack_id: str,
+        selected_model: str,
+        tools: list[str],
+        evidence: dict[str, Any],
+        reviewer_outcome: str,
+        delivery_receipt: str,
+        cost_usd: float | None,
+        failure_class: str | None,
+        score: float | None,
+        held_out: bool,
+    ) -> dict[str, Any]:
+        episode_id = f"eval_{uuid.uuid4().hex[:16]}"
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            await self._require_workspace_in_db(db, workspace_id)
+            db.row_factory = aiosqlite.Row
+            packet_row = await (await db.execute("SELECT workspace_id FROM work_packets WHERE id = ?", (work_packet_id,))).fetchone()
+            if packet_row is None or str(packet_row["workspace_id"]) != workspace_id:
+                raise WorkspacePolicyError("evaluation episode work packet must belong to its workspace")
+            pack_row = await (await db.execute("SELECT id FROM mode_packs WHERE id = ?", (mode_pack_id,))).fetchone()
+            if pack_row is None:
+                raise WorkspacePolicyError(f"mode pack not found: {mode_pack_id}")
+            await db.execute(
+                """
+                INSERT INTO evaluation_episodes(
+                    id, workspace_id, work_packet_id, mode_pack_id, selected_model, tools_json, evidence_json,
+                    reviewer_outcome, delivery_receipt, cost_usd, failure_class, score, held_out, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    episode_id,
+                    workspace_id,
+                    work_packet_id,
+                    mode_pack_id,
+                    selected_model,
+                    json.dumps(tools, sort_keys=True),
+                    json.dumps(evidence, sort_keys=True),
+                    reviewer_outcome,
+                    delivery_receipt,
+                    cost_usd,
+                    failure_class,
+                    score,
+                    int(held_out),
+                    now,
+                ),
+            )
+            await self._audit_in_db(db, "evaluation", "evaluation_episode_recorded", episode_id, {"workspace_id": workspace_id, "mode_pack_id": mode_pack_id, "held_out": held_out, "score": score})
+            await db.commit()
+        episodes = await self.list_evaluation_episodes(limit=1, episode_id=episode_id)
+        return episodes[0]
+
+    async def list_evaluation_episodes(
+        self,
+        limit: int = 200,
+        episode_id: str | None = None,
+        include_superseded: bool = False,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM evaluation_episodes"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if episode_id:
+            clauses.append("id = ?")
+            params.append(episode_id)
+        if not include_superseded:
+            clauses.append("reviewer_outcome != 'superseded'")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (await db.execute(query, tuple(params))).fetchall()
+            return [self._decode_workspace_row(row) for row in rows]
+
+    async def supersede_nonruntime_evaluation_fixtures(self, run_id: str) -> dict[str, int]:
+        """Retire simulated proof fixtures before recording runtime evaluation evidence."""
+        superseded_episode_ids: list[str] = []
+        superseded_policy_ids: list[str] = []
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            episode_rows = await (await db.execute("SELECT id, evidence_json FROM evaluation_episodes")).fetchall()
+            for row in episode_rows:
+                try:
+                    evidence = json.loads(str(row["evidence_json"] or "{}"))
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(evidence, dict) and evidence.get("run_id") == run_id and evidence.get("review") == "held-out local replay":
+                    superseded_episode_ids.append(str(row["id"]))
+            for episode_id in superseded_episode_ids:
+                await db.execute(
+                    "UPDATE evaluation_episodes SET reviewer_outcome = 'superseded', failure_class = 'nonruntime_fixture_retired' WHERE id = ?",
+                    (episode_id,),
+                )
+
+            if superseded_episode_ids:
+                candidate_rows = await (await db.execute("SELECT id, episode_ids_json FROM policy_candidates")).fetchall()
+                retired_set = set(superseded_episode_ids)
+                for row in candidate_rows:
+                    try:
+                        episode_ids = set(json.loads(str(row["episode_ids_json"] or "[]")))
+                    except json.JSONDecodeError:
+                        continue
+                    if episode_ids & retired_set:
+                        policy_id = str(row["id"])
+                        await db.execute(
+                            "UPDATE policy_candidates SET state = 'superseded', updated_at = ? WHERE id = ?",
+                            (iso(), policy_id),
+                        )
+                        superseded_policy_ids.append(policy_id)
+            if superseded_episode_ids or superseded_policy_ids:
+                await self._audit_in_db(
+                    db,
+                    "evaluation",
+                    "nonruntime_evaluation_fixtures_superseded",
+                    run_id,
+                    {"episode_ids": superseded_episode_ids, "policy_candidate_ids": superseded_policy_ids},
+                )
+            await db.commit()
+        return {"episodes": len(superseded_episode_ids), "policy_candidates": len(superseded_policy_ids)}
+
+    async def create_policy_candidate(
+        self,
+        *,
+        workspace_id: str,
+        policy: dict[str, Any],
+        baseline_score: float | None,
+        episode_ids: list[str],
+        sandbox_only: bool,
+    ) -> dict[str, Any]:
+        candidate_id = f"pol_{uuid.uuid4().hex[:16]}"
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            await self._require_workspace_in_db(db, workspace_id)
+            if not episode_ids:
+                raise WorkspacePolicyError("policy candidate requires evaluation episodes")
+            await db.execute(
+                """
+                INSERT INTO policy_candidates(
+                    id, workspace_id, policy_json, baseline_score, episode_ids_json, sandbox_only,
+                    requires_approval, state, rollback_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    workspace_id,
+                    json.dumps(policy, sort_keys=True),
+                    baseline_score,
+                    json.dumps(episode_ids, sort_keys=True),
+                    int(sandbox_only),
+                    int(not sandbox_only),
+                    json.dumps({"action": "restore_prior_policy"}, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+            await self._audit_in_db(db, "evaluation", "policy_candidate_created", candidate_id, {"workspace_id": workspace_id, "sandbox_only": sandbox_only, "episode_count": len(episode_ids)})
+            await db.commit()
+        candidate = await self.get_policy_candidate(candidate_id)
+        assert candidate is not None
+        return candidate
+
+    async def get_policy_candidate(self, candidate_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM policy_candidates WHERE id = ?", (candidate_id,))).fetchone()
+            return self._decode_workspace_row(row) if row is not None else None
+
+    async def replay_policy_candidate(
+        self,
+        candidate_id: str,
+        *,
+        candidate_score: float,
+        held_out_episode_ids: list[str],
+        replay_evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            candidate_row = await (await db.execute("SELECT * FROM policy_candidates WHERE id = ?", (candidate_id,))).fetchone()
+            if candidate_row is None:
+                raise WorkspacePolicyError(f"policy candidate not found: {candidate_id}")
+            candidate = self._decode_workspace_row(candidate_row)
+            if candidate["state"] != "candidate":
+                raise WorkspacePolicyError(f"policy candidate is already replayed: {candidate_id}")
+            if not held_out_episode_ids:
+                raise WorkspacePolicyError("policy candidate replay requires held-out episodes")
+            placeholders = ",".join("?" for _ in held_out_episode_ids)
+            held_out_rows = await (
+                await db.execute(
+                    f"SELECT id FROM evaluation_episodes WHERE id IN ({placeholders}) AND held_out = 1",
+                    tuple(held_out_episode_ids),
+                )
+            ).fetchall()
+            if {str(row["id"]) for row in held_out_rows} != set(held_out_episode_ids):
+                raise WorkspacePolicyError("policy candidate replay requires held-out evaluation evidence")
+            baseline_score = candidate.get("baseline_score")
+            if replay_evidence is not None:
+                try:
+                    evidence_candidate_score = float(replay_evidence["candidate_mean"])
+                    evidence_baseline_score = float(replay_evidence["baseline_mean"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise WorkspacePolicyError("policy candidate replay evidence must include baseline_mean and candidate_mean") from exc
+                if abs(evidence_candidate_score - candidate_score) > 0.000001:
+                    raise WorkspacePolicyError("policy candidate score must match held-out replay evidence")
+                if baseline_score is not None and abs(evidence_baseline_score - float(baseline_score)) > 0.000001:
+                    raise WorkspacePolicyError("policy candidate baseline must match held-out replay evidence")
+            better = baseline_score is not None and candidate_score > float(baseline_score)
+            if better and bool(candidate.get("sandbox_only")):
+                state, decision = "promoted_sandbox", "promote"
+            elif better:
+                state, decision = "approval_required", "approval_required"
+            else:
+                state, decision = "rejected", "reject"
+            replay = {
+                "held_out_episode_ids": held_out_episode_ids,
+                "baseline_score": baseline_score,
+                "candidate_score": candidate_score,
+                "decision": decision,
+                "replayed_at": now,
+            }
+            if replay_evidence is not None:
+                replay["suite_id"] = str(replay_evidence.get("suite_id") or "unknown")
+                replay["sparring"] = replay_evidence
+            await db.execute(
+                "UPDATE policy_candidates SET state = ?, replay_json = ?, updated_at = ? WHERE id = ?",
+                (state, json.dumps(replay, sort_keys=True), now, candidate_id),
+            )
+            await self._audit_in_db(db, "evaluation", "policy_candidate_replayed", candidate_id, replay)
+            await db.commit()
+        candidate = await self.get_policy_candidate(candidate_id)
+        assert candidate is not None
+        return candidate
+
+    async def start_swarm_run(
+        self,
+        *,
+        workspace_id: str,
+        work_packet_id: str,
+        roles: list[dict[str, Any]],
+        budget: dict[str, Any],
+        reviewer: str,
+        output_consumer: str,
+        stop_rule: str,
+    ) -> dict[str, Any]:
+        if len(roles) < 3:
+            raise WorkspacePolicyError("governed swarm requires at least three roles")
+        role_names = [str(role.get("name") or "").strip() for role in roles]
+        if not all(role_names) or len(set(role_names)) != len(role_names):
+            raise WorkspacePolicyError("governed swarm roles must have unique names")
+        if int(budget.get("max_tokens") or 0) <= 0:
+            raise WorkspacePolicyError("governed swarm requires a positive token budget")
+        if not reviewer.strip() or not output_consumer.strip() or not stop_rule.strip():
+            raise WorkspacePolicyError("governed swarm requires reviewer, consumer, and stop rule")
+        swarm_id = f"swm_{uuid.uuid4().hex[:16]}"
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            await self._require_workspace_in_db(db, workspace_id)
+            db.row_factory = aiosqlite.Row
+            packet_row = await (await db.execute("SELECT workspace_id FROM work_packets WHERE id = ?", (work_packet_id,))).fetchone()
+            if packet_row is None or str(packet_row["workspace_id"]) != workspace_id:
+                raise WorkspacePolicyError("swarm work packet must belong to its workspace")
+            await db.execute(
+                """
+                INSERT INTO swarm_runs(
+                    id, workspace_id, work_packet_id, roles_json, budget_json, reviewer, output_consumer,
+                    stop_rule, side_effect_policy, state, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approval_required', 'running', ?)
+                """,
+                (
+                    swarm_id,
+                    workspace_id,
+                    work_packet_id,
+                    json.dumps(roles, sort_keys=True),
+                    json.dumps(budget, sort_keys=True),
+                    reviewer,
+                    output_consumer,
+                    stop_rule,
+                    now,
+                ),
+            )
+            await self._audit_in_db(
+                db,
+                "swarm",
+                "swarm_started",
+                swarm_id,
+                {"workspace_id": workspace_id, "roles": role_names, "reviewer": reviewer, "consumer": output_consumer},
+            )
+            await db.commit()
+        swarm = await self.get_swarm_run(swarm_id)
+        assert swarm is not None
+        return swarm
+
+    async def get_swarm_run(self, swarm_id: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM swarm_runs WHERE id = ?", (swarm_id,))).fetchone()
+            return self._decode_workspace_row(row) if row is not None else None
+
+    async def complete_swarm_run(
+        self,
+        swarm_id: str,
+        *,
+        reviewer_outcome: str,
+        receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = iso()
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            row = await (await db.execute("SELECT * FROM swarm_runs WHERE id = ?", (swarm_id,))).fetchone()
+            if row is None:
+                raise WorkspacePolicyError(f"swarm run not found: {swarm_id}")
+            swarm = self._decode_workspace_row(row)
+            if swarm["state"] != "running":
+                raise WorkspacePolicyError(f"swarm run is not running: {swarm_id}")
+            if str(receipt.get("consumer") or "") != str(swarm["output_consumer"]):
+                raise WorkspacePolicyError("swarm receipt consumer must match the named output consumer")
+            if str(reviewer_outcome).strip() not in {"accepted", "rejected"}:
+                raise WorkspacePolicyError("swarm reviewer outcome must be accepted or rejected")
+            await db.execute(
+                """
+                UPDATE swarm_runs
+                SET state = 'completed', reviewer_outcome = ?, receipt_json = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (reviewer_outcome, json.dumps(receipt, sort_keys=True), now, swarm_id),
+            )
+            await self._audit_in_db(
+                db,
+                "swarm",
+                "swarm_completed",
+                swarm_id,
+                {"reviewer_outcome": reviewer_outcome, "consumer": swarm["output_consumer"]},
+            )
+            await db.commit()
+        swarm = await self.get_swarm_run(swarm_id)
+        assert swarm is not None
+        return swarm

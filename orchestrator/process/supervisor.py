@@ -68,6 +68,7 @@ async def ensure_budget_probe_scheduler_task(store: StateStore) -> str:
         interval_seconds=BUDGET_PROBES_INTERVAL_SECONDS,
         enabled=True,
         task_id=BUDGET_PROBES_TASK_ID,
+        workspace_id="system",
         next_run_at=(
             str(existing.get("next_run_at"))
             if existing and existing.get("next_run_at")

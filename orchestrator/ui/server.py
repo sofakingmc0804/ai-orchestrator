@@ -5,7 +5,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -13,12 +14,13 @@ from pydantic import BaseModel
 from orchestrator.autopilot.watchers import scan_autopilot_roots_once
 from orchestrator.benchmarks.latency import run_selection_latency_benchmark
 from orchestrator.config import Settings
-from orchestrator.connectors import build_config_preview, build_connectors_payload, connector_templates, validate_connector_config
+from orchestrator.connectors import build_config_preview, connector_templates, validate_connector_config
 from orchestrator.discovery.auth import probe_auth_and_quota, quota_snapshots
 from orchestrator.discovery.budget_probes import probe_to_dict, run_all_probes
 from orchestrator.discovery.projects import discover_projects
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.dispatch.dispatcher import Dispatcher
+from orchestrator.hermes.brain_bridge import complete_workspace_hermes_turn, prepare_workspace_hermes_turn
 from orchestrator.notifications.spine import NotificationSpine
 from orchestrator.notifications.subscribers.runner import run_all_subscribers_once
 from orchestrator.process.recovery import repair_core_services
@@ -34,6 +36,7 @@ from orchestrator.ui.dashboard import build_failover_events_payload, build_gover
 from orchestrator.ui.dashboard_status import build_dashboard_status
 from orchestrator.usage.accounting import build_token_accounting_payload
 from orchestrator.usage.flow import build_token_flow_payload
+from orchestrator.workspace_runtime import WorkspacePolicyError, build_platform_console_payload, workspace_connector_context
 
 
 def _business_snapshot_generated_at(settings: Settings) -> str | None:
@@ -49,11 +52,13 @@ def _business_snapshot_generated_at(settings: Settings) -> str | None:
 
 class IntentRequest(BaseModel):
     text: str
+    workspace_id: str
     project_root: str | None = None
 
 
 class RouteRequest(BaseModel):
     text: str
+    workspace_id: str
     job_class: str | None = None
     project_root: str | None = None
 
@@ -75,6 +80,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await store.initialize()
+        await store.bootstrap_workspace_roots()
+        await store.seed_default_mode_packs()
         services, caps = await discover_services_and_capabilities()
         await store.upsert_services(services)
         await store.upsert_capabilities(caps)
@@ -98,13 +105,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if callable(join):
                 join(timeout=5)
 
-    app = FastAPI(title="AI Orchestrator", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Platform Console", version="0.2.0", lifespan=lifespan)
+    # Hermes' development renderer is an isolated local origin.  Production
+    # Electron builds use the local ``null`` file origin.  No remote browser
+    # origin is admitted, and these endpoints do not carry credentials.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^(null|http://(127\.0\.0\.1|localhost):5174)$",
+        allow_methods=["GET", "POST"],
+        allow_headers=["content-type"],
+    )
     static_dir = Path(__file__).with_suffix("").parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
         return (static_dir / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> Response:
+        return Response(status_code=204)
 
     @app.get("/workers", response_class=HTMLResponse)
     async def workers_page() -> str:
@@ -134,6 +154,129 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "state_path": str(settings.state_path),
             "notifications_path": str(settings.notifications_path),
         }
+
+    @app.get("/api/platform-console")
+    async def platform_console() -> dict[str, object]:
+        return await build_platform_console_payload(store)
+
+    @app.post("/api/workspaces/bootstrap")
+    async def bootstrap_workspaces() -> dict[str, object]:
+        workspaces = await store.bootstrap_workspace_roots()
+        packs = await store.seed_default_mode_packs()
+        return {"workspaces": workspaces, "mode_packs": packs}
+
+    @app.get("/api/workspaces")
+    async def workspaces() -> list[dict[str, object]]:
+        return await store.list_workspaces()
+
+    @app.post("/api/work-packets")
+    async def create_work_packet(payload: dict[str, object]) -> dict[str, object]:
+        try:
+            raw_payload = payload.get("payload")
+            return await store.create_work_packet(
+                workspace_id=str(payload.get("workspace_id") or ""),
+                intent=str(payload.get("intent") or ""),
+                payload=raw_payload if isinstance(raw_payload, dict) else {},
+                mode_pack_id=str(payload.get("mode_pack_id") or "") or None,
+                consumer=str(payload.get("consumer") or ""),
+            )
+        except WorkspacePolicyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/transfer-proposals")
+    async def create_transfer_proposal(payload: dict[str, object]) -> dict[str, object]:
+        try:
+            return await store.propose_transfer(
+                work_packet_id=str(payload.get("work_packet_id") or ""),
+                target_workspace_id=str(payload.get("target_workspace_id") or ""),
+                summary=str(payload.get("summary") or ""),
+            )
+        except WorkspacePolicyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/transfer-proposals/{proposal_id}/decision")
+    async def decide_transfer_proposal(proposal_id: str, payload: dict[str, object]) -> dict[str, object]:
+        try:
+            decided_by = str(payload.get("decided_by") or "").strip()
+            if not decided_by:
+                raise WorkspacePolicyError("a transfer decision requires a named owner")
+            return await store.decide_transfer(
+                proposal_id,
+                approve=bool(payload.get("approve")),
+                decided_by=decided_by,
+            )
+        except WorkspacePolicyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/hermes/workspace-context")
+    async def hermes_workspace_context(workspace_id: str | None = None) -> dict[str, object]:
+        if workspace_id not in {"personal", "example"}:
+            raise HTTPException(status_code=409, detail="Hermes requires a Personal or Example workspace selection")
+        # A proposal is rendered in its source workspace only.  Example receives
+        # no source summary, packet id, payload, or memory before the owner
+        # approves the transfer.
+        proposals = [
+            proposal
+            for proposal in await store.list_transfer_proposals(state="proposed")
+            if proposal.get("source_workspace_id") == workspace_id
+        ]
+        return {
+            "workspaces": [row for row in await store.list_workspaces() if row.get("id") in {"personal", "example"}],
+            "mode_packs": await store.list_mode_packs(),
+            "transfer_cards": proposals,
+            "connector_access": workspace_connector_context(workspace_id, len(await store.list_services())),
+        }
+
+    @app.get("/api/hermes/workspace-meter")
+    async def hermes_workspace_meter(workspace_id: str | None = None) -> dict[str, object]:
+        try:
+            if workspace_id not in {"personal", "example"}:
+                raise WorkspacePolicyError("Hermes meter requires a Personal or Example workspace selection")
+            return await store.workspace_meter(workspace_id)
+        except WorkspacePolicyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/hermes/workspace-turns/prepare")
+    async def prepare_hermes_workspace_turn(payload: dict[str, object]) -> dict[str, object]:
+        checks_raw = payload.get("skill_capability_checks")
+        checks = {str(key): bool(value) for key, value in checks_raw.items()} if isinstance(checks_raw, dict) else {}
+        argv_raw = payload.get("argv")
+        argv = [str(item) for item in argv_raw] if isinstance(argv_raw, list) else []
+        try:
+            return await prepare_workspace_hermes_turn(
+                settings,
+                workspace_id=str(payload.get("workspace_id") or ""),
+                mode_pack_id=str(payload.get("mode_pack_id") or ""),
+                skill_capability_checks=checks,
+                text=str(payload.get("text") or ""),
+                job_class=str(payload.get("job_class") or "") or None,
+                argv=argv,
+                consumer=str(payload.get("consumer") or "Hermes user"),
+            )
+        except WorkspacePolicyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/hermes/workspace-turns/{work_packet_id}/complete")
+    async def complete_hermes_workspace_turn(work_packet_id: str, payload: dict[str, object]) -> dict[str, object]:
+        try:
+            return await complete_workspace_hermes_turn(
+                settings,
+                workspace_id=str(payload.get("workspace_id") or ""),
+                work_packet_id=work_packet_id,
+                provider=str(payload.get("provider") or "unknown"),
+                model=str(payload.get("model") or "unknown"),
+                route=str(payload.get("route") or "unknown"),
+                tokens_in=int(payload.get("tokens_in") or 0),
+                tokens_out=int(payload.get("tokens_out") or 0),
+                estimated_cost_usd=float(payload["estimated_cost_usd"]) if payload.get("estimated_cost_usd") is not None else None,
+                actual_cost_usd=float(payload["actual_cost_usd"]) if payload.get("actual_cost_usd") is not None else None,
+                quota_source=str(payload.get("quota_source") or "unknown"),
+                context_pressure=float(payload["context_pressure"]) if payload.get("context_pressure") is not None else None,
+                quota_state=payload.get("quota_state") if isinstance(payload.get("quota_state"), dict) else None,
+                measurement_source=str(payload.get("measurement_source") or "hermes_runtime_state"),
+            )
+        except (ValueError, WorkspacePolicyError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/dashboard-status")
     async def operator_dashboard_status() -> dict[str, object]:
@@ -202,19 +345,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await store.list_capabilities()
 
     @app.get("/api/connectors")
-    async def connectors() -> dict[str, object]:
-        return build_connectors_payload(settings.repo_root, await store.list_services(), await store.list_capabilities())
+    async def connectors(workspace_id: str | None = None) -> dict[str, object]:
+        if workspace_id not in {"personal", "example"}:
+            raise HTTPException(status_code=409, detail="connector access requires a Personal or Example workspace selection")
+        return workspace_connector_context(workspace_id, len(await store.list_services()))
 
     @app.get("/api/connectors/templates")
-    async def connectors_templates() -> dict[str, object]:
+    async def connectors_templates(workspace_id: str | None = None) -> dict[str, object]:
+        if workspace_id not in {"personal", "example"}:
+            raise HTTPException(status_code=409, detail="connector access requires a Personal or Example workspace selection")
         return {"state": "produced", "templates": connector_templates()}
 
     @app.post("/api/connectors/validate")
     async def connectors_validate(payload: dict[str, object]) -> dict[str, object]:
+        if payload.get("workspace_id") not in {"personal", "example"}:
+            raise HTTPException(status_code=409, detail="connector access requires a Personal or Example workspace selection")
         return validate_connector_config(payload)
 
     @app.post("/api/connectors/config-preview")
     async def connectors_config_preview(payload: dict[str, object]) -> dict[str, object]:
+        if payload.get("workspace_id") not in {"personal", "example"}:
+            raise HTTPException(status_code=409, detail="connector access requires a Personal or Example workspace selection")
         validation = validate_connector_config(payload)
         if not validation.get("success"):
             raise HTTPException(status_code=400, detail=validation)
@@ -243,7 +394,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await store.list_selections()
 
     @app.get("/api/projects")
-    async def projects() -> list[dict[str, object]]:
+    async def projects(workspace_id: str) -> list[dict[str, object]]:
+        if workspace_id in {"personal", "example"}:
+            # Existing discoveries have no owner-assigned scope.  They remain
+            # visible only through the isolated legacy lane until classified.
+            return []
+        if workspace_id != "unclassified_legacy":
+            raise HTTPException(status_code=409, detail="project retrieval requires a work-bearing workspace")
         return await store.list_projects()
 
     @app.get("/api/activity")
@@ -271,7 +428,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await store.list_scheduler_tasks()
 
     @app.get("/api/working-memory")
-    async def working_memory() -> list[dict[str, object]]:
+    async def working_memory(workspace_id: str) -> list[dict[str, object]]:
+        if workspace_id in {"personal", "example"}:
+            # No legacy memory is silently assigned to either workspace.
+            return []
+        if workspace_id != "unclassified_legacy":
+            raise HTTPException(status_code=409, detail="memory retrieval requires a work-bearing workspace")
         return await store.list_working_memory()
 
     @app.get("/api/approvals")
@@ -311,9 +473,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/dispatch")
     async def dispatch(req: IntentRequest) -> dict[str, object]:
+        if req.workspace_id == "system":
+            raise HTTPException(status_code=409, detail="System scope governs resources and cannot receive work dispatches")
+        try:
+            packet = await store.create_work_packet(
+                workspace_id=req.workspace_id,
+                intent=req.text,
+                payload={"project_root": req.project_root} if req.project_root else {},
+                mode_pack_id=None,
+                consumer="legacy_dispatch_consumer",
+                state="routing",
+            )
+        except WorkspacePolicyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         project = Path(req.project_root) if req.project_root else None
         result = await dispatcher.dispatch_text(req.text, project)
-        return result.model_dump(mode="json")
+        return {**result.model_dump(mode="json"), "workspace_id": req.workspace_id, "work_packet_id": packet["id"]}
 
     @app.get("/api/job-classes")
     async def job_classes() -> dict[str, list[str]]:
@@ -322,7 +497,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/route")
     async def route(req: RouteRequest) -> dict[str, object]:
-        return await route_brain(store, text=req.text, job_class=req.job_class)
+        if req.workspace_id == "system":
+            raise HTTPException(status_code=409, detail="System scope governs resources and cannot receive route requests")
+        try:
+            packet = await store.create_work_packet(
+                workspace_id=req.workspace_id,
+                intent=req.text,
+                payload={},
+                mode_pack_id=None,
+                consumer="legacy_route_consumer",
+                state="routing",
+            )
+        except WorkspacePolicyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {**(await route_brain(store, text=req.text, job_class=req.job_class)), "workspace_id": req.workspace_id, "work_packet_id": packet["id"]}
 
     @app.post("/api/prove-adapter")
     async def prove_adapter(req: AdapterProofRequest) -> dict[str, object]:
@@ -409,6 +597,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/scheduler/tasks")
     async def add_scheduler_task(payload: dict[str, object]) -> dict[str, object]:
+        workspace_id = str(payload.get("workspace_id") or "")
+        if workspace_id not in {"personal", "example", "unclassified_legacy"}:
+            raise HTTPException(status_code=409, detail="scheduled execution requires an explicit workspace_id")
         folder = str(payload.get("folder_path") or "")
         policy = str(payload.get("policy_yaml") or "autopilot: enabled")
         enabled = bool(payload.get("enabled"))
@@ -421,13 +612,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             name=name or f"Standing order: {Path(folder).name or order_id}",
             task_type="standing_order_scan",
             target_ref=order_id,
-            payload={"folder_path": folder},
+            payload={"folder_path": folder, "workspace_id": workspace_id},
             schedule_kind="interval" if interval_seconds > 0 else "manual",
             interval_seconds=interval_seconds,
             enabled=enabled,
             task_id=task_id,
+            workspace_id=workspace_id,
         )
-        return {"id": scheduler_task_id, "standing_order_id": order_id, "folder_path": folder, "enabled": enabled, "interval_seconds": interval_seconds}
+        return {"id": scheduler_task_id, "workspace_id": workspace_id, "standing_order_id": order_id, "folder_path": folder, "enabled": enabled, "interval_seconds": interval_seconds}
 
     @app.post("/api/scheduler/tasks/{task_id}")
     async def scheduler_task_action(task_id: str, payload: dict[str, object]) -> dict[str, object]:
