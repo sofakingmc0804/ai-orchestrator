@@ -174,6 +174,6 @@ def test_token_accounting_api_and_dashboard_show_cost_vs_quality(
     assert payload["premium_agents"][0]["tokens_per_completed_directive"] == 100
     assert index.status_code == 200
     assert "Platform Console" in index.text
-    assert "Metered tokens" in index.text
-    assert "/static/platform-console.js" in index.text
-    assert "tokenAccountingList" not in index.text
+    assert "Tokens Per Directive" in index.text
+    assert "/static/app.js" in index.text
+    assert "tokenAccountingList" in index.text

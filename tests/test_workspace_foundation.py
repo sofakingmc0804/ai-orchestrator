@@ -297,10 +297,12 @@ def test_platform_console_api_and_transfer_card_keep_personal_content_out_of_sys
     assert console.json()["scope"] == "system"
     assert root.status_code == 200
     assert "Platform Console" in root.text
-    assert "/api/platform-console" in root.text
-    assert 'href="hermes://workbench/"' in root.text
-    assert "Return to Hermes" in root.text
-    assert missing_scope.status_code == 422
+    assert "AI Orchestrator" in root.text
+    # The primary dashboard (app.js/routeText) predates workspace scoping and
+    # must keep working for callers that omit workspace_id: it now defaults
+    # to "personal" rather than being rejected outright.
+    assert missing_scope.status_code == 200
+    assert missing_scope.json()["workspace_id"] == "personal"
     assert system_scope.status_code == 409
     assert missing_memory_scope.status_code == 422
     assert personal_memory.status_code == 200

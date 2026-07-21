@@ -640,6 +640,10 @@ def test_cli_and_api_route_return_identical_brain_payload(
         )
         cli_payload = json.loads(capsys.readouterr().out)
 
-    assert cli_payload == api_payload
+    # The API additionally stamps workspace-scoping metadata (workspace_id,
+    # work_packet_id) onto the response; the CLI has no workspace context to
+    # attach. The underlying routing decision itself must still be identical.
+    api_core_payload = {k: v for k, v in api_payload.items() if k not in {"workspace_id", "work_packet_id"}}
+    assert cli_payload == api_core_payload
     assert cli_payload["decision"]["chosen_adapter"] == "ollama-http"
     assert cli_payload["ranked_ladder"][0]["worker_id"] == "qwen@ollama-local"

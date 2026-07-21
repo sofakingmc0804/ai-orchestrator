@@ -52,13 +52,13 @@ def _business_snapshot_generated_at(settings: Settings) -> str | None:
 
 class IntentRequest(BaseModel):
     text: str
-    workspace_id: str
+    workspace_id: str = "personal"
     project_root: str | None = None
 
 
 class RouteRequest(BaseModel):
     text: str
-    workspace_id: str
+    workspace_id: str = "personal"
     job_class: str | None = None
     project_root: str | None = None
 
