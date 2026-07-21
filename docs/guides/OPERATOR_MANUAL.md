@@ -9,7 +9,7 @@ Use this manual when you are responsible for keeping the local Orchestrator runn
 The first rule is simple: inspect the live state before changing it.
 
 ```powershell
-cd C:\Users\Couch\dev\ai-orchestrator
+cd <path-to-ai-orchestrator-checkout>
 python -m orchestrator.cli.main dashboard-status --no-receipt
 python -m orchestrator.cli.main work-status --last 20
 ```

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
 import re
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
 from orchestrator.config import Settings
+
+
+# Configurable so this subscriber can notify a different owner in a
+# non-Example deployment; default preserves the real operational recipient.
+DEFAULT_NOTIFICATION_RECIPIENT = os.environ.get("ORCHESTRATOR_NOTIFICATION_EMAIL", "owner@example.com")
 
 
 def _safe_name(value: str) -> str:
@@ -16,7 +22,7 @@ class EmailDraftSubscriber:
     name = "email"
     channel = "email"
 
-    def __init__(self, settings: Settings, recipient: str = "owner@example.com") -> None:
+    def __init__(self, settings: Settings, recipient: str = DEFAULT_NOTIFICATION_RECIPIENT) -> None:
         self.settings = settings
         self.recipient = recipient
         self.outbox = settings.home / "email_drafts"

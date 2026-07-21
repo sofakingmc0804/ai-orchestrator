@@ -84,7 +84,15 @@ BROWSER_BRIDGE_TOOL_PATTERNS = [
 
 BROWSER_BRIDGE_REQUIREMENTS = {"browser-use", "chrome"}
 BROWSER_BRIDGE_SKILLS = {"browser-use:browser", "chrome:Chrome"}
-GOVCON_DAILY_AUTO_SEND_RECIPIENTS = {"owner@example.com", "partner@example.com"}
+# Configurable so this gate can run against a different mailbox/business
+# identity in a non-Example deployment; default preserves the real recipients.
+GOVCON_DAILY_AUTO_SEND_RECIPIENTS = {
+    addr.strip()
+    for addr in os.environ.get(
+        "ORCHESTRATOR_GOVCON_AUTO_SEND_RECIPIENTS", "owner@example.com,partner@example.com"
+    ).split(",")
+    if addr.strip()
+}
 GMAIL_RECIPIENT_FIELDS = {"to", "cc", "bcc", "recipient", "recipients"}
 GMAIL_BODY_FIELDS = {"body", "html_body", "htmlbody", "plain_text", "plaintext", "message", "content", "text"}
 GMAIL_SUBJECT_FIELDS = {"subject"}
@@ -100,9 +108,17 @@ EMAIL_SIGNOFF_RE = re.compile(
     r"(?:\s*\n+.*){0,12}\s*$",
     re.I,
 )
+# Configurable so this leak-detection check can run against a different
+# business identity in a non-Example deployment; default preserves the real
+# domain/business-name/phone used to detect a forged/leaked signature block.
+_SIGNATURE_DOMAIN = os.environ.get("ORCHESTRATOR_BUSINESS_DOMAIN", "example.com")
+_SIGNATURE_BUSINESS_NAME = os.environ.get("ORCHESTRATOR_BUSINESS_NAME", "Example Consulting")
+_SIGNATURE_PHONE = os.environ.get("ORCHESTRATOR_BUSINESS_PHONE", "555-0100")
+
 EMAIL_INLINE_SIGNATURE_RE = re.compile(
     r"(?mi)^\s*(?:__\s*)?$[\s\S]{0,120}^\s*Matt\s+(?:Couch|Dobbins)\s*$[\s\S]{0,400}"
-    r"(?:exampleco\.com|Example Consulting|C:\s*555-0100|555-0100)",
+    rf"(?:{re.escape(_SIGNATURE_DOMAIN)}|{re.escape(_SIGNATURE_BUSINESS_NAME)}"
+    rf"|C:\s*{re.escape(_SIGNATURE_PHONE)}|{re.escape(_SIGNATURE_PHONE)})",
     re.I,
 )
 

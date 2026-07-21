@@ -7,7 +7,7 @@ This is the shortest safe path to inspect the current runtime without confusing 
 ## 1. Open the project shell
 
 ```powershell
-cd C:\Users\Couch\dev\ai-orchestrator
+cd <path-to-ai-orchestrator-checkout>
 ```
 
 ## 2. Start with the dashboard
