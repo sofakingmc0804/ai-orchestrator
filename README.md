@@ -14,13 +14,12 @@ usage, and avoids exhausted quotas. Every dispatch produces a receipt
 (worker, job class, routing reasoning, budget state) so behavior can be
 audited after the fact instead of taken on faith.
 
-This is a real operating tool, not a demo: it runs the day-to-day AI workload
-for Example Consulting (the author's consulting business, sometimes
-referenced in code and docs as "exampleco" or by side-project name "Example Co") and for the author's personal projects. Business-identity defaults
-(mailbox, domain, phone) are environment-variable configurable — see
-`orchestrator/gmail_response_agent/models.py`, `orchestrator/skills/gate.py`,
-and `orchestrator/notifications/subscribers/email.py` — so the same codebase
-runs cleanly for a different owner/business without code changes.
+This is a working tool rather than a demo. It runs a real daily AI workload
+across local and hosted models, and it has been shaped by what actually broke
+in use rather than by what looked good in a diagram. Owner-specific values
+(notification address, business domain, shared-drive root) are read from
+`ORCHESTRATOR_*` environment variables, so the same codebase runs for a
+different owner without code changes.
 
 ## What it does
 
@@ -51,12 +50,10 @@ cd ai-orchestrator
 pip install -e .
 ```
 
-Business-identity defaults (mailbox, domain, phone) fall back to the real
-operational values used in production. To run this for a different
-owner/business, set the relevant environment variables before starting the
-service — see `orchestrator/gmail_response_agent/models.py`,
-`orchestrator/skills/gate.py`, and `orchestrator/notifications/subscribers/email.py`
-for the full list of `ORCHESTRATOR_*` variables and their defaults.
+Owner-specific values are supplied through `ORCHESTRATOR_*` environment
+variables and default to neutral placeholders. See
+`orchestrator/skills/gate.py` and
+`orchestrator/notifications/subscribers/email.py` for the full list.
 
 ## Usage
 
@@ -97,8 +94,7 @@ orchestrator/
 ├── dispatch/          # Dispatcher + receipts
 ├── discovery/         # Budget probes
 ├── skills/            # Skill routing and permission/hook gate
-├── scheduler/         # Scheduled tasks, mailbox jobs
-├── gmail_response_agent/  # Gmail-facing response agent
+├── scheduler/         # Scheduled and recurring tasks
 ├── workspace_runtime.py, swarm/, evaluation/  # Multi-workspace + evaluation runtime
 ├── state/             # SQLite schema + store
 ├── ui/                # Dashboards (home, workers, budget, receipts, command center)

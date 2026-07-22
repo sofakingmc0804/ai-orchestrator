@@ -12,7 +12,6 @@ from orchestrator.config import Settings
 from orchestrator.delegation.work_cycle import run_delegated_work_cycle
 from orchestrator.evaluation.tournament import run_deterministic_tournament
 from orchestrator.scheduler.budget_probes_cron import run_budget_probes_once
-from orchestrator.scheduler.job_application_mailbox import run_job_application_mailbox_task
 from orchestrator.state.store import StateStore, iso
 
 
@@ -364,9 +363,6 @@ async def run_scheduler_task_once(
 
     if task_type == "backlog_discovery":
         return await _run_backlog_discovery_task(settings, store, task, result)
-
-    if task_type == "job_application_mailbox":
-        return await run_job_application_mailbox_task(settings, store, task)
 
     result["state"] = "failed"
     result["reason"] = f"unsupported_task_type:{task_type}"

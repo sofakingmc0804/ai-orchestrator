@@ -13,7 +13,6 @@ from typing import Any
 import aiosqlite
 
 from orchestrator.config import Settings, ensure_runtime_dirs
-from orchestrator.gmail_response_agent.store import GMAIL_RESPONSE_AGENT_SCHEMA
 from orchestrator.models import Capability, Intent, Notification, RoutingDecision, Selection, ServiceInfo
 from orchestrator.state.migration_runner import MigrationRunner, split_sql_statements
 from orchestrator.usage.tokens import estimate_tokens
@@ -81,7 +80,6 @@ class StateStore:
                 await self._ensure_budget_lane_tables(db)
                 await self._ensure_operation_quality_scores_table(db)
                 await self._ensure_skill_hook_receipts_table(db)
-                await self._ensure_gmail_response_agent_tables(db)
                 await self._ensure_schema_migration_columns(db)
                 await db.execute(
                     """
@@ -337,24 +335,6 @@ class StateStore:
         for column, statement in additions.items():
             if column not in columns:
                 await db.execute(statement)
-
-    async def _ensure_gmail_response_agent_tables(self, db: aiosqlite.Connection) -> None:
-        for statement in split_sql_statements(GMAIL_RESPONSE_AGENT_SCHEMA):
-            await db.execute(statement)
-        rows = await (await db.execute("PRAGMA table_info(gmail_response_candidates)")).fetchall()
-        columns = {str(row[1]) for row in rows}
-        if "authority_evidence_json" not in columns:
-            await db.execute("ALTER TABLE gmail_response_candidates ADD COLUMN authority_evidence_json TEXT")
-        preflight_rows = await (await db.execute("PRAGMA table_info(gmail_draft_preflights)")).fetchall()
-        preflight_columns = {str(row[1]) for row in preflight_rows}
-        if "retrieval_steps_json" not in preflight_columns:
-            await db.execute("ALTER TABLE gmail_draft_preflights ADD COLUMN retrieval_steps_json TEXT")
-        learned_rows = await (await db.execute("PRAGMA table_info(gmail_learned_precedents)")).fetchall()
-        learned_columns = {str(row[1]) for row in learned_rows}
-        if "precedent_type" not in learned_columns:
-            await db.execute("ALTER TABLE gmail_learned_precedents ADD COLUMN precedent_type TEXT DEFAULT 'approved'")
-        if "approval_state" not in learned_columns:
-            await db.execute("ALTER TABLE gmail_learned_precedents ADD COLUMN approval_state TEXT DEFAULT 'approved'")
 
     async def _ensure_skill_hook_receipts_table(self, db: aiosqlite.Connection) -> None:
         await db.execute(

@@ -12,7 +12,6 @@ from typing import Any
 
 from orchestrator.config import Settings
 from orchestrator.process.recovery import repair_core_services
-from orchestrator.scheduler.job_application_mailbox import ensure_job_application_mailbox_task
 from orchestrator.scheduler.tasks import run_due_scheduler_once
 from orchestrator.state.store import StateStore, iso
 
@@ -162,7 +161,6 @@ async def run_supervisor_tick(
     budget_task_id = await ensure_budget_probe_scheduler_task(state)
     backlog_discovery_task_id = await ensure_backlog_discovery_scheduler_task(state)
     delegated_work_task_id = await ensure_delegated_work_scheduler_task(state)
-    job_application_mailbox_task_id = await ensure_job_application_mailbox_task(state)
 
     try:
         scheduler_result = await scheduler_once(settings, state)
@@ -202,7 +200,6 @@ async def run_supervisor_tick(
         "backlog_discovery_task_interval_seconds": BACKLOG_DISCOVERY_INTERVAL_SECONDS,
         "delegated_work_task_id": delegated_work_task_id,
         "delegated_work_task_interval_seconds": DELEGATED_WORK_INTERVAL_SECONDS,
-        "job_application_mailbox_task_id": job_application_mailbox_task_id,
         "recovered_dispatches_count": len(recovered),
         "recovered_dispatches": recovered,
         "scheduler": scheduler_result,
