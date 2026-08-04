@@ -17,6 +17,7 @@ from orchestrator.cli.budget_cli import register_budget_cli
 from orchestrator.config import Settings
 from orchestrator.discovery.auth import probe_auth_and_quota, quota_snapshots
 from orchestrator.discovery.budget_probes import run_all_probes, probe_to_dict
+from orchestrator.discovery.model_lifecycle import probe_model_lifecycle
 from orchestrator.discovery.projects import discover_projects
 from orchestrator.discovery.services import discover_services_and_capabilities
 from orchestrator.dispatch.dispatcher import Dispatcher
@@ -50,8 +51,25 @@ async def _refresh(settings: Settings) -> dict[str, int]:
     await store.upsert_projects(projects)
     auth_state = probe_auth_and_quota()
     await store.record_quota_snapshots(quota_snapshots(auth_state))
-    await store.record_discovery("refresh", {"services": len(services), "capabilities": len(caps), "projects": len(projects)}, "CLI refresh completed.")
-    return {"services": len(services), "capabilities": len(caps), "projects": len(projects)}
+    # Model lifecycle: detect retired/new models, auto-fix vision config
+    lifecycle = await probe_model_lifecycle(settings, fix_config=True)
+    await store.record_discovery("refresh", {
+        "services": len(services),
+        "capabilities": len(caps),
+        "projects": len(projects),
+        "model_lifecycle": {
+            "retired": lifecycle["retired_count"],
+            "discovered": lifecycle["discovered_count"],
+            "vision_fix": lifecycle.get("vision_fix"),
+        },
+    }, "CLI refresh completed with model lifecycle probe.")
+    return {
+        "services": len(services),
+        "capabilities": len(caps),
+        "projects": len(projects),
+        "models_retired": lifecycle["retired_count"],
+        "models_discovered": lifecycle["discovered_count"],
+    }
 
 
 async def _dispatch(settings: Settings, text: str, full: bool = False) -> dict[str, object]:
@@ -367,6 +385,8 @@ def main() -> None:
     parser.add_argument("--home", default=None)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("refresh")
+    model_lifecycle = sub.add_parser("model-lifecycle")
+    model_lifecycle.add_argument("--fix", action="store_true", help="Auto-fix Hermes config when vision model is retired")
     sub.add_parser("status")
     sub.add_parser("spec-status")
     dashboard_status = sub.add_parser("dashboard-status")
@@ -469,6 +489,8 @@ def main() -> None:
     result: dict[str, Any]
     if args.cmd == "refresh":
         result = asyncio.run(_refresh(settings))
+    elif args.cmd == "model-lifecycle":
+        result = asyncio.run(probe_model_lifecycle(settings, fix_config=args.fix))
     elif args.cmd == "spec-status":
         result = asyncio.run(_spec_status(settings))
     elif args.cmd == "dashboard-status":
