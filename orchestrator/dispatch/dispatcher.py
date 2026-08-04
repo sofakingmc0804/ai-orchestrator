@@ -21,6 +21,7 @@ from orchestrator.routing.worker_routing import route_intent_worker_aware
 from orchestrator.skills.detector import detect_skill_route
 from orchestrator.state.store import StateStore, iso
 from orchestrator.usage.tokens import extract_token_usage, flowmeter_snapshot
+from orchestrator.usage.conservation_report import prepare_dispatch as _conservation_prepare, analyze_dispatch as _conservation_analyze
 
 
 class Dispatcher:

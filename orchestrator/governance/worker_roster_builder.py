@@ -54,10 +54,10 @@ JOB_CLASSES: dict[str, dict[str, Any]] = {
         "approval_floor": "local_resource",
     },
     "bulk_extraction": {
-        "required_capabilities": ["classification"],
+        "required_capabilities": ["web_search", "web_extract"],
         "preferred_stats": {"speed": 7, "structured_output": 8, "cost_pressure": 9},
-        "local_first": True,
-        "approval_floor": "local_resource",
+        "local_first": False,
+        "approval_floor": "subscription_quota",
     },
     "schema_validation": {
         "required_capabilities": ["validation"],
@@ -72,13 +72,13 @@ JOB_CLASSES: dict[str, dict[str, Any]] = {
         "approval_floor": "subscription_quota",
     },
     "repo_coding": {
-        "required_capabilities": ["coding", "tools"],
+        "required_capabilities": ["coding", "tools", "terminal", "code_execution"],
         "preferred_stats": {"coding": 8, "agentic_loop": 7, "stability": 7},
         "local_first": False,
         "approval_floor": "subscription_quota",
     },
     "agentic_repair": {
-        "required_capabilities": ["agentic", "tools", "coding"],
+        "required_capabilities": ["agentic", "tools", "coding", "terminal", "code_execution"],
         "preferred_stats": {"agentic_loop": 9, "debugging": 8, "stability": 7},
         "local_first": False,
         "approval_floor": "subscription_quota",

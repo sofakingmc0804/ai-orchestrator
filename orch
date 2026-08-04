@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Orchestrator CLI wrapper — clears PYTHONPATH contamination from Hermes venv
+# Usage: orch <command> [args...]
+# Examples:
+#   orch spec-status
+#   orch route --job-class repo_coding --text "..."
+#   orch acceptance-battery
+#
+# This wrapper exists because:
+# 1. Hermes sets PYTHONPATH to its own Python 3.11 site-packages, which breaks
+#    the orchestrator's Python 3.13 venv (pydantic_core binary mismatch).
+# 2. The orchestrator uses relative imports (benchmarks.validators) that require
+#    the working directory to be the project root.
+# Clearing PYTHONPATH and cd-ing to the project root fixes both permanently.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH=""
+cd "$SCRIPT_DIR"
+exec "$SCRIPT_DIR/.venv/Scripts/python.exe" -m orchestrator.cli.main "$@"

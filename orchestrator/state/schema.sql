@@ -736,3 +736,16 @@ CREATE TABLE IF NOT EXISTS policy_candidates (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Conservation reports (phase 1: report-only baseline, added 2026-08-03)
+CREATE TABLE IF NOT EXISTS conservation_reports (
+    id TEXT PRIMARY KEY,
+    dispatch_id TEXT REFERENCES dispatches(id),
+    job_class TEXT,
+    original_length INTEGER,
+    minimized_length INTEGER,
+    conservation_score REAL,
+    waste_modes TEXT,
+    notes TEXT,
+    created_at TEXT
+);
