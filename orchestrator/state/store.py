@@ -1915,6 +1915,38 @@ class StateStore:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    async def conservation_scores_by_worker(self) -> dict[str, dict[str, Any]]:
+        """Aggregate conservation_reports into per-worker averages.
+
+        Joins conservation_reports → receipts (which carry worker_id) to produce
+        ``{worker_id: {"avg_conservation_score": float, "count": int}}``.
+        Workers with no reports are absent from the dict; callers default to 0.65.
+        """
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT
+                        r.worker_id AS worker_id,
+                        AVG(cr.conservation_score) AS avg_conservation_score,
+                        COUNT(*) AS count
+                    FROM conservation_reports cr
+                    JOIN receipts r ON cr.dispatch_id = r.dispatch_id
+                    WHERE r.worker_id IS NOT NULL
+                    GROUP BY r.worker_id
+                    """,
+                )
+            ).fetchall()
+            return {
+                str(r["worker_id"]): {
+                    "avg_conservation_score": float(r["avg_conservation_score"] or 0.0),
+                    "count": int(r["count"] or 0),
+                }
+                for r in rows
+                if r["worker_id"]
+            }
+
     async def list_live_proven_dispatches(self, limit: int = 500) -> list[dict[str, Any]]:
         """Completed dispatches whose receipt carries proof_kind='live'.
 
