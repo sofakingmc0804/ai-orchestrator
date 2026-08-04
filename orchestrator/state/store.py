@@ -380,6 +380,23 @@ class StateStore:
             )
             """
         )
+    async def _ensure_conservation_reports_table(self, db: aiosqlite.Connection) -> None:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conservation_reports (
+                id TEXT PRIMARY KEY,
+                dispatch_id TEXT REFERENCES dispatches(id),
+                job_class TEXT,
+                original_length INTEGER,
+                minimized_length INTEGER,
+                conservation_score REAL,
+                waste_modes TEXT,
+                notes TEXT,
+                created_at TEXT
+            )
+            """
+        )
+
 
     async def _audit_in_db(self, db: aiosqlite.Connection, actor: str, action: str, target: str, detail: dict[str, Any] | None = None) -> None:
         await db.execute(
@@ -1109,6 +1126,15 @@ class StateStore:
 
     async def record_operation_quality_score(self, score: dict[str, Any]) -> None:
         async with aiosqlite.connect(self.path) as db:
+            dispatch_id = score.get("dispatch_id")
+            validation = score.get("validation") or {}
+            if dispatch_id:
+                dispatch_row = await (await db.execute("SELECT id FROM dispatches WHERE id = ?", (dispatch_id,))).fetchone()
+                if dispatch_row is None:
+                    validation = dict(validation) if isinstance(validation, dict) else {"value": validation}
+                    validation.setdefault("source_dispatch_id", dispatch_id)
+                    validation.setdefault("dispatch_id_detached_reason", "missing_dispatch_parent")
+                    dispatch_id = None
             await db.execute(
                 """
                 INSERT INTO operation_quality_scores(
@@ -1131,7 +1157,7 @@ class StateStore:
                 """,
                 (
                     score.get("id") or f"oqs_{uuid.uuid4().hex[:16]}",
-                    score["dispatch_id"],
+                    dispatch_id,
                     score["worker_id"],
                     score["operation_domain"],
                     score["validator_name"],
@@ -1139,11 +1165,11 @@ class StateStore:
                     json.dumps(score.get("dimensional_scores") or score.get("dimensional_scores_json") or {}),
                     score.get("task_id"),
                     score.get("proof_kind") or "live",
-                    json.dumps(score.get("validation") or {}),
+                    json.dumps(validation),
                     score.get("created_at") or iso(),
                 ),
             )
-            await self._audit_in_db(db, "quality_loop", "operation_quality_score", str(score["dispatch_id"]), score)
+            await self._audit_in_db(db, "quality_loop", "operation_quality_score", str(score.get("dispatch_id") or ""), score)
             await db.commit()
 
     async def list_operation_quality_scores(self, limit: int = 200) -> list[dict[str, Any]]:
@@ -1788,6 +1814,22 @@ class StateStore:
                 ),
                 "created_at": item.get("created_at") or item.get("dispatch_completed_at") or iso(),
             }
+            await self.record_dispatch_attempt(
+                {
+                    "id": usage["attempt_id"],
+                    "dispatch_id": dispatch_id,
+                    "intent_id": item.get("dispatch_intent_id"),
+                    "adapter_name": usage["adapter_name"],
+                    "attempt_number": 0,
+                    "state": "completed" if usage["success"] else "recorded",
+                    "started_at": item.get("dispatch_completed_at") or usage["created_at"],
+                    "completed_at": usage["created_at"],
+                    "detail": {
+                        "source": "receipt_backfill_parent_materialization",
+                        "token_usage_id": usage["id"],
+                    },
+                }
+            )
             await self.record_token_usage(usage)
             created += 1
 
@@ -1801,6 +1843,16 @@ class StateStore:
                 """
                 INSERT INTO dispatch_attempts(id, dispatch_id, intent_id, adapter_name, attempt_number, state, started_at, completed_at, error, detail)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  dispatch_id=excluded.dispatch_id,
+                  intent_id=excluded.intent_id,
+                  adapter_name=excluded.adapter_name,
+                  attempt_number=excluded.attempt_number,
+                  state=excluded.state,
+                  started_at=excluded.started_at,
+                  completed_at=excluded.completed_at,
+                  error=excluded.error,
+                  detail=excluded.detail
                 """,
                 (
                     attempt["id"],
@@ -1832,6 +1884,29 @@ class StateStore:
             rows = await (await db.execute(query, params)).fetchall()
             return [dict(r) for r in rows]
 
+    async def record_conservation_report(self, report: dict[str, Any]) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO conservation_reports(id, dispatch_id, job_class, original_length,
+                    minimized_length, conservation_score, waste_modes, notes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    report["id"],
+                    report.get("dispatch_id"),
+                    report.get("job_class"),
+                    report.get("original_length"),
+                    report.get("minimized_length"),
+                    report.get("conservation_score"),
+                    json.dumps(report.get("waste_modes", [])),
+                    report.get("notes"),
+                    report.get("created_at", iso()),
+                ),
+            )
+            await db.commit()
+
     async def list_dispatches(self, limit: int = 100) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
@@ -1839,6 +1914,38 @@ class StateStore:
                 await db.execute("SELECT * FROM dispatches ORDER BY started_at DESC LIMIT ?", (limit,))
             ).fetchall()
             return [dict(r) for r in rows]
+
+    async def conservation_scores_by_worker(self) -> dict[str, dict[str, Any]]:
+        """Aggregate conservation_reports into per-worker averages.
+
+        Joins conservation_reports → receipts (which carry worker_id) to produce
+        ``{worker_id: {"avg_conservation_score": float, "count": int}}``.
+        Workers with no reports are absent from the dict; callers default to 0.65.
+        """
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute(
+                    """
+                    SELECT
+                        r.worker_id AS worker_id,
+                        AVG(cr.conservation_score) AS avg_conservation_score,
+                        COUNT(*) AS count
+                    FROM conservation_reports cr
+                    JOIN receipts r ON cr.dispatch_id = r.dispatch_id
+                    WHERE r.worker_id IS NOT NULL
+                    GROUP BY r.worker_id
+                    """,
+                )
+            ).fetchall()
+            return {
+                str(r["worker_id"]): {
+                    "avg_conservation_score": float(r["avg_conservation_score"] or 0.0),
+                    "count": int(r["count"] or 0),
+                }
+                for r in rows
+                if r["worker_id"]
+            }
 
     async def list_live_proven_dispatches(self, limit: int = 500) -> list[dict[str, Any]]:
         """Completed dispatches whose receipt carries proof_kind='live'.

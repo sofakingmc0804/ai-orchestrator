@@ -427,6 +427,22 @@ def _token_efficiency_score(worker: dict[str, Any], token_usage_summary: dict[st
     return max(0.0, min(1.0, (efficiency * 0.45) + (success_rate * 0.55)))
 
 
+def _conservation_score(worker: dict[str, Any], conservation_by_worker: dict[str, dict[str, Any]] | None) -> float:
+    """Waste-aware token efficiency from the conservation_reports table.
+
+    Falls back to 0.65 (neutral) when no conservation data exists for the
+    worker, so routing is not penalized before baseline data accumulates.
+    """
+    if not conservation_by_worker:
+        return 0.65
+    worker_id = str(worker.get("worker_id") or "")
+    entry = conservation_by_worker.get(worker_id)
+    if not entry:
+        return 0.65
+    score = float(entry.get("avg_conservation_score") or 0.0)
+    return max(0.0, min(1.0, score))
+
+
 def _measured_quality_score(
     worker: dict[str, Any],
     job_class: str,
@@ -457,6 +473,7 @@ def route_with_workers(
     token_usage_summary: dict[str, dict[str, Any]] | None = None,
     operation_quality_scores: dict[str, dict[str, dict[str, Any]]] | None = None,
     service_health: dict[str, str] | None = None,
+    conservation_by_worker: dict[str, dict[str, Any]] | None = None,
 ) -> RoutingDecision:
     """Route intent to best worker using worker cards.
 
@@ -554,7 +571,7 @@ def route_with_workers(
         budget_source = _budget_source_for_worker(worker, budget_lookup)
         contract_score = _contract_pressure_score(worker)
         model_fit = _model_fit_score(worker, job_class)
-        token_score = _token_efficiency_score(worker, token_usage_summary)
+        token_score = _conservation_score(worker, conservation_by_worker)
         measured_quality, quality_source = _measured_quality_score(worker, job_class, operation_quality_scores)
         marginal_cost = _marginal_cost_score(worker)
         composite = (
@@ -565,7 +582,7 @@ def route_with_workers(
             + (budget_fit * 0.10)
             + (contract_score * 0.18)
             + (model_fit * 0.08)
-            + (token_score * 0.06)
+            + (token_score * 0.12)
             + (measured_quality * 0.14)
             + (benchmark_score * 0.03)
         )
@@ -580,7 +597,7 @@ def route_with_workers(
         row["budget_source"] = budget_source
         row["contract_pressure_score"] = contract_score
         row["model_fit_score"] = model_fit
-        row["token_efficiency_score"] = token_score
+        row["conservation_score"] = token_score
         row["measured_quality_score"] = measured_quality
         row["quality_source"] = quality_source
         row["marginal_cost_score"] = marginal_cost
@@ -616,7 +633,7 @@ def route_with_workers(
             f"budget ({chosen_worker.get('budget_score', 0):.2f}), "
             f"contract pressure ({chosen_worker.get('contract_pressure_score', 0):.2f}), "
             f"model fit ({chosen_worker.get('model_fit_score', 0):.2f}), "
-            f"token efficiency ({chosen_worker.get('token_efficiency_score', 0):.2f}), "
+            f"conservation ({chosen_worker.get('conservation_score', 0):.2f}), "
             f"measured quality ({chosen_worker.get('measured_quality_score', 0):.2f}), "
             f"and benchmark score ({chosen_worker.get('benchmark_score', 0):.2f})."
         )
@@ -644,6 +661,7 @@ def route_intent_worker_aware(
     token_usage_summary: dict[str, dict[str, Any]] | None = None,
     operation_quality_scores: dict[str, dict[str, dict[str, Any]]] | None = None,
     service_health: dict[str, str] | None = None,
+    conservation_by_worker: dict[str, dict[str, Any]] | None = None,
 ) -> RoutingDecision:
     """Route intent using worker-aware routing.
 
@@ -678,4 +696,5 @@ def route_intent_worker_aware(
         token_usage_summary=token_usage_summary,
         operation_quality_scores=operation_quality_scores,
         service_health=service_health,
+        conservation_by_worker=conservation_by_worker,
     )

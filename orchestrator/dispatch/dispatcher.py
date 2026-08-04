@@ -21,6 +21,7 @@ from orchestrator.routing.worker_routing import route_intent_worker_aware
 from orchestrator.skills.detector import detect_skill_route
 from orchestrator.state.store import StateStore, iso
 from orchestrator.usage.tokens import extract_token_usage, flowmeter_snapshot
+from orchestrator.usage.conservation_report import prepare_dispatch as _conservation_prepare, analyze_dispatch as _conservation_analyze
 
 
 class Dispatcher:
@@ -148,6 +149,15 @@ class Dispatcher:
         job_class = classification["job_class"]
         skill_hook_plan = detect_skill_route(intent.raw_text, cwd=project_root or self.settings.repo_root, source_event="dispatcher")
 
+        # Conservation report-only: prepare (measure input waste, do NOT modify envelope)
+        _conservation_pre: dict[str, Any] | None = None
+        try:
+            _conservation_pre = _conservation_prepare(
+                intent.raw_text, job_class, str(project_root) if project_root else None
+            )
+        except Exception:
+            _conservation_pre = None
+
         # Phase 2: Load workers from DB
         workers = await self.store.db.fetch("SELECT * FROM worker_cards")
         job_class_spec = await self.store.db.fetchrow("SELECT * FROM job_classes WHERE job_class = ?", job_class)
@@ -160,6 +170,7 @@ class Dispatcher:
             for row in await self.store.list_services()
             if row.get("adapter_name")
         }
+        conservation_by_worker = await self.store.conservation_scores_by_worker()
 
         quota_state = await self.store.latest_quota_state()
         project_policy = project_policy or await self._project_policy(intent.project_id)
@@ -176,6 +187,7 @@ class Dispatcher:
                 token_usage_summary=token_usage_summary,
                 operation_quality_scores=operation_quality_scores,
                 service_health=service_health,
+                conservation_by_worker=conservation_by_worker,
             )
         else:
             capabilities = await self.store.list_capabilities()
@@ -324,6 +336,7 @@ class Dispatcher:
                             job_class,
                             budget_probes,
                             subscription_usage_snapshots,
+                            _conservation_pre=_conservation_pre,
                         )
                     last_error = str(result.get("error") or "adapter returned ok=false").strip() or "adapter returned ok=false"
                     repair_action = str(result.get("repair_action") or "Inspect adapter logs and provider configuration.")
@@ -583,6 +596,7 @@ class Dispatcher:
         job_class: str,
         budget_probes: list[dict[str, Any]],
         subscription_usage_snapshots: list[dict[str, Any]] | None = None,
+        _conservation_pre: dict[str, Any] | None = None,
     ) -> DispatchResult:
         result_path = out_root / "result.txt"
         receipt_path = out_root / "receipt.json"
@@ -663,6 +677,24 @@ class Dispatcher:
                 channels_requested=["in_app", "tray"],
             )
         )
+
+        # Conservation report-only: analyze output and record the report
+        try:
+            _post = _conservation_analyze(text, job_class)
+            _report = {
+                "id": f"cr_{dispatch_id}",
+                "dispatch_id": dispatch_id,
+                "job_class": job_class,
+                "original_length": (_conservation_pre or {}).get("original_length", len(text)),
+                "minimized_length": (_conservation_pre or {}).get("minimized_length", len(text)),
+                "conservation_score": _post.get("conservation_score", 1.0),
+                "waste_modes": _post.get("waste_modes", []),
+                "notes": _post.get("notes", ""),
+            }
+            await self.store.record_conservation_report(_report)
+        except Exception:
+            pass
+
         return DispatchResult(dispatch_id=dispatch_id, intent_id=intent.id, adapter_name=adapter_name, state="completed", output_path=result_path, result_text=text, receipt=receipt)
 
     async def _score_operation_dispatch(
