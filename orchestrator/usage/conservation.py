@@ -189,9 +189,10 @@ class PromptMinimizer:
     # versus code/content (left alone).
     _LOG_LINE_RE = re.compile(
         r"""^\s*                                # leading whitespace
-            (?:                                  # either:
+            (?:\[?\s*                            # optional opening bracket
               \d{4}[-/]\d{2}[-/]\d{2}            #   a date YYYY-MM-DD
               (?:[T ]\d{2}:\d{2}:\d{2})?         #   optional time
+              \s*\]?                             # optional closing bracket
               |                                  # ...or:
               (?:INFO|DEBUG|WARN(?:ING)?|ERROR|FATAL|TRACE|CRITICAL)\b  # log level as first word
             )""",

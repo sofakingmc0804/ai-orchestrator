@@ -28,5 +28,10 @@
     "security review"
   ],
   "reserve_percent": 20.0,
-  "version": 1
+  "version": 1,
+  "conservation": {
+    "mode": "active",
+    "activation_threshold": 100,
+    "description": "report_only = compute levers but don't apply. active = apply minimized prompts, output directives, effort calibration, and context harness to the dispatch envelope."
+  }
 }

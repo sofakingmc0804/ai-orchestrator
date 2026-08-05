@@ -24,6 +24,68 @@ from orchestrator.usage.tokens import extract_token_usage, flowmeter_snapshot
 from orchestrator.usage.conservation_report import prepare_dispatch as _conservation_prepare, analyze_dispatch as _conservation_analyze
 
 
+def _load_conservation_mode(repo_root: Path) -> str:
+    """Read conservation mode from governance_policy.json. Returns 'report_only' or 'active'."""
+    try:
+        policy_path = repo_root / "orchestrator" / "config" / "governance_policy.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        return policy.get("conservation", {}).get("mode", "report_only")
+    except Exception:
+        return "report_only"
+
+
+def _apply_conservation_levers(
+    envelope: dict[str, Any],
+    conservation_pre: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply the 4 pre-dispatch conservation levers to the envelope (active mode).
+
+    Levers applied:
+    1. Prompt minimizer — replace raw_text with minimized_prompt
+    2. Context harness — prepend prior receipt context
+    3. Output directive — append directive to prompt
+    4. Effort calibration — inject reasoning_effort + max_output_tokens
+    """
+    if not conservation_pre:
+        return envelope
+
+    out = dict(envelope)
+    intent = out.get("intent", {})
+    raw_text = intent.get("raw_text", "")
+
+    # Lever 1: minimized prompt
+    minimized = conservation_pre.get("minimized_prompt", "")
+    if minimized and len(minimized) < len(raw_text):
+        intent = dict(intent)
+        intent["raw_text"] = minimized
+        out["intent"] = intent
+
+    # Lever 2: context harness (prepend)
+    harness = conservation_pre.get("context_harness", "")
+    if harness:
+        intent = dict(out.get("intent", {}))
+        intent["raw_text"] = f"{harness}\n\n{intent.get('raw_text', '')}"
+        out["intent"] = intent
+
+    # Lever 3: output directive (append)
+    directive = conservation_pre.get("output_directive", "")
+    if directive:
+        intent = dict(out.get("intent", {}))
+        intent["raw_text"] = f"{intent.get('raw_text', '')}\n\n{directive}"
+        out["intent"] = intent
+
+    # Lever 4: effort calibration
+    effort = conservation_pre.get("effort", {})
+    if effort:
+        if effort.get("reasoning_effort"):
+            out["reasoning_effort"] = effort["reasoning_effort"]
+        if effort.get("max_output_tokens"):
+            out["max_output_tokens"] = effort["max_output_tokens"]
+
+    out["conservation_applied"] = True
+    return out
+
+
 class Dispatcher:
     def __init__(self, settings: Settings, store: StateStore, notifications: NotificationSpine):
         self.settings = settings
@@ -151,6 +213,7 @@ class Dispatcher:
 
         # Conservation report-only: prepare (measure input waste, do NOT modify envelope)
         _conservation_pre: dict[str, Any] | None = None
+        _conservation_mode = _load_conservation_mode(self.settings.repo_root)
         try:
             _conservation_pre = _conservation_prepare(
                 intent.raw_text, job_class, str(project_root) if project_root else None
@@ -294,6 +357,9 @@ class Dispatcher:
                 attempt_envelope["model"] = candidate_model
             if candidate_provider:
                 attempt_envelope["provider"] = candidate_provider
+            # Conservation active mode: apply levers to the envelope
+            if _conservation_mode == "active" and _conservation_pre:
+                attempt_envelope = _apply_conservation_levers(attempt_envelope, _conservation_pre)
             for attempt_number in range(1, self.max_attempts_per_adapter + 1):
                 attempt_id = f"att_{uuid.uuid4().hex[:16]}"
                 attempt_started = iso()
