@@ -9,3 +9,6 @@ capabilities:
   - id: document_review
   - id: agentic_work
   - id: code_repair
+  - id: model_selection
+  - id: headless_print
+  - id: subscription_oauth

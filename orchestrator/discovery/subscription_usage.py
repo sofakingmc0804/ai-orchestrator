@@ -26,6 +26,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from orchestrator.config import Settings
+from orchestrator.hermes.claude_code import oauth_only_environment
 from orchestrator.state.store import StateStore
 
 
@@ -1058,7 +1059,14 @@ def _claude_auth_status() -> tuple[str | None, str | None]:
     if not shutil.which("claude"):
         return None, None
     try:
-        result = subprocess.run(["claude", "auth", "status"], text=True, capture_output=True, timeout=20, check=False)
+        result = subprocess.run(
+            ["claude", "auth", "status"],
+            text=True,
+            capture_output=True,
+            timeout=20,
+            check=False,
+            env=oauth_only_environment(),
+        )
     except (OSError, subprocess.SubprocessError):
         return None, None
     parsed = parse_usage_output(result.stdout or "")

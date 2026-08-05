@@ -15,6 +15,11 @@ import psutil
 
 from orchestrator.adapters.base import safe_cost
 from orchestrator.models import BillingClass, Capability, ConsequenceTier, HealthState, ServiceInfo
+from orchestrator.hermes.claude_code import (
+    CLAUDE_AUTH_OVERRIDE_ENV_VARS,
+    build_headless_args,
+    parse_headless_output,
+)
 from orchestrator.registry.contracts import capabilities_from_contract
 
 
@@ -55,6 +60,7 @@ async def _run_bounded(
     timeout: float = 30,
     env: dict[str, str] | None = None,
     cwd: Path | None = None,
+    unset_env: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
     resolved = _resolve_command(command)
     if not resolved:
@@ -64,11 +70,16 @@ async def _run_bounded(
     else:
         exec_args = [resolved, *args]
     try:
+        child_env = dict(os.environ)
+        for key in unset_env or ():
+            child_env.pop(key, None)
+        if env:
+            child_env.update(env)
         proc = await asyncio.create_subprocess_exec(
             *exec_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, **env} if env else None,
+            env=child_env,
             cwd=str(cwd) if cwd else None,
         )
     except OSError as exc:
@@ -445,7 +456,7 @@ class OpenClawGatewayAdapter(StaticCliAdapter):
 
 
 class ClaudePrintAdapter(StaticCliAdapter):
-    def __init__(self, name: str, service_id: str, label: str, protocol: str) -> None:
+    def __init__(self, name: str, service_id: str, label: str, protocol: str, *, oauth_only: bool = False) -> None:
         super().__init__(
             name=name,
             service_id=service_id,
@@ -459,38 +470,63 @@ class ClaudePrintAdapter(StaticCliAdapter):
             consequence_max=ConsequenceTier.HIGH,
             latency_band="medium",
         )
+        self.oauth_only = oauth_only
+
+    async def health_probe(self) -> ServiceInfo:
+        info = await super().health_probe()
+        if not self.oauth_only or info.health_state is HealthState.STOPPED:
+            return info
+        result = await _run_bounded(
+            "claude",
+            ["auth", "status"],
+            timeout=20,
+            unset_env=CLAUDE_AUTH_OVERRIDE_ENV_VARS,
+        )
+        stdout = _clean_terminal_text(str(result.get("stdout") or ""))
+        try:
+            status = json.loads(stdout)
+        except json.JSONDecodeError:
+            status = {}
+        if result.get("ok") and isinstance(status, dict) and status.get("loggedIn") and status.get("authMethod") == "claude.ai":
+            info.health_state = HealthState.HEALTHY
+            info.detail = "Claude Code CLI is authenticated through the provider-owned Claude.ai OAuth session."
+        else:
+            info.health_state = HealthState.DEGRADED
+            info.detail = "Claude Code is installed, but its Claude.ai OAuth session was not verified in an OAuth-only child environment."
+            info.repair_action = "Run `claude auth login` and keep ANTHROPIC_API_KEY unset for subscription dispatch."
+        return info
 
     async def dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
         prompt = str(envelope.get("intent", {}).get("raw_text") or envelope.get("prompt") or "").strip()
         model = str(envelope.get("model") or "sonnet")
+        fallback_model = str(envelope.get("fallback_model") or "").strip() or None
         if not prompt:
             return {"ok": False, "error": "No prompt supplied to Claude adapter."}
+        args = build_headless_args(prompt, model, fallback_model)
         result = await _run_bounded(
             "claude",
-            [
-                "-p",
-                "--output-format",
-                "text",
-                "--permission-mode",
-                "dontAsk",
-                "--model",
-                model,
-                "--max-budget-usd",
-                "0.25",
-                prompt,
-            ],
-            timeout=120,
+            args,
+            timeout=180,
+            unset_env=CLAUDE_AUTH_OVERRIDE_ENV_VARS if self.oauth_only else None,
         )
-        stdout = _clean_terminal_text(str(result.get("stdout") or ""))
+        stdout = str(result.get("stdout") or "")
         stderr = _clean_terminal_text(str(result.get("stderr") or ""))
-        if not result.get("ok") or "Exceeded USD budget" in stdout or "Exceeded USD budget" in stderr:
+        text, payload = parse_headless_output(stdout)
+        if not result.get("ok") or not text:
             return {
                 "ok": False,
                 "error": str(result.get("error") or stderr or stdout or "Claude dispatch failed."),
-                "repair_action": "Verify Claude Max first-party auth and set a task-appropriate budget cap before retrying; do not fallback to Anthropic API.",
-                "raw": result,
+                "repair_action": "Verify `claude auth status` in an OAuth-only environment; do not set ANTHROPIC_API_KEY for Claude subscription dispatch.",
+                "raw": {"returncode": result.get("returncode"), "stderr": stderr, "payload": payload},
             }
-        return {"ok": True, "model": model, "text": stdout, "raw": result}
+        usage = payload.get("usage") if isinstance(payload, dict) and isinstance(payload.get("usage"), dict) else None
+        return {
+            "ok": True,
+            "model": model,
+            "text": text,
+            "usage": usage,
+            "raw": {"returncode": result.get("returncode"), "payload": payload},
+        }
 
 
 class CodexExecAdapter(StaticCliAdapter):
@@ -739,7 +775,7 @@ class SyntheticTestServiceAdapter(StaticCliAdapter):
 def build_adapters() -> dict[str, StaticCliAdapter]:
     adapters: list[StaticCliAdapter] = [
         ClaudePrintAdapter("claude-desktop-mcp", "claude-desktop", "Claude Desktop", "mcp"),
-        ClaudePrintAdapter("claude-code-cli", "claude-code-cli", "Claude Code CLI", "subprocess"),
+        ClaudePrintAdapter("claude-code-cli", "claude-code-cli", "Claude Code CLI", "subprocess", oauth_only=True),
         CodexExecAdapter("codex-desktop", "codex-desktop", "Codex Desktop", "mcp-subprocess"),
         CodexExecAdapter("codex-cli", "codex-cli", "Codex CLI", "subprocess"),
         OllamaHttpAdapter(),

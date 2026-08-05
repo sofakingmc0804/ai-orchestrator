@@ -14,12 +14,18 @@ import json
 import subprocess
 import sys
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 
-def run_cmd(cmd: str, timeout: int = 30) -> tuple[str, int]:
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from orchestrator.hermes.claude_code import oauth_only_environment
+
+def run_cmd(cmd: str, timeout: int = 30, env: dict[str, str] | None = None) -> tuple[str, int]:
     """Run a shell command, return (output, exit_code)."""
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout, env=env)
         return r.stdout.strip(), r.returncode
     except subprocess.TimeoutExpired:
         return "", -1
@@ -54,7 +60,7 @@ def probe_copilot() -> dict:
 def probe_claude_code() -> dict:
     """Claude Code — weekly reset, Claude Max subscription.
     Uses /usage in-session, but we can check auth state and last known usage."""
-    out, code = run_cmd("claude auth status 2>&1", timeout=10)
+    out, code = run_cmd("claude auth status 2>&1", timeout=10, env=oauth_only_environment())
     if "loggedIn" not in out:
         return {"source": "Claude Code", "status": "unreachable", "error": out[:200]}
     try:
@@ -63,6 +69,7 @@ def probe_claude_code() -> dict:
             "source": "Claude Code",
             "status": "ok",
             "auth": "logged_in",
+            "auth_source": "claude.ai_oauth",
             "email": d.get("email", "?"),
             "subscription": d.get("subscriptionType", "?"),
             "remaining": "unknown (check /usage in-session)",

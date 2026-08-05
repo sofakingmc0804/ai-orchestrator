@@ -7,7 +7,8 @@ import pytest
 
 import orchestrator.adapters.builtins as builtins
 import orchestrator.process.recovery as recovery
-from orchestrator.adapters.builtins import CodexExecAdapter, HermesAgentAdapter, LmStudioAdapter, OllamaHttpAdapter, OpenClawGatewayAdapter
+from orchestrator.adapters.builtins import ClaudePrintAdapter, CodexExecAdapter, HermesAgentAdapter, LmStudioAdapter, OllamaHttpAdapter, OpenClawGatewayAdapter
+from orchestrator.hermes.claude_code import CLAUDE_AUTH_OVERRIDE_ENV_VARS, build_headless_args, oauth_only_environment
 from orchestrator.config import Settings
 from orchestrator.models import HealthState
 from orchestrator.state.store import StateStore
@@ -126,6 +127,55 @@ def test_terminal_output_cleaner_removes_ansi_sequences() -> None:
 
 def test_ollama_http_targets_current_localhost_server() -> None:
     assert OllamaHttpAdapter().base_url == "http://localhost:11434"
+
+
+def test_claude_headless_args_are_non_persistent_and_model_selectable() -> None:
+    args = build_headless_args("Return the proof.", "claude-max-sonnet-opus", "haiku")
+    assert args[:2] == ["-p", "--no-session-persistence"]
+    assert "--output-format" in args and args[args.index("--output-format") + 1] == "json"
+    assert args[args.index("--model") + 1] == "opus"
+    assert args[args.index("--fallback-model") + 1] == "haiku"
+    assert "--max-budget-usd" not in args
+
+
+def test_claude_oauth_environment_removes_api_key_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "do-not-leak")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    child = oauth_only_environment()
+    assert all(key not in child for key in CLAUDE_AUTH_OVERRIDE_ENV_VARS)
+
+
+@pytest.mark.asyncio
+async def test_claude_dispatch_uses_persistent_oauth_and_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, list[str], set[str] | frozenset[str] | None]] = []
+
+    async def fake_run(
+        command: str,
+        args: list[str],
+        timeout: float = 30,
+        env: dict[str, str] | None = None,
+        cwd: Path | None = None,
+        unset_env: set[str] | frozenset[str] | None = None,
+    ) -> dict[str, Any]:
+        calls.append((command, args, unset_env))
+        return {
+            "ok": True,
+            "stdout": '{"type":"result","result":"CLAUDE_OAUTH_OK","usage":{"input_tokens":12,"output_tokens":8}}',
+            "stderr": "",
+            "returncode": 0,
+        }
+
+    monkeypatch.setattr(builtins, "_run_bounded", fake_run)
+    result = await ClaudePrintAdapter("claude-code-cli", "claude-code-cli", "Claude Code CLI", "subprocess", oauth_only=True).dispatch(
+        {"intent": {"raw_text": "smoke"}, "model": "sonnet"}
+    )
+
+    assert result["ok"] is True
+    assert result["text"] == "CLAUDE_OAUTH_OK"
+    assert result["usage"]["output_tokens"] == 8
+    assert calls[0][0] == "claude"
+    assert "--no-session-persistence" in calls[0][1]
+    assert calls[0][2] == CLAUDE_AUTH_OVERRIDE_ENV_VARS
 
 
 @pytest.mark.asyncio
